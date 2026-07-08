@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urlencode
-
 import httpx
 
 from seatbot.utils.ua import random_ua
@@ -71,7 +69,8 @@ class ChaoxingClient:
         }
         # fanyalogin returns JSON inside an HTML document sometimes; safest to grab text
         r = await self._client.post(
-            f"{url}?{urlencode(data)}",
+            url,
+            data=data,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         r.raise_for_status()

@@ -1,10 +1,8 @@
 """APScheduler wrapper that drives the reservation state machine."""
 from __future__ import annotations
 
-import asyncio
 import random
-from datetime import date, datetime, time, timedelta
-from typing import Callable
+from datetime import date, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -12,7 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.config import Config
 from seatbot.enc import EncError, EncGenerator
-from seatbot.models import Account, ReserveResult, SignResult, LeaveResult, Task, TaskStatus
+from seatbot.models import Account, Task, TaskStatus
 from seatbot.planner import ReservationPlanner
 from seatbot.store import StateStore
 from seatbot.utils.timeutil import now_cst, today_cst

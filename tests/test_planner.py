@@ -2,7 +2,7 @@ from datetime import date, time
 
 import pytest
 
-from seatbot.models import Account, Task, TaskStatus
+from seatbot.models import Account, TaskStatus
 from seatbot.planner import ReservationPlanner, PlannerError
 
 
