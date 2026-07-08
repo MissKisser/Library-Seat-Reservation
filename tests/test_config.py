@@ -12,6 +12,7 @@ def test_load_minimal_config(tmp_path: Path):
         library:
           room_id: 11692
           room_name: "2号楼图书馆-3F"
+          target_seat_num: "84"
           time_unit_minutes: 30
           open_time: "08:00"
           close_time: "22:00"
@@ -20,7 +21,6 @@ def test_load_minimal_config(tmp_path: Path):
           - id: zhangsan
             phone: "13800000001"
             password: "secret"
-            seat_num: "084"
             slots: full
         runtime:
           stagger_seconds: [0, 3]
@@ -34,6 +34,7 @@ def test_load_minimal_config(tmp_path: Path):
 
     cfg = load_config(cfg_file)
     assert cfg.library.room_id == 11692
+    assert cfg.library.target_seat_num == "084"
     assert cfg.accounts[0].id == "zhangsan"
     assert cfg.accounts[0].slots == "full"
     assert cfg.runtime.web_port == 8080
@@ -52,13 +53,14 @@ def test_account_id_must_be_unique(tmp_path: Path):
         library:
           room_id: 1
           room_name: "x"
+          target_seat_num: "84"
           time_unit_minutes: 30
           open_time: "08:00"
           close_time: "22:00"
           max_reserve_hours: 2.0
         accounts:
-          - {id: a, phone: "1", password: "p", seat_num: "001", slots: full}
-          - {id: a, phone: "2", password: "p", seat_num: "002", slots: full}
+          - {id: a, phone: "1", password: "p", slots: full}
+          - {id: a, phone: "2", password: "p", slots: full}
         runtime: {stagger_seconds: [0,0], relogin_on_401: true, random_ua: true,
                   log_dir: "./logs", db_path: "./x.db", web_host: "0.0.0.0", web_port: 1}
     """).strip())

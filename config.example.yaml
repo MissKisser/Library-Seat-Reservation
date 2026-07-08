@@ -1,20 +1,46 @@
+# Library Seat Reservation Bot — 座位保护模式
+#
+# 用法: cp config.example.yaml config.yaml  → 编辑账号/时段 → python -m seatbot init-db → python -m seatbot run
+#
+# 所有守护账号 (accounts) 都会抢同一个 target_seat_num。
+# 至少 2 个守护账号 + 时段首尾重叠 30min 即可保证全天任何时刻该座位显示"已有人"。
+
 library:
   room_id: 11692
   room_name: "2号楼图书馆-3F-3楼备考自习室"
+  target_seat_num: "84"          # ★ 要保护的座位号
   time_unit_minutes: 30
   open_time: "08:00"
   close_time: "22:00"
   max_reserve_hours: 2.0
 
+# 守护账号:不同时段抢同一个 target_seat_num
+# slots 建议相邻账号首尾重叠 30min (A→09-11, B→10:30-12:30),保证无缝覆盖
 accounts:
-  - id: zhangsan
-    phone: "13800000000"
+  - id: guard_a
+    phone: "13800000001"
     password: "REPLACE_ME"
-    seat_num: "084"
-    slots: full     # 或 ["08:00-12:00", "14:00-22:00"]
+    slots:
+      - "09:00-11:00"
+      - "13:00-15:00"
+      - "17:30-19:30"
+
+  - id: guard_b
+    phone: "13800000002"
+    password: "REPLACE_ME"
+    slots:
+      - "10:30-12:30"
+      - "15:00-17:00"
+      - "19:30-21:30"
+
+  # 凌晨/晚上想完全无空档可加 full
+  # - id: guard_full
+  #   phone: "13800000003"
+  #   password: "REPLACE_ME"
+  #   slots: full
 
 runtime:
-  stagger_seconds: [0, 3]
+  stagger_seconds: [0, 3]        # 多账号错峰 0-3s
   relogin_on_401: true
   random_ua: true
   log_dir: ./logs

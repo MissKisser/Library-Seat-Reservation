@@ -1,4 +1,9 @@
-"""Expand user-facing slot config into ≤ max_hours task chunks."""
+"""Expand user-facing slot config into ≤ max_hours task chunks.
+
+All tasks produced for a guard account target the same seat number
+(`LibraryConfig.target_seat_num`); we don't store seat_num on tasks
+because every task in a session shares it.
+"""
 from __future__ import annotations
 
 from datetime import date

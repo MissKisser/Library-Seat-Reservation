@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}覆盖报告 · SeatBot{% endblock %}
+{% block content %}
+<h1>📋 覆盖报告 ({{ day }})</h1>
+<p>目标座位 <b>{{ cfg.library.target_seat_num }}</b> · 图书馆 {{ cfg.library.room_name }} ·
+   开放 {{ cfg.library.open_time }}–{{ cfg.library.close_time }}</p>
+
+<div class="card">
+  <h2>每日覆盖 Gantt</h2>
+  <table class="gantt">
+    <thead>
+      <tr>
+        <th>账号 \\ 时段</th>
+        {% for c in cov.cells %}<th class="cell-head" title="{{ c.start }}–{{ c.end }}">{{ c.start.strftime('%H:%M') }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for acc in accounts %}
+        <tr>
+          <th>{{ acc.id }}</th>
+          {% for c in cov.cells %}
+            {% set covered = acc.id in c.accounts %}
+            <td class="cell {% if covered %}cell-pending{% else %}cell-empty{% endif %}"></td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+      <tr class="coverage-row">
+        <th>合并</th>
+        {% for c in cov.cells %}
+          <td class="cell {% if c.accounts %}cell-covered{% else %}cell-gap{% endif %}">
+            {% if c.accounts|length >= 2 %}⚡{% elif c.accounts %}✓{% else %}✗{% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+{% if cov.gaps %}
+  <div class="alert-error">
+    <b>⚠ 未覆盖时段 (失守):</b>
+    <ul>
+      {% for g in cov.gaps %}<li>{{ g[0] }} – {{ g[1] }}</li>{% endfor %}
+    </ul>
+  </div>
+{% else %}
+  <div class="alert-ok">✅ 08:00-22:00 已全部覆盖,无失守时段。</div>
+{% endif %}
+
+{% if cov.overlaps %}
+  <div class="alert-info">
+    <b>重叠时段 (多账号同时覆盖,可安全接力):</b>
+    <ul>
+      {% for o in cov.overlaps %}
+        <li>{{ o[0] }} – {{ o[1] }} · {{ o[2]|join(', ') }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+{% endif %}
+
+<p style="margin-top: 1em;">
+  <a class="btn" href="/accounts">编辑守护账号 →</a>
+</p>
+{% endblock %}

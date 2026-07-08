@@ -155,7 +155,7 @@ class Scheduler:
         try:
             enc = await self.enc.compute(
                 room_id=self.cfg.library.room_id,
-                seat_num=acc.seat_num,
+                seat_num=self.cfg.library.target_seat_num,
                 day=t.day.isoformat(),
                 start_time=t.start_time.strftime("%H:%M"),
                 end_time=t.end_time.strftime("%H:%M"),
@@ -173,7 +173,7 @@ class Scheduler:
                 day=t.day.isoformat(),
                 start_time=t.start_time.strftime("%H:%M"),
                 end_time=t.end_time.strftime("%H:%M"),
-                seat_num=acc.seat_num,
+                seat_num=self.cfg.library.target_seat_num,
                 enc=enc["enc"],
                 wy_token=enc["wyToken"],
             )

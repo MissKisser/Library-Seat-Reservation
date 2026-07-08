@@ -10,10 +10,18 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class LibraryConfig(BaseModel):
     room_id: int
     room_name: str
+    target_seat_num: str  # the seat all guard accounts fight to occupy
     time_unit_minutes: int = 30
     open_time: str = "08:00"
     close_time: str = "22:00"
     max_reserve_hours: float = 2.0
+
+    @field_validator("target_seat_num")
+    @classmethod
+    def _seat_num_format(cls, v: str) -> str:
+        if not v.isdigit() or not (1 <= len(v) <= 4):
+            raise ValueError(f"target_seat_num must be 1-4 digit number, got {v!r}")
+        return v.zfill(3)  # normalize to 3-digit zero-padded
 
 
 # slots is either the literal "full" or a list of "HH:MM-HH:MM" ranges
@@ -24,15 +32,7 @@ class AccountConfig(BaseModel):
     id: str
     phone: str
     password: str
-    seat_num: str
     slots: SlotSpec
-
-    @field_validator("seat_num")
-    @classmethod
-    def _seat_num_format(cls, v: str) -> str:
-        if not v.isdigit() or not (1 <= len(v) <= 4):
-            raise ValueError(f"seat_num must be 1-4 digit number, got {v!r}")
-        return v.zfill(3)  # normalize to 3-digit zero-padded
 
     @field_validator("slots")
     @classmethod
