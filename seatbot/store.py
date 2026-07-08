@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS accounts (
   id          TEXT PRIMARY KEY,
   phone       TEXT NOT NULL,
   password    TEXT NOT NULL,
-  seat_num    TEXT NOT NULL,
   slots_json  TEXT NOT NULL,
   status      TEXT NOT NULL DEFAULT 'active',
   bootstrap_day TEXT,
@@ -92,6 +91,40 @@ class StateStore:
         self._db = await aiosqlite.connect(self.db_path)
         await self._db.executescript(SCHEMA)
         await self._db.commit()
+        await self._migrate_drop_seat_num()
+
+    async def _migrate_drop_seat_num(self) -> None:
+        """Drop legacy `seat_num` column from accounts table.
+
+        v1→v2 model change: seat moved from per-account to library.target_seat_num.
+        For local dev DBs we drop and recreate the table (data loss accepted).
+        """
+        cur = await self.db.execute("PRAGMA table_info(accounts)")
+        cols = {row[1] for row in await cur.fetchall()}
+        if "seat_num" in cols:
+            # SQLite <3.35 cannot DROP COLUMN reliably; recreate table.
+            await self.db.executescript(
+                """
+                DROP TABLE IF EXISTS accounts_old;
+                ALTER TABLE accounts RENAME TO accounts_old;
+                CREATE TABLE accounts (
+                  id          TEXT PRIMARY KEY,
+                  phone       TEXT NOT NULL,
+                  password    TEXT NOT NULL,
+                  slots_json  TEXT NOT NULL,
+                  status      TEXT NOT NULL DEFAULT 'active',
+                  bootstrap_day TEXT,
+                  created_at  INTEGER NOT NULL,
+                  updated_at  INTEGER NOT NULL
+                );
+                INSERT INTO accounts (id, phone, password, slots_json, status,
+                                       bootstrap_day, created_at, updated_at)
+                SELECT id, phone, password, slots_json, status,
+                       bootstrap_day, created_at, updated_at FROM accounts_old;
+                DROP TABLE accounts_old;
+                """
+            )
+            await self.db.commit()
 
     async def close(self) -> None:
         if self._db:
@@ -123,33 +156,33 @@ class StateStore:
         if row is None:
             await self.db.execute(
                 """INSERT INTO accounts
-                   (id, phone, password, seat_num, slots_json, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, 'active', ?, ?)""",
-                (acc.id, acc.phone, acc.password, acc.seat_num, slots_json, now, now),
+                   (id, phone, password, slots_json, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'active', ?, ?)""",
+                (acc.id, acc.phone, acc.password, slots_json, now, now),
             )
         else:
             await self.db.execute(
-                """UPDATE accounts SET phone=?, password=?, seat_num=?, slots_json=?, updated_at=?
+                """UPDATE accounts SET phone=?, password=?, slots_json=?, updated_at=?
                    WHERE id=?""",
-                (acc.phone, acc.password, acc.seat_num, slots_json, now, acc.id),
+                (acc.phone, acc.password, slots_json, now, acc.id),
             )
         await self.db.commit()
 
     async def get_account(self, acc_id: str) -> Account | None:
         cur = await self.db.execute(
-            "SELECT id, phone, password, seat_num, slots_json FROM accounts WHERE id=?",
+            "SELECT id, phone, password, slots_json FROM accounts WHERE id=?",
             (acc_id,),
         )
         row = await cur.fetchone()
         if not row:
             return None
-        slots = row[4]
+        slots = row[3]
         if slots not in ("full",):
             try:
                 slots = json.loads(slots)
             except Exception:
                 pass
-        return Account(id=row[0], phone=row[1], password=row[2], seat_num=row[3], slots=slots)
+        return Account(id=row[0], phone=row[1], password=row[2], slots=slots)
 
     async def list_accounts(self) -> list[Account]:
         cur = await self.db.execute("SELECT id FROM accounts ORDER BY id")

@@ -14,11 +14,10 @@ class Account:
     id: str
     phone: str
     password: str
-    seat_num: str
     slots: str | list[str]  # SlotSpec
 
     def display_name(self) -> str:
-        return f"{self.id} (seat {self.seat_num})"
+        return f"{self.id}"
 
 
 # ---------- task lifecycle ----------

@@ -1,26 +1,64 @@
 {% extends "base.html" %}
-{% block title %}{{ '新建' if not account else '编辑' }}账号 · SeatBot{% endblock %}
+{% block title %}{{ '新建' if not account else '编辑' }}守护账号 · SeatBot{% endblock %}
 {% block content %}
-<h1>{{ '新建' if not account else '编辑' }}账号</h1>
+<h1>{{ '新建' if not account else '编辑' }}守护账号</h1>
 {% if error %}<div class="alert-error">{{ error }}</div>{% endif %}
+
 <form method="post" class="card" action="{{ '/accounts' if not account else '/accounts/' + account.id }}">
   {% if not account %}
     <p>ID: <input name="id" required pattern="[a-zA-Z0-9_-]+"></p>
   {% endif %}
   <p>手机号: <input name="phone" required value="{{ account.phone if account else '' }}"></p>
   <p>密码: <input name="password" required value="{{ account.password if account else '' }}"></p>
-  <p>座位号 (1-3 位数字): <input name="seat_num" required pattern="\d{1,3}"
-       value="{{ account.seat_num if account else '' }}"></p>
-  <p>时段:
+  <p>时段模式:
     <select name="slots" id="slots-select">
-      <option value="full" {% if account and account.slots == 'full' %}selected{% endif %}>full (08:00-22:00)</option>
-      <option value="custom" {% if account and account.slots != 'full' %}selected{% endif %}>custom (JSON)</option>
+      <option value="full" {% if account and account.slots == 'full' %}selected{% endif %}>full (08:00-22:00 全天)</option>
+      <option value="custom" {% if account and account.slots != 'full' %}selected{% endif %}>custom (自定义时段列表)</option>
     </select>
   </p>
-  <p>custom JSON: <textarea name="slots_custom" rows="3" placeholder='["08:00-12:00", "14:00-22:00"]'>{% if account and account.slots != 'full' %}{{ account.slots | tojson }}{% endif %}</textarea></p>
+  <p id="custom-wrap">时段列表 (JSON, 每个 "HH:MM-HH:MM" ≤ 2h):
+    <textarea name="slots_custom" id="slots-custom" rows="3"
+              placeholder='["09:00-11:00", "13:00-15:00"]'>{% if account and account.slots != 'full' %}{{ account.slots | tojson }}{% endif %}</textarea>
+  </p>
+
   <p>
     <button class="btn btn-primary" type="submit">保存</button>
     <a class="btn" href="/accounts">取消</a>
   </p>
 </form>
+
+{% if account %}
+  <div class="card">
+    <h3>测试登录</h3>
+    <button class="btn" type="button" onclick="testLogin()">🔐 测试此账号登录</button>
+    <pre id="test-login-result" style="margin-top: 1em;"></pre>
+  </div>
+{% endif %}
+
+<script>
+  // toggle slots UI
+  function syncSlotsUI() {
+    const v = document.getElementById('slots-select').value;
+    document.getElementById('custom-wrap').style.display = v === 'custom' ? 'block' : 'none';
+  }
+  document.getElementById('slots-select').addEventListener('change', syncSlotsUI);
+  syncSlotsUI();
+
+  // test-login
+  async function testLogin() {
+    const out = document.getElementById('test-login-result');
+    out.textContent = '测试中…';
+    try {
+      const r = await fetch('/accounts/{{ account.id if account else "" }}/test-login', {
+        method: 'POST',
+      });
+      const j = await r.json();
+      out.textContent = JSON.stringify(j, null, 2);
+      out.style.color = j.ok ? 'green' : 'crimson';
+    } catch (e) {
+      out.textContent = '请求失败: ' + e;
+      out.style.color = 'crimson';
+    }
+  }
+</script>
 {% endblock %}

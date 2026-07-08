@@ -1,46 +1,66 @@
 {% extends "base.html" %}
-{% block title %}Dashboard · SeatBot{% endblock %}
+{% block title %}覆盖图 · SeatBot{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
+<h1>📊 覆盖图 ({{ today }})</h1>
 <p class="alert-info">
-  图书馆: <b>{{ cfg.library.room_name }}</b> (id={{ cfg.library.room_id }}) · 开放 {{ cfg.library.open_time }}–{{ cfg.library.close_time }}
+  图书馆: <b>{{ cfg.library.room_name }}</b> (id={{ cfg.library.room_id }}) · 开放
+  {{ cfg.library.open_time }}–{{ cfg.library.close_time }} ·
+  <b>目标座位: {{ cfg.library.target_seat_num }}</b>
 </p>
 
-{% if alerts %}
-  {% for a in alerts %}
-    <div class="alert-error">
-      <b>{{ a.account.id }}</b> 当日有 {{ a.failed|length }} 个失败任务
-      <ul>
-        {% for t in a.failed %}
-          <li>{{ t.start_time }}-{{ t.end_time }}: {{ t.last_error }}</li>
-        {% endfor %}
-      </ul>
-    </div>
-  {% endfor %}
+{% if gaps %}
+  <div class="alert-error">
+    <b>⚠ 未覆盖时段:</b>
+    {% for g in gaps %}{{ g[0] }}–{{ g[1] }}{% if not loop.last %}, {% endif %}{% endfor %}
+  </div>
 {% endif %}
 
 <div class="card">
-  <h2>账号 ({{ cards|length }})</h2>
-  {% for c in cards %}
-    <div class="card" style="background: #f9fafb;">
-      <h3>{{ c.account.display_name() }}</h3>
-      <p>slots: <code>{{ c.account.slots }}</code> · 当日任务: {{ c.task_count }} 个</p>
-      {% if c.active %}
-        <p>当前: <span class="badge badge-active">active</span>
-           {{ c.active.start_time }}-{{ c.active.end_time }} (reserve #{{ c.active.reserve_id }})</p>
-      {% else %}
-        <p>当前: <span class="badge badge-pending">无 active 任务</span></p>
-      {% endif %}
-      <p>
-        <a class="btn" href="/accounts/{{ c.account.id }}/edit">编辑</a>
-        <form method="post" action="/tasks/quick-reserve" style="display:inline">
-          <input type="hidden" name="account_id" value="{{ c.account.id }}">
-          <input type="text" name="start" placeholder="HH:MM" required>
-          <input type="text" name="end" placeholder="HH:MM" required>
-          <button class="btn btn-primary" type="submit">立即预约</button>
-        </form>
-      </p>
-    </div>
-  {% endfor %}
+  <h2>护城河</h2>
+  <p>每行一个守护账号；每格 30 分钟。颜色 = 状态:</p>
+  <table class="gantt">
+    <thead>
+      <tr>
+        <th>账号 \\ 时段</th>
+        {% for c in cells %}<th class="cell-head" title="{{ c.start }}–{{ c.end }}">{{ c.start.strftime('%H:%M') }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for acc in accounts %}
+        <tr>
+          <th>{{ acc.id }}</th>
+          {% for c in cells %}
+            {% set hit = (c.accounts|selectattr('id', 'equalto', acc.id)|list|first) %}
+            <td class="cell {% if hit %}{% if hit.status == 'active' %}cell-active{% elif hit.status == 'failed' %}cell-failed{% elif hit.status == 'submitting' %}cell-submitting{% elif hit.status == 'leaving' %}cell-leaving{% else %}cell-pending{% endif %}{% else %}cell-empty{% endif %}"
+                title="{{ acc.id }} · {{ c.start }}–{{ c.end }}{% if hit %} · {{ hit.status }}{% endif %}">
+              {% if hit %}●{% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+      <tr class="coverage-row">
+        <th>覆盖</th>
+        {% for c in cells %}
+          <td class="cell {% if c.accounts %}cell-covered{% else %}cell-gap{% endif %}">
+            {% if c.accounts|length >= 2 %}⚡{% elif c.accounts %}✓{% else %}✗{% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+    </tbody>
+  </table>
+  <p><small>
+    <span class="cell cell-active">●</span> active ·
+    <span class="cell cell-submitting">●</span> submitting ·
+    <span class="cell cell-failed">●</span> failed ·
+    <span class="cell cell-pending">●</span> pending ·
+    <span class="cell cell-covered">✓</span> 覆盖 ·
+    <span class="cell cell-gap">✗</span> 失守 ·
+    <span class="cell cell-covered">⚡</span> 多账号重叠
+  </small></p>
 </div>
+
+<script>
+  // simple polling refresh every 30s
+  setTimeout(() => location.reload(), 30000);
+</script>
 {% endblock %}

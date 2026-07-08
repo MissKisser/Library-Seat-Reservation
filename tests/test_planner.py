@@ -7,7 +7,7 @@ from seatbot.planner import ReservationPlanner, PlannerError
 
 
 def make_account(slots) -> Account:
-    return Account(id="a", phone="1", password="p", seat_num="001", slots=slots)
+    return Account(id="a", phone="1", password="p", slots=slots)
 
 
 def test_expand_full():

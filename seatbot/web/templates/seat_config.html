@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}目标座位 · SeatBot{% endblock %}
+{% block content %}
+<h1>🎯 目标座位 (target_seat_num)</h1>
+<p>所有守护账号都会在 <b>{{ cfg.library.room_name }}</b> (id={{ cfg.library.room_id }})
+   抢占这个座位号。</p>
+
+{% if error %}<div class="alert-error">{{ error }}</div>{% endif %}
+
+<div class="card">
+  <form method="post">
+    <p>当前目标座位: <code><b>{{ cfg.library.target_seat_num }}</b></code></p>
+    <p>新座位号 (1-4 位数字, 自动补 0 到 3 位):
+      <input name="target_seat_num" required pattern="\d{1,4}"
+             value="{{ cfg.library.target_seat_num }}">
+    </p>
+    <button class="btn btn-primary" type="submit">保存</button>
+  </form>
+</div>
+
+<p style="margin-top: 1em;">
+  <a class="btn" href="/coverage">查看覆盖报告 →</a>
+</p>
+{% endblock %}

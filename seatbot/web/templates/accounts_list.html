@@ -1,17 +1,26 @@
 {% extends "base.html" %}
-{% block title %}账号 · SeatBot{% endblock %}
+{% block title %}守护账号 · SeatBot{% endblock %}
 {% block content %}
 <div style="display:flex; justify-content: space-between; align-items: center;">
-  <h1>账号</h1>
+  <h1>🛡 守护账号</h1>
   <a class="btn btn-primary" href="/accounts/new">+ 新建</a>
 </div>
+
+<p class="alert-info">
+  所有守护账号抢占同一个目标座位号:
+  <a href="/seat-config"><b>{{ request.app.state.cfg.library.target_seat_num }}</b></a>
+  （点击此处修改）
+</p>
+
 <table class="card">
-  <thead><tr><th>ID</th><th>手机号</th><th>座位</th><th>slots</th><th>操作</th></tr></thead>
+  <thead><tr><th>ID</th><th>手机号</th><th>slots</th><th>操作</th></tr></thead>
   <tbody>
     {% for a in accounts %}
       <tr>
-        <td>{{ a.id }}</td><td>{{ a.phone }}</td><td>{{ a.seat_num }}</td>
-        <td><code>{{ a.slots }}</code></td>
+        <td>{{ a.id }}</td>
+        <td>{{ a.phone }}</td>
+        <td><code style="max-width: 300px; display: inline-block; overflow: hidden;
+                          text-overflow: ellipsis;">{{ a.slots }}</code></td>
         <td>
           <a class="btn" href="/accounts/{{ a.id }}/edit">编辑</a>
           <form method="post" action="/accounts/{{ a.id }}/delete" style="display:inline"
@@ -23,4 +32,8 @@
     {% endfor %}
   </tbody>
 </table>
+
+<p style="margin-top: 1em;">
+  <a class="btn" href="/coverage">查看覆盖报告 →</a>
+</p>
 {% endblock %}
