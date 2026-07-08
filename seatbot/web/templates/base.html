@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}SeatBot{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">📚 SeatBot</div>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/accounts">账号</a>
+      <a href="/tasks">任务</a>
+      <a href="/seats">座位图</a>
+      <a href="/logs">日志</a>
+    </nav>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="footer">
+    <small>超星图书馆座位自动化 · 本地/内网使用</small>
+  </footer>
+</body>
+</html>
