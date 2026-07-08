@@ -411,20 +411,68 @@ async def api_seat_availability(
 
 @router.get("/api/seats/{room_id}")
 async def api_seats(room_id: int, request: Request):
+    """Surface a small grid of seats around the target seat and their status.
+
+    Approach: we don't have a public API that returns the floor layout
+    (108 chairs) cleanly without going through the SVG-only web UI. So
+    instead we probe reserve/info per seat around `target_seat_num`
+    (±10 → 21 seats) and report:
+
+        {seat_num: "084", occupied_by: "熊金涛" | null, end_ts: ...}
+
+    This gives the operator a quick visual on whether anyone is sitting
+    on or near the protected seat right now.
+    """
     sched = request.app.state.sched
     store = request.app.state.store
+    cfg = request.app.state.cfg
     accounts = await store.list_accounts()
     acc = accounts[0] if accounts else None
     if not acc:
-        return JSONResponse({"seats": []})
+        return JSONResponse(
+            {"seats": [], "target": cfg.library.target_seat_num, "error": "no accounts"},
+        )
+
     client = sched._client_for(acc)
     if not client.cookies():
         try:
             await client.login(acc.phone, acc.password)
-        except Exception:
-            return JSONResponse({"seats": [], "error": "login failed"})
-    seats = await client.get_seat_status(room_id)
-    return JSONResponse({"seats": seats})
+        except Exception as e:
+            return JSONResponse(
+                {"seats": [], "target": cfg.library.target_seat_num, "error": f"login failed: {e}"},
+            )
+
+    target = int(cfg.library.target_seat_num)
+    probe = [target + d for d in range(-10, 11)]
+
+    seats: list[dict] = []
+    for n in probe:
+        seat_num = f"{n:03d}"
+        try:
+            res = await client.get_active_reservation(room_id, seat_num)
+        except Exception as e:
+            seats.append({"seat_num": seat_num, "occupied": None, "error": str(e)})
+            continue
+        if res:
+            uid = res.get("uid")
+            seats.append({
+                "seat_num": seat_num,
+                "occupied": True,
+                "occupier_uid": uid,
+                "end_ts": res.get("endTime"),
+                "is_target": (n == target),
+            })
+        else:
+            seats.append({
+                "seat_num": seat_num,
+                "occupied": False,
+                "is_target": (n == target),
+            })
+    return JSONResponse({
+        "target": cfg.library.target_seat_num,
+        "room_id": room_id,
+        "seats": seats,
+    })
 
 
 # =========================================================================
