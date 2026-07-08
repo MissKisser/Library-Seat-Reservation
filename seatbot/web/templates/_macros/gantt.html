@@ -1,0 +1,49 @@
+{# Macro: gantt. Coverage grid: one row per account, one column per time cell, plus a merged coverage row. #}
+{% macro gantt(accounts, cells, gaps=[], overlaps=[]) %}
+{% import "_macros/popover.html" as pop %}
+<div class="gantt-wrap">
+  <table class="gantt">
+    <thead>
+      <tr>
+        <th class="row-label">账号 \ 时段</th>
+        {% for c in cells %}<th>{{ c.start.strftime('%H:%M') }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for acc in accounts %}
+      <tr>
+        <th class="row-label">{{ acc.id }}</th>
+        {% for c in cells %}
+          {% set hit_list = (c.accounts_info | selectattr('id', 'equalto', acc.id) | list) %}
+          {% set hit = (hit_list[0] if hit_list else None) %}
+          {% set _status = (hit.status if hit is not none else 'empty') %}
+          {% set _actionable = (hit is not none and hit.status in ('active', 'submitting', 'failed')) %}
+          <td class="cell cell-{{ _status }}{% if _actionable %} cell-actionable{% endif %}"
+              title="{{ acc.id }} · {{ c.start.strftime('%H:%M') }}-{{ c.end.strftime('%H:%M') }}{% if hit is not none %} · {{ hit.status }}{% endif %}">
+            {% if hit is not none and hit.status in ('active', 'submitting', 'leaving', 'failed') %}
+              {{ pop.cell_popover(task_id=hit.task_id, status=hit.status, account_id=acc.id, day=hit.day, start_time=c.start.isoformat(timespec='minutes'), end_time=c.end.isoformat(timespec='minutes')) }}
+            {% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+      <tr class="coverage-row">
+        <th class="row-label">合并</th>
+        {% for c in cells %}
+          <td class="cell {% if c.accounts_info %}cell-coverage{% else %}cell-gap{% endif %}">
+            {% if c.accounts_info | length >= 2 %}⚡{% elif c.accounts_info %}✓{% else %}✗{% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+    </tbody>
+  </table>
+</div>
+<div class="gantt-legend">
+  <span><span class="cell cell-active"></span>已预约</span>
+  <span><span class="cell cell-submitting"></span>提交中</span>
+  <span><span class="cell cell-leaving"></span>签退中</span>
+  <span><span class="cell cell-pending"></span>待执行</span>
+  <span><span class="cell cell-failed"></span>失守</span>
+  <span><span class="cell cell-complete"></span>已完成</span>
+</div>
+{% endmacro %}

@@ -1,0 +1,29 @@
+{# Macro: popover. Action popover rendered inside Gantt cells. Provides sign-in / sign-out / quick-reserve / cancel. #}
+{% macro cell_popover(task_id=None, status='', account_id='', day='', start_time='', end_time='') %}
+<details class="cell-popover">
+  <summary aria-label="操作"></summary>
+  <div class="popover-body">
+    {% if status == 'active' %}
+      <form method="post" action="/tasks/{{ task_id }}/sign">
+        <button class="btn" type="submit">立即签到</button>
+      </form>
+      <form method="post" action="/tasks/{{ task_id }}/leave">
+        <button class="btn" type="submit">立即签退</button>
+      </form>
+    {% endif %}
+    {% if status == 'failed' %}
+      <form method="post" action="/tasks/quick-reserve">
+        <input type="hidden" name="account_id" value="{{ account_id }}">
+        <input type="hidden" name="start" value="{{ start_time }}">
+        <input type="hidden" name="end" value="{{ end_time }}">
+        <button class="btn btn-primary" type="submit">续约该段</button>
+      </form>
+    {% endif %}
+    {% if task_id %}
+      <form method="post" action="/tasks/{{ task_id }}/cancel" onsubmit="return confirm('确认取消?')">
+        <button class="btn btn-danger" type="submit">取消</button>
+      </form>
+    {% endif %}
+  </div>
+</details>
+{% endmacro %}

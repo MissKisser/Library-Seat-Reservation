@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import Coverage, compute_coverage
 from seatbot.models import Account, Task, TaskStatus
+from seatbot.scheduler import NextRelay
 from seatbot.utils.timeutil import now_cst, parse_hhmm, today_cst
 
 
@@ -48,15 +49,27 @@ async def dashboard(request: Request):
         for aid in c.accounts:
             tasks = await store.list_tasks(account_id=aid, day=today)
             status = "pending"
+            task_id = None
+            t_start = None
+            t_end = None
             for t in tasks:
                 if t.start_time == c.start and t.end_time == c.end and t.status in (
                     TaskStatus.ACTIVE, TaskStatus.SUBMITTING, TaskStatus.LEAVING,
                     TaskStatus.FAILED,
                 ):
                     status = t.status.value
+                    task_id = t.id
+                    t_start = t.start_time
+                    t_end = t.end_time
                     break
-            accs_info.append({"id": aid, "status": status})
-        annotated.append({"start": c.start, "end": c.end, "accounts": accs_info})
+            info: dict = {"id": aid, "status": status}
+            if status in ("active", "submitting", "failed") and task_id is not None:
+                info["task_id"] = task_id
+                info["day"] = today.isoformat()
+                info["start_time"] = t_start.isoformat(timespec="minutes") if t_start else ""
+                info["end_time"] = t_end.isoformat(timespec="minutes") if t_end else ""
+            accs_info.append(info)
+        annotated.append({"start": c.start, "end": c.end, "accounts_info": accs_info})
     return _templates(request).TemplateResponse(
         request, "dashboard.html",
         {
@@ -68,6 +81,7 @@ async def dashboard(request: Request):
             "today": today.isoformat(),
             "accounts": accounts,
             "now_hhmm": now_cst().strftime("%H:%M"),
+            "active_page": "dashboard",
         },
     )
 
@@ -80,7 +94,7 @@ async def seat_config_view(request: Request):
     cfg = request.app.state.cfg
     return _templates(request).TemplateResponse(
         request, "seat_config.html",
-        {"request": request, "cfg": cfg, "error": None},
+        {"request": request, "cfg": cfg, "error": None, "active_page": "seat-config"},
     )
 
 
@@ -98,7 +112,7 @@ async def seat_config_save(
     except Exception as e:
         return _templates(request).TemplateResponse(
             request, "seat_config.html",
-            {"request": request, "cfg": cfg, "error": str(e)},
+            {"request": request, "cfg": cfg, "error": str(e), "active_page": "seat-config"},
             status_code=400,
         )
     return RedirectResponse("/seat-config", status_code=303)
@@ -118,14 +132,44 @@ async def coverage_view(request: Request, day: str | None = None):
         open_time=cfg.library.open_time,
         close_time=cfg.library.close_time,
     )
+    # annotate cells with task_id/times for the gantt macro / popover
+    annotated_cells = []
+    for c in cov.cells:
+        accs_info: list[dict] = []
+        for aid in c.accounts:
+            tasks = await store.list_tasks(account_id=aid, day=d)
+            status = "pending"
+            task_id = None
+            t_start = None
+            t_end = None
+            for t in tasks:
+                if t.start_time == c.start and t.end_time == c.end and t.status in (
+                    TaskStatus.ACTIVE, TaskStatus.SUBMITTING, TaskStatus.LEAVING,
+                    TaskStatus.FAILED,
+                ):
+                    status = t.status.value
+                    task_id = t.id
+                    t_start = t.start_time
+                    t_end = t.end_time
+                    break
+            info: dict = {"id": aid, "status": status}
+            if status in ("active", "submitting", "failed") and task_id is not None:
+                info["task_id"] = task_id
+                info["day"] = d.isoformat()
+                info["start_time"] = t_start.isoformat(timespec="minutes") if t_start else ""
+                info["end_time"] = t_end.isoformat(timespec="minutes") if t_end else ""
+            accs_info.append(info)
+        annotated_cells.append({"start": c.start, "end": c.end, "accounts_info": accs_info})
     return _templates(request).TemplateResponse(
         request, "coverage.html",
         {
             "request": request,
             "cfg": cfg,
             "cov": cov,
+            "cells": annotated_cells,
             "day": d.isoformat(),
             "accounts": accounts,
+            "active_page": "coverage",
         },
     )
 
@@ -138,7 +182,8 @@ async def accounts_list(request: Request):
     store = request.app.state.store
     accs = await store.list_accounts()
     return _templates(request).TemplateResponse(
-        request, "accounts_list.html", {"request": request, "accounts": accs}
+        request, "accounts_list.html",
+        {"request": request, "accounts": accs, "active_page": "accounts"},
     )
 
 
@@ -146,7 +191,7 @@ async def accounts_list(request: Request):
 async def accounts_new(request: Request):
     return _templates(request).TemplateResponse(
         request, "accounts_form.html",
-        {"request": request, "account": None, "error": None},
+        {"request": request, "account": None, "error": None, "active_page": "accounts"},
     )
 
 
@@ -167,7 +212,8 @@ async def accounts_create(
         except json.JSONDecodeError as e:
             return _templates(request).TemplateResponse(
                 request, "accounts_form.html",
-                {"request": request, "account": None, "error": f"slots JSON 错误: {e}"},
+                {"request": request, "account": None, "error": f"slots JSON 错误: {e}",
+                 "active_page": "accounts"},
                 status_code=400,
             )
     acc = Account(id=id, phone=phone, password=password, slots=slots_value)
@@ -176,7 +222,7 @@ async def accounts_create(
     except Exception as e:
         return _templates(request).TemplateResponse(
             request, "accounts_form.html",
-            {"request": request, "account": acc, "error": str(e)},
+            {"request": request, "account": acc, "error": str(e), "active_page": "accounts"},
             status_code=400,
         )
     return RedirectResponse("/accounts", status_code=303)
@@ -190,7 +236,7 @@ async def accounts_edit(request: Request, acc_id: str):
         raise HTTPException(404)
     return _templates(request).TemplateResponse(
         request, "accounts_form.html",
-        {"request": request, "account": acc, "error": None},
+        {"request": request, "account": acc, "error": None, "active_page": "accounts"},
     )
 
 
@@ -213,7 +259,8 @@ async def accounts_update(
         except json.JSONDecodeError as e:
             return _templates(request).TemplateResponse(
                 request, "accounts_form.html",
-                {"request": request, "account": existing, "error": f"slots JSON 错误: {e}"},
+                {"request": request, "account": existing, "error": f"slots JSON 错误: {e}",
+                 "active_page": "accounts"},
                 status_code=400,
             )
     existing.phone = phone
@@ -260,7 +307,8 @@ async def tasks_list(request: Request, account_id: str | None = None, day: str |
     return _templates(request).TemplateResponse(
         request, "tasks_list.html",
         {"request": request, "tasks": tasks, "accounts": accounts,
-         "filter_account": account_id, "filter_day": d.isoformat()},
+         "filter_account": account_id, "filter_day": d.isoformat(),
+         "active_page": "tasks"},
     )
 
 
@@ -356,7 +404,7 @@ async def task_cancel(request: Request, task_id: int):
 async def seats_view(request: Request):
     cfg = request.app.state.cfg
     return _templates(request).TemplateResponse(
-        request, "seats.html", {"request": request, "cfg": cfg}
+        request, "seats.html", {"request": request, "cfg": cfg, "active_page": "seats"}
     )
 
 
@@ -526,6 +574,34 @@ async def api_coverage(request: Request, day: str | None = None):
 
 
 # =========================================================================
+# Status (topbar clock data — Dashboard topbar polls this every 30s)
+# =========================================================================
+@router.get("/api/status")
+async def api_status(request: Request):
+    """Topbar clock data — for the redesigned Dashboard."""
+    sched = request.app.state.sched
+    store = request.app.state.store
+    now = now_cst()
+    nxt: NextRelay | None = await sched.peek_next_relay()
+    last_logs = await store.list_logs(limit=1)
+    last = last_logs[0] if last_logs else None
+    return JSONResponse({
+        "now": now.isoformat(timespec="seconds"),
+        "next_relay_at": (nxt.at.isoformat(timespec="minutes") if nxt else None),
+        "next_relay_in_min": (nxt.delta_minutes if nxt else None),
+        "next_relay_account_id": (nxt.account_id if nxt else None),
+        "next_relay_task_id": (nxt.task_id if nxt else None),
+        "next_relay_status": (nxt.status if nxt else None),
+        "last_log": ({
+            "ts": last.ts,
+            "level": last.level,
+            "account_id": last.account_id,
+            "message": last.message,
+        } if last else None),
+    })
+
+
+# =========================================================================
 # Logs
 # =========================================================================
 @router.get("/logs", response_class=HTMLResponse)
@@ -540,5 +616,6 @@ async def logs_view(
     return _templates(request).TemplateResponse(
         request, "logs.html",
         {"request": request, "logs": rows, "accounts": accounts,
-         "filter_account": account_id, "filter_level": level},
+         "filter_account": account_id, "filter_level": level,
+         "active_page": "logs"},
     )

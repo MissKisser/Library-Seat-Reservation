@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import random
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -14,6 +15,17 @@ from seatbot.models import Account, Task, TaskStatus
 from seatbot.planner import ReservationPlanner
 from seatbot.store import StateStore
 from seatbot.utils.timeutil import at_cst, now_cst, today_cst
+
+
+@dataclass
+class NextRelay:
+    at: datetime           # when the next leave+sign chain will fire (lead = end_time - 5min)
+    delta_minutes: int     # minutes from now
+    account_id: str
+    task_id: int
+    start_time: time
+    end_time: time
+    status: str
 
 
 class Scheduler:
@@ -107,6 +119,57 @@ class Scheduler:
             if timedelta(0) <= (t_start - now) <= timedelta(minutes=20):
                 await self._run_submit_sign(acc_cfg, t)
                 return
+
+    async def peek_next_relay(self) -> NextRelay | None:
+        """Find the next pending/ready/failed task that the scheduler will fire.
+
+        Strategy:
+          - Across all accounts and today, find the earliest task where
+            (start_time - now) <= 30min OR (end_time - RELAY_LEAD_SECONDS - now) <= 30min
+            and the task is in (PENDING, READY, FAILED) state.
+          - But more accurately: the *next* thing the scheduler will do is either
+            (a) a pre-sign submit for a task whose start is within 20min, OR
+            (b) a relay for an active task whose end - 5min is in the future.
+
+        Simpler implementation: pick the smallest `at` over all tasks where
+        `at > now` and the task is not complete.
+          `at = max(now + (start - now) clamped to [0, 20min] for pending,
+                    end - 5min for active/submitting/leaving)`.
+        """
+        now = now_cst()
+        today = today_cst()
+        best: tuple[datetime, NextRelay] | None = None
+        for acc in await self.store.list_accounts():
+            for t in await self.store.list_tasks(account_id=acc.id, day=today):
+                t_start = at_cst(t.day, t.start_time)
+                t_end = at_cst(t.day, t.end_time)
+                if t.status in (TaskStatus.ACTIVE, TaskStatus.SUBMITTING, TaskStatus.LEAVING):
+                    fire_at = t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS)
+                elif t.status in (TaskStatus.PENDING, TaskStatus.READY, TaskStatus.FAILED):
+                    # Will fire within the pre-sign window (start - 20min .. start)
+                    # Treat the "fire moment" as start_time (immediate submit when window opens)
+                    fire_at = t_start
+                else:
+                    continue
+                if fire_at <= now:
+                    # already-elapsed but not yet executed (likely scheduler just started);
+                    # treat as immediate (1 min away)
+                    fire_at = now + timedelta(minutes=1)
+                if best is None or fire_at < best[0]:
+                    delta = max(0, int((fire_at - now).total_seconds() // 60))
+                    best = (
+                        fire_at,
+                        NextRelay(
+                            at=fire_at,
+                            delta_minutes=delta,
+                            account_id=acc.id,
+                            task_id=t.id or 0,
+                            start_time=t.start_time,
+                            end_time=t.end_time,
+                            status=t.status.value,
+                        ),
+                    )
+        return best[1] if best else None
 
     async def _maybe_relay(self, acc: Account, t: Task, now: datetime) -> None:
         t_end = at_cst(t.day, t.end_time)

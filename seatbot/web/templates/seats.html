@@ -1,26 +1,60 @@
 {% extends "base.html" %}
 {% block title %}座位图 · SeatBot{% endblock %}
+{% block head_extra %}
+<style>
+  .seats-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 6px;
+    padding: var(--sp-4);
+    min-height: 200px;
+  }
+  .seats-grid .seat {
+    padding: 10px 6px;
+    text-align: center;
+    border-radius: var(--radius-sm);
+    font-size: var(--fs-sm);
+    background: var(--bg-muted);
+    color: var(--text-primary);
+    position: relative;
+  }
+  .seats-grid .seat .num { display: block; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .seats-grid .seat .occ {
+    position: absolute; top: 2px; right: 4px;
+    color: var(--text-primary); font-size: 10px;
+  }
+  .seats-grid .seat-free { background: var(--bg-muted); }
+  .seats-grid .seat-occupied { background: var(--danger); color: var(--text-primary); }
+  .seats-grid .seat-target {
+    background: var(--accent); color: var(--text-inverse);
+    outline: 3px solid var(--warn); font-weight: 700;
+  }
+  .seats-grid .seat-error { background: var(--border-strong); color: var(--text-primary); }
+  .legend-cell {
+    display: inline-block; width: 14px; height: 14px; vertical-align: middle;
+    border-radius: 3px; margin-right: 4px;
+  }
+  .legend-target { background: var(--accent); outline: 2px solid var(--warn); }
+  .legend-occupied { background: var(--danger); }
+  .legend-free { background: var(--bg-muted); }
+  .legend-error { background: var(--border-strong); }
+</style>
+{% endblock %}
 {% block content %}
-<h1>座位图</h1>
-<p>
-  图书馆: <b>{{ cfg.library.room_name }}</b> (id={{ cfg.library.room_id }}) ·
-  目标座位: <b>{{ cfg.library.target_seat_num }}</b> ·
-  每 30 秒轮询。
-</p>
+<h1 class="page-title">座位图</h1>
+<p class="page-sub">图书馆 <b>{{ cfg.library.room_name }}</b> (id={{ cfg.library.room_id }}) · 目标座位 <b>{{ cfg.library.target_seat_num }}</b> · 每 30 秒轮询。</p>
 
-<div id="seats-grid" class="card seats-grid"
-     style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px;
-            padding: 16px; min-height: 200px;">
-  加载中…
+<div class="card">
+  <div id="seats-grid" class="seats-grid">加载中…</div>
+  <div id="seats-info" style="margin-top: var(--sp-3); color: var(--text-secondary); font-size: var(--fs-sm);">
+    <span class="legend-cell legend-target"></span> 目标座位
+    <span class="legend-cell legend-occupied" style="margin-left: var(--sp-3);"></span> 已被预约
+    <span class="legend-cell legend-free" style="margin-left: var(--sp-3);"></span> 空闲
+    <span class="legend-cell legend-error" style="margin-left: var(--sp-3);"></span> 查询失败
+  </div>
 </div>
-
-<div id="seats-info" style="margin-top: 12px; color: #6b7280; font-size: 13px;">
-  <span class="legend-cell legend-target"></span> 目标座位
-  <span class="legend-cell legend-occupied" style="margin-left: 12px;"></span> 已被预约
-  <span class="legend-cell legend-free" style="margin-left: 12px;"></span> 空闲
-  <span class="legend-cell legend-error" style="margin-left: 12px;"></span> 查询失败
-</div>
-
+{% endblock %}
+{% block scripts %}
 <script>
   const TARGET = {{ cfg.library.target_seat_num }};
 
@@ -29,7 +63,7 @@
     const j = await r.json();
     const grid = document.getElementById("seats-grid");
     if (!j.seats || j.seats.length === 0) {
-      grid.innerHTML = "<i style='color:#6b7280;'>暂无数据 / 未登录 / 无账号</i>";
+      grid.innerHTML = "<i style='color: var(--text-secondary);'>暂无数据 / 未登录 / 无账号</i>";
       return;
     }
     grid.innerHTML = "";
@@ -58,32 +92,4 @@
   load();
   setInterval(load, 30000);
 </script>
-
-<style>
-  .seats-grid .seat {
-    padding: 10px 6px; text-align: center; border-radius: 4px;
-    font-size: 12px; background: #e5e7eb; color: #1f2937;
-    position: relative;
-  }
-  .seats-grid .seat .num { display: block; font-weight: 600; }
-  .seats-grid .seat .occ {
-    position: absolute; top: 2px; right: 4px;
-    color: #fff; font-size: 10px;
-  }
-  .seats-grid .seat-free { background: #d1fae5; }
-  .seats-grid .seat-occupied { background: #fca5a5; color: #7f1d1d; }
-  .seats-grid .seat-target {
-    background: #2563eb; color: #fff; outline: 3px solid #fbbf24;
-    font-weight: 700;
-  }
-  .seats-grid .seat-error { background: #9ca3af; color: #fff; }
-  .legend-cell {
-    display: inline-block; width: 14px; height: 14px; vertical-align: middle;
-    border-radius: 3px; margin-right: 4px;
-  }
-  .legend-target { background: #2563eb; outline: 2px solid #fbbf24; }
-  .legend-occupied { background: #fca5a5; }
-  .legend-free { background: #d1fae5; }
-  .legend-error { background: #9ca3af; }
-</style>
 {% endblock %}
