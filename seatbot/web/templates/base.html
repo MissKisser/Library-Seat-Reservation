@@ -12,11 +12,12 @@
   <div class="app-shell" data-mobile-nav="closed">
     {% from "_macros/sidebar.html" import sidebar %}
     {{ sidebar(active=active_page or 'dashboard',
-                target_seat_num=cfg.library.target_seat_num,
-                accounts_count=accounts|length if accounts is defined else 0) }}
+                target_seat_num=(cfg.library.target_seat_num if cfg is defined and cfg.library is defined else '--'),
+                accounts_count=(accounts|length if accounts is defined else 0)) }}
     <div class="app-main">
       {% from "_macros/topbar.html" import topbar %}
-      {{ topbar(title=(self.title() if self.title is defined else 'SeatBot')) }}
+      {{ topbar(title=(self.title() if self.title is defined else 'SeatBot'),
+                subtitle=(self.subtitle() if self.subtitle is defined and self.subtitle()|trim else '')) }}
       <main class="app-content">
         {% block content %}{% endblock %}
       </main>

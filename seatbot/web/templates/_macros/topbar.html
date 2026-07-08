@@ -2,8 +2,8 @@
 {% macro topbar(title='', subtitle='') %}
 <header class="topbar">
   <div class="topbar-left">
-    <h1 class="title">{{ title }}</h1>
-    {% if subtitle %}<small class="subtitle">{{ subtitle }}</small>{% endif %}
+    {# Title is rendered by the page content (h1.page-title); topbar shows subtitle only #}
+    {% if subtitle and subtitle|trim %}<small class="subtitle">{{ subtitle }}</small>{% endif %}
   </div>
   <div class="topbar-right">
     <div class="topbar-clock" data-now="" data-next="">
