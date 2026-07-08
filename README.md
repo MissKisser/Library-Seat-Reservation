@@ -1,6 +1,6 @@
 # SeatBot — 超星图书馆座位自动预约
 
-详见 [设计文档](../specs/2026-07-08-library-seat-reservation-design.md) 与 [实施计划](../plans/2026-07-08-library-seat-reservation.md)。
+详见 [设计文档](docs/superpowers/specs/2026-07-08-library-seat-reservation-design.md) 与 [实施计划](docs/superpowers/plans/2026-07-08-library-seat-reservation.md)。
 
 ## 快速开始
 
