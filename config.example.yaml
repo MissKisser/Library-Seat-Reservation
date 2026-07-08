@@ -1,0 +1,23 @@
+library:
+  room_id: 11692
+  room_name: "2号楼图书馆-3F-3楼备考自习室"
+  time_unit_minutes: 30
+  open_time: "08:00"
+  close_time: "22:00"
+  max_reserve_hours: 2.0
+
+accounts:
+  - id: zhangsan
+    phone: "13800000000"
+    password: "REPLACE_ME"
+    seat_num: "084"
+    slots: full     # 或 ["08:00-12:00", "14:00-22:00"]
+
+runtime:
+  stagger_seconds: [0, 3]
+  relogin_on_401: true
+  random_ua: true
+  log_dir: ./logs
+  db_path: ./seatbot.db
+  web_host: 0.0.0.0
+  web_port: 8080
