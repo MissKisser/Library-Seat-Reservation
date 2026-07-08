@@ -54,7 +54,84 @@ class ChaoxingClient:
 
     # ---------- login ----------
     async def login(self, phone: str, password: str) -> None:
-        """Login via fanyalogin; populates cookies."""
+        """Log in to passport2.chaoxing.com and capture auth cookies.
+
+        v1.1: the fanyalogin endpoint now requires AES-encrypted `uname` /
+        `password` fields (key `u2oh6Vu^HWe4_AES`) + several extra fields,
+        which are produced by the page's JS. Reproducing that in pure httpx
+        is fragile, so we use a **headless Chromium** via Playwright to fill
+        the real login form and then harvest the cookies back into httpx.
+
+        Falls back to the legacy fanyalogin POST if Playwright is not
+        installed (network may reject it; documented for reference only).
+        """
+        try:
+            cookies = await self._login_via_browser(phone, password)
+        except ImportError:
+            cookies = await self._login_via_httpx(phone, password)
+
+        # Inject cookies into httpx's cookie jar.
+        from httpx import Cookies
+        if not isinstance(self._cookie_jar, Cookies):
+            self._cookie_jar = Cookies()
+            self._client.cookies = self._cookie_jar
+        for name, value in cookies.items():
+            self._cookie_jar.set(
+                name, value,
+                domain=".chaoxing.com", path="/",
+            )
+
+        if not any(c.name in ("_uid", "vc3") for c in self._cookie_jar.jar):
+            raise ChaoxingError("login succeeded but no auth cookies set")
+
+    async def _login_via_browser(self, phone: str, password: str) -> dict[str, str]:
+        from playwright.async_api import async_playwright
+
+        captured: dict[str, str] = {}
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            ctx = await browser.new_context(
+                viewport={"width": 1024, "height": 768},
+                user_agent=self._ua,
+            )
+            page = await ctx.new_page()
+            await page.goto(
+                f"{self.PASSPORT_BASE}/login?newversion=true"
+                f"&refer={self.OFFICE_BASE}/"
+            )
+            # The login page uses phone + password inputs.
+            await page.locator("input[placeholder*='手机号']").fill(phone)
+            await page.locator("input[placeholder*='密码']").fill(password)
+            # wait briefly for any pre-validation
+            await page.wait_for_timeout(300)
+            await page.get_by_role("button", name="登录").click()
+            # Poll for auth cookies (login success is signalled by `_uid`/`vc3`
+            # being set on .chaoxing.com, regardless of which redirect target
+            # the server sends us to).
+            deadline_ms = 15000
+            interval_ms = 250
+            waited = 0
+            while waited < deadline_ms:
+                cookies = await ctx.cookies()
+                if any(c["name"] in ("_uid", "vc3") for c in cookies):
+                    break
+                await page.wait_for_timeout(interval_ms)
+                waited += interval_ms
+            else:
+                err_el = await page.query_selector(".error-msg, .alert-error, [class*=error]")
+                err_text = (await err_el.inner_text()) if err_el else "(no auth cookie)"
+                await browser.close()
+                raise ChaoxingError(f"browser login failed: {err_text!r}")
+            for c in await ctx.cookies():
+                captured[c["name"]] = c["value"]
+            await browser.close()
+        return captured
+
+    async def _login_via_httpx(self, phone: str, password: str) -> dict[str, str]:
+        """Legacy fanyalogin fallback. The endpoint now requires AES-encrypted
+        fields which we don't have, so this will usually fail. Kept only for
+        environments without Playwright (e.g. minimal CI).
+        """
         url = f"{self.PASSPORT_BASE}/fanyalogin"
         data = {
             "fid": -1,
@@ -67,17 +144,13 @@ class ChaoxingClient:
             "password": password,
             "verCode": "",
         }
-        # fanyalogin returns JSON inside an HTML document sometimes; safest to grab text
         r = await self._client.post(
-            url,
-            data=data,
+            url, data=data,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         r.raise_for_status()
         text = r.text
-        # The response looks like: {status:true, msg1:"", url1:"...", ...}
         try:
-            # extract JSON object from response
             start = text.find("{")
             end = text.rfind("}") + 1
             if start < 0 or end <= start:
@@ -85,17 +158,14 @@ class ChaoxingClient:
             payload = json.loads(text[start:end])
         except json.JSONDecodeError as e:
             raise ChaoxingError(f"fanyalogin parse error: {text[:200]}") from e
-
         if not payload.get("status"):
-            raise ChaoxingError(f"login failed: {payload.get('msg2') or payload.get('msg1') or 'unknown'}")
-
-        # fanyalogin returns redirect URL — follow it to set cookies
+            raise ChaoxingError(
+                f"login failed: {payload.get('msg2') or payload.get('msg1') or 'unknown'}"
+            )
         url1 = payload.get("url1")
         if url1:
             await self._client.get(url1, headers={"Referer": f"{self.PASSPORT_BASE}/"})
-
-        if not any(c.name in ("_uid", "vc3") for c in self._cookie_jar.jar):
-            raise ChaoxingError("login succeeded but no auth cookies set")
+        return dict(self._client.cookies)
 
     # ---------- room info ----------
     async def get_room_info(self, room_id: int) -> dict[str, Any]:

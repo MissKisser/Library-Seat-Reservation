@@ -233,9 +233,7 @@ async def accounts_delete(request: Request, acc_id: str):
 async def accounts_test_login(request: Request, acc_id: str):
     """Try to log in with this account's credentials; return JSON result."""
     store = request.app.state.store
-    cfg = request.app.state.cfg
-    acc_cfg = next((a for a in cfg.accounts if a.id == acc_id), None)
-    db_acc = acc_cfg or await store.get_account(acc_id)
+    db_acc = await store.get_account(acc_id)
     if not db_acc:
         return JSONResponse({"ok": False, "error": "account not found"}, status_code=404)
     client = ChaoxingClient()
@@ -274,7 +272,7 @@ async def quick_reserve(
 ):
     sched = request.app.state.sched
     store = request.app.state.store
-    acc = next((a for a in request.app.state.cfg.accounts if a.id == account_id), None)
+    acc = await store.get_account(account_id)
     if not acc:
         raise HTTPException(404, f"account {account_id} not found")
     try:
@@ -301,7 +299,7 @@ async def task_sign(request: Request, task_id: int):
     t = await store.get_task(task_id)
     if not t or not t.reserve_id:
         raise HTTPException(400, "no active reservation")
-    acc = next((a for a in request.app.state.cfg.accounts if a.id == t.account_id), None)
+    acc = await store.get_account(t.account_id)
     if not acc:
         raise HTTPException(404)
     client = sched._client_for(acc)
@@ -319,7 +317,7 @@ async def task_leave(request: Request, task_id: int):
     t = await store.get_task(task_id)
     if not t or not t.reserve_id:
         raise HTTPException(400)
-    acc = next((a for a in request.app.state.cfg.accounts if a.id == t.account_id), None)
+    acc = await store.get_account(t.account_id)
     if not acc:
         raise HTTPException(404)
     client = sched._client_for(acc)
@@ -338,7 +336,7 @@ async def task_cancel(request: Request, task_id: int):
     t = await store.get_task(task_id)
     if not t or not t.reserve_id:
         raise HTTPException(400)
-    acc = next((a for a in request.app.state.cfg.accounts if a.id == t.account_id), None)
+    acc = await store.get_account(t.account_id)
     if not acc:
         raise HTTPException(404)
     client = sched._client_for(acc)
@@ -380,10 +378,12 @@ async def api_seat_availability(
     """
     cfg = request.app.state.cfg
     sched = request.app.state.sched
+    store = request.app.state.store
     seat = cfg.library.target_seat_num
-    if not cfg.accounts:
+    accounts = await store.list_accounts()
+    if not accounts:
         return JSONResponse({"available": True, "seat": seat, "note": "no accounts"})
-    acc = cfg.accounts[0]
+    acc = accounts[0]
     client = sched._client_for(acc)
     if not client.cookies():
         try:
@@ -412,8 +412,9 @@ async def api_seat_availability(
 @router.get("/api/seats/{room_id}")
 async def api_seats(room_id: int, request: Request):
     sched = request.app.state.sched
-    cfg = request.app.state.cfg
-    acc = cfg.accounts[0] if cfg.accounts else None
+    store = request.app.state.store
+    accounts = await store.list_accounts()
+    acc = accounts[0] if accounts else None
     if not acc:
         return JSONResponse({"seats": []})
     client = sched._client_for(acc)

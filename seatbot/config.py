@@ -59,7 +59,7 @@ class RuntimeConfig(BaseModel):
 
 class Config(BaseModel):
     library: LibraryConfig
-    accounts: list[AccountConfig]
+    accounts: list[AccountConfig] = []  # optional; web panel is the primary source
     runtime: RuntimeConfig
 
     @model_validator(mode="after")
@@ -67,8 +67,9 @@ class Config(BaseModel):
         ids = [a.id for a in self.accounts]
         if len(ids) != len(set(ids)):
             raise ValueError("account ids must be unique")
-        if not self.accounts:
-            raise ValueError("at least one account is required")
+        # NOTE: an empty `accounts` list is allowed. The Web panel is the
+        # primary way to manage accounts (database is the source of truth
+        # at runtime). Config is only a seed file.
         return self
 
 
