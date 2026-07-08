@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}座位图 · SeatBot{% endblock %}
+{% block content %}
+<h1>座位图</h1>
+<p>每 30 秒轮询 {{ cfg.library.room_name }} 实时状态。</p>
+<div id="seats-grid" class="card" style="display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px;">
+  加载中…
+</div>
+<script>
+  async function load() {
+    const r = await fetch("/api/seats/{{ cfg.library.room_id }}");
+    const j = await r.json();
+    const grid = document.getElementById("seats-grid");
+    if (!j.seats || j.seats.length === 0) { grid.innerText = "暂无数据"; return; }
+    grid.innerHTML = "";
+    for (const s of j.seats) {
+      const cell = document.createElement("div");
+      cell.style.cssText = "padding: 6px; text-align: center; border-radius: 4px; font-size: 11px; background: #e5e7eb;";
+      cell.innerText = s.seat_num;
+      grid.appendChild(cell);
+    }
+  }
+  load();
+  setInterval(load, 30000);
+</script>
+{% endblock %}
