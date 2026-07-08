@@ -10,6 +10,8 @@ logs/
 .playwright-mcp/
 *.png
 .pytest_cache/
+.tmp_pytest/
+.gitignore.tmp
 .coverage
 htmlcov/
 *.egg-info/
@@ -17,3 +19,9 @@ build/
 dist/
 .idea/
 .vscode/
+
+# Visual regression artefacts
+docs/screenshots/
+
+# Superpowers brainstorming artefacts
+.superpowers/

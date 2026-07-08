@@ -1,24 +1,61 @@
 {% extends "base.html" %}
 {% block title %}日志 · SeatBot{% endblock %}
+{% from "_macros/badge.html" import badge %}
 {% block content %}
-<h1>日志</h1>
-<form method="get" class="card">
-  账号: <select name="account_id">
-    <option value="">全部</option>
-    {% for a in accounts %}
-      <option value="{{ a.id }}" {% if filter_account == a.id %}selected{% endif %}>{{ a.id }}</option>
-    {% endfor %}
-  </select>
-  级别:
-  <select name="level">
-    <option value="">全部</option>
-    {% for l in ['INFO','WARN','ERROR'] %}
-      <option value="{{ l }}" {% if filter_level == l %}selected{% endif %}>{{ l }}</option>
-    {% endfor %}
-  </select>
-  <button class="btn" type="submit">过滤</button>
+<h1 class="page-title">日志</h1>
+<p class="page-sub">调度器与抢座流程的运行记录（最近 300 条）。</p>
+
+<form method="get" class="card" style="display: flex; gap: var(--sp-3); align-items: end; flex-wrap: wrap;">
+  <div class="form-field" style="margin: 0;">
+    <label for="account_id">账号</label>
+    <select id="account_id" name="account_id">
+      <option value="">全部</option>
+      {% for a in accounts %}
+        <option value="{{ a.id }}" {% if filter_account == a.id %}selected{% endif %}>{{ a.id }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-field" style="margin: 0;">
+    <label for="level">级别</label>
+    <select id="level" name="level">
+      <option value="">全部</option>
+      {% for l in ['INFO','WARN','ERROR'] %}
+        <option value="{{ l }}" {% if filter_level == l %}selected{% endif %}>{{ l }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button class="btn btn-primary" type="submit">过滤</button>
+  <a class="btn" href="/logs">重置</a>
 </form>
-<pre class="card" style="max-height: 70vh; overflow: auto; font-size: 12px;">
-{% for l in logs %}{{ l.ts }} [{{ l.level }}] {{ l.account_id or '-' }} {{ l.message }}
-{% endfor %}</pre>
+
+{% if not logs %}
+  <div class="empty-state">
+    <div class="empty-illustration"></div>
+    <div class="empty-title">暂无日志</div>
+    <div class="empty-hint">运行调度器后会产出 INFO / WARN / ERROR 日志</div>
+  </div>
+{% else %}
+  <div class="card" style="padding: 0;">
+    <table class="table is-card-list">
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>级别</th>
+          <th>账号</th>
+          <th>消息</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in logs %}
+        <tr>
+          <td data-label="时间"><code>{{ l.ts }}</code></td>
+          <td data-label="级别">{{ badge(status=l.level.lower() if l.level in ('INFO','WARN','ERROR') else 'pending') }} <span style="color: var(--text-muted); font-size: var(--fs-xs);">{{ l.level }}</span></td>
+          <td data-label="账号">{{ l.account_id or '—' }}</td>
+          <td data-label="消息" style="font-family: var(--font-mono); font-size: var(--fs-sm);">{{ l.message }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
 {% endblock %}

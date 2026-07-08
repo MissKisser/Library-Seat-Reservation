@@ -1,46 +1,79 @@
 {% extends "base.html" %}
 {% block title %}任务 · SeatBot{% endblock %}
+{% from "_macros/badge.html" import badge %}
 {% block content %}
-<h1>任务</h1>
-<form method="get" class="card">
-  账号: <select name="account_id">
-    <option value="">全部</option>
-    {% for a in accounts %}
-      <option value="{{ a.id }}" {% if filter_account == a.id %}selected{% endif %}>{{ a.id }}</option>
-    {% endfor %}
-  </select>
-  日期: <input name="day" value="{{ filter_day }}" pattern="\d{4}-\d{2}-\d{2}">
-  <button class="btn" type="submit">过滤</button>
+<h1 class="page-title">任务</h1>
+<p class="page-sub">调度器按账号 + 时段生成的抢座任务与执行状态。</p>
+
+<form method="get" class="card" style="display: flex; gap: var(--sp-3); align-items: end; flex-wrap: wrap;">
+  <div class="form-field" style="margin: 0;">
+    <label for="account_id">账号</label>
+    <select id="account_id" name="account_id">
+      <option value="">全部</option>
+      {% for a in accounts %}
+        <option value="{{ a.id }}" {% if filter_account == a.id %}selected{% endif %}>{{ a.id }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-field" style="margin: 0;">
+    <label for="day">日期</label>
+    <input id="day" name="day" type="text" value="{{ filter_day }}" pattern="\d{4}-\d{2}-\d{2}" placeholder="YYYY-MM-DD">
+  </div>
+  <button class="btn btn-primary" type="submit">过滤</button>
+  <a class="btn" href="/tasks">重置</a>
 </form>
 
-<table class="card">
-  <thead><tr><th>ID</th><th>账号</th><th>日期</th><th>时段</th><th>状态</th><th>reserve_id</th><th>错误</th><th>操作</th></tr></thead>
-  <tbody>
-    {% for t in tasks %}
-      <tr>
-        <td>{{ t.id }}</td><td>{{ t.account_id }}</td>
-        <td>{{ t.day }}</td><td>{{ t.start_time }}-{{ t.end_time }}</td>
-        <td><span class="badge badge-{{ t.status.value }}">{{ t.status.value }}</span></td>
-        <td>{{ t.reserve_id or '-' }}</td>
-        <td style="color:#b91c1c;">{{ t.last_error or '' }}</td>
-        <td>
-          {% if t.reserve_id and t.status.value == 'active' %}
-            <form method="post" action="/tasks/{{ t.id }}/sign" style="display:inline">
-              <button class="btn" type="submit">签到</button>
-            </form>
-            <form method="post" action="/tasks/{{ t.id }}/leave" style="display:inline">
-              <button class="btn" type="submit">签退</button>
-            </form>
-          {% endif %}
-          {% if t.reserve_id %}
-            <form method="post" action="/tasks/{{ t.id }}/cancel" style="display:inline"
-                  onsubmit="return confirm('取消?')">
-              <button class="btn btn-danger" type="submit">取消</button>
-            </form>
-          {% endif %}
-        </td>
-      </tr>
-    {% endfor %}
-  </tbody>
-</table>
+{% if not tasks %}
+  <div class="empty-state">
+    <div class="empty-illustration"></div>
+    <div class="empty-title">暂无任务</div>
+    <div class="empty-hint">运行 <code>python -m seatbot run</code> 后调度器会自动创建任务</div>
+  </div>
+{% else %}
+  <div class="card" style="padding: 0;">
+    <table class="table is-card-list">
+      <thead>
+        <tr>
+          <th class="num">ID</th>
+          <th>账号</th>
+          <th>日期</th>
+          <th>时段</th>
+          <th>状态</th>
+          <th class="num">reserve_id</th>
+          <th>错误</th>
+          <th class="actions">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tasks %}
+        <tr>
+          <td class="num" data-label="ID">{{ t.id }}</td>
+          <td data-label="账号"><code>{{ t.account_id }}</code></td>
+          <td data-label="日期">{{ t.day }}</td>
+          <td data-label="时段">{{ t.start_time }}–{{ t.end_time }}</td>
+          <td data-label="状态">{{ badge(status=t.status.value) }}</td>
+          <td class="num" data-label="reserve_id">{{ t.reserve_id or '—' }}</td>
+          <td data-label="错误" style="color: var(--danger);">{{ t.last_error or '' }}</td>
+          <td class="actions" data-label="操作">
+            {% if t.reserve_id and t.status.value == 'active' %}
+              <form method="post" action="/tasks/{{ t.id }}/sign" style="display:inline">
+                <button class="btn" type="submit">签到</button>
+              </form>
+              <form method="post" action="/tasks/{{ t.id }}/leave" style="display:inline">
+                <button class="btn" type="submit">签退</button>
+              </form>
+            {% endif %}
+            {% if t.reserve_id %}
+              <form method="post" action="/tasks/{{ t.id }}/cancel" style="display:inline"
+                    onsubmit="return confirm('取消?')">
+                <button class="btn btn-danger" type="submit">取消</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
 {% endblock %}

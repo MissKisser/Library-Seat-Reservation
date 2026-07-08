@@ -1,28 +1,28 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">  {# theme.js will swap data-theme on load #}
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}SeatBot{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/theme.js" defer></script>
+  {% block head_extra %}{% endblock %}
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">📚 SeatBot</div>
-    <nav>
-      <a href="/">覆盖图</a>
-      <a href="/seat-config">目标座位</a>
-      <a href="/accounts">守护账号</a>
-      <a href="/coverage">覆盖报告</a>
-      <a href="/tasks">任务</a>
-      <a href="/seats">座位图</a>
-      <a href="/logs">日志</a>
-    </nav>
-  </header>
-  <main class="container">
-    {% block content %}{% endblock %}
-  </main>
-  <footer class="footer">
-    <small>超星图书馆座位自动化 · 本地/内网使用</small>
-  </footer>
+  <div class="app-shell" data-mobile-nav="closed">
+    {% from "_macros/sidebar.html" import sidebar %}
+    {{ sidebar(active=active_page or 'dashboard',
+                target_seat_num=cfg.library.target_seat_num,
+                accounts_count=accounts|length if accounts is defined else 0) }}
+    <div class="app-main">
+      {% from "_macros/topbar.html" import topbar %}
+      {{ topbar(title=(self.title() if self.title is defined else 'SeatBot')) }}
+      <main class="app-content">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+  <script src="/static/clock.js" defer></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

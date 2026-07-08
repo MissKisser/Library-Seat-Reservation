@@ -1,66 +1,31 @@
 {% extends "base.html" %}
-{% block title %}覆盖图 · SeatBot{% endblock %}
+{% block title %}覆盖图{% endblock %}
+{% from "_macros/stat_card.html" import stat_card %}
+{% from "_macros/banner.html" import banner %}
+{% from "_macros/gantt.html" import gantt %}
 {% block content %}
-<h1>📊 覆盖图 ({{ today }})</h1>
-<p class="alert-info">
-  图书馆: <b>{{ cfg.library.room_name }}</b> (id={{ cfg.library.room_id }}) · 开放
-  {{ cfg.library.open_time }}–{{ cfg.library.close_time }} ·
-  <b>目标座位: {{ cfg.library.target_seat_num }}</b>
-</p>
+<h1 class="page-title">覆盖图</h1>
+<p class="page-sub">{{ cfg.library.room_name }} · 目标座位 {{ cfg.library.target_seat_num }} · 开放 {{ cfg.library.open_time }}–{{ cfg.library.close_time }}</p>
 
-{% if gaps %}
-  <div class="alert-error">
-    <b>⚠ 未覆盖时段:</b>
-    {% for g in gaps %}{{ g[0] }}–{{ g[1] }}{% if not loop.last %}, {% endif %}{% endfor %}
-  </div>
-{% endif %}
-
-<div class="card">
-  <h2>护城河</h2>
-  <p>每行一个守护账号；每格 30 分钟。颜色 = 状态:</p>
-  <table class="gantt">
-    <thead>
-      <tr>
-        <th>账号 \\ 时段</th>
-        {% for c in cells %}<th class="cell-head" title="{{ c.start }}–{{ c.end }}">{{ c.start.strftime('%H:%M') }}</th>{% endfor %}
-      </tr>
-    </thead>
-    <tbody>
-      {% for acc in accounts %}
-        <tr>
-          <th>{{ acc.id }}</th>
-          {% for c in cells %}
-            {% set hit = (c.accounts|selectattr('id', 'equalto', acc.id)|list|first) %}
-            <td class="cell {% if hit %}{% if hit.status == 'active' %}cell-active{% elif hit.status == 'failed' %}cell-failed{% elif hit.status == 'submitting' %}cell-submitting{% elif hit.status == 'leaving' %}cell-leaving{% else %}cell-pending{% endif %}{% else %}cell-empty{% endif %}"
-                title="{{ acc.id }} · {{ c.start }}–{{ c.end }}{% if hit %} · {{ hit.status }}{% endif %}">
-              {% if hit %}●{% endif %}
-            </td>
-          {% endfor %}
-        </tr>
-      {% endfor %}
-      <tr class="coverage-row">
-        <th>覆盖</th>
-        {% for c in cells %}
-          <td class="cell {% if c.accounts %}cell-covered{% else %}cell-gap{% endif %}">
-            {% if c.accounts|length >= 2 %}⚡{% elif c.accounts %}✓{% else %}✗{% endif %}
-          </td>
-        {% endfor %}
-      </tr>
-    </tbody>
-  </table>
-  <p><small>
-    <span class="cell cell-active">●</span> active ·
-    <span class="cell cell-submitting">●</span> submitting ·
-    <span class="cell cell-failed">●</span> failed ·
-    <span class="cell cell-pending">●</span> pending ·
-    <span class="cell cell-covered">✓</span> 覆盖 ·
-    <span class="cell cell-gap">✗</span> 失守 ·
-    <span class="cell cell-covered">⚡</span> 多账号重叠
-  </small></p>
+<div class="stat-grid">
+  {{ stat_card(label="目标座位", value=cfg.library.target_seat_num, hint=cfg.library.room_name) }}
+  {{ stat_card(label="守护账号", value=accounts|length|string + " / " + accounts|length|string, hint="全部 active") }}
+  {% set covered = cells|rejectattr('accounts', 'equalto', []) | list | length %}
+  {% set total = cells|length %}
+  {{ stat_card(label="今日覆盖", value=(covered|string + " / " + total|string), hint=("无失守" if not gaps else (gaps|length|string + " 个失守"))) }}
+  {{ stat_card(label="下次接力", value=now_hhmm, hint="由 clock.js 实时刷新") }}
 </div>
 
+{% if gaps %}
+  {{ banner(level="error", text="未覆盖时段: " + gaps|map('string')|join(', ')) }}
+{% else %}
+  {{ banner(level="ok", text="08:00-22:00 全部覆盖，无失守时段") }}
+{% endif %}
+
+{{ gantt(accounts=accounts, cells=cells, gaps=gaps, overlaps=overlaps) }}
+
 <script>
-  // simple polling refresh every 30s
-  setTimeout(() => location.reload(), 30000);
+  // 30s full-page reload (preserved from prior behavior per spec)
+  setTimeout(function () { location.reload(); }, 30000);
 </script>
 {% endblock %}
