@@ -1032,15 +1032,14 @@ ul, ol {
 }
 
 .gantt td.cell {
-  width: 28px;
-  min-width: 28px;
-  max-width: 28px;
-  height: 24px;
+  width: 32px;
+  min-width: 32px;
+  max-width: 32px;
+  height: 32px;
   padding: 0;
   border-right: 1px solid var(--bg-app);
   border-bottom: 1px solid var(--bg-app);
   position: relative;
-  background: transparent;
 }
 
 .gantt td.cell:hover {
@@ -1056,20 +1055,20 @@ ul, ol {
 .cell-submitting { background: var(--info); }
 .cell-leaving    { background: var(--warn); }
 .cell-pending {
-  background: transparent;
-  border: 1px dashed var(--border-strong);
+  background: rgba(148, 163, 184, 0.25);
   box-sizing: border-box;
 }
 .cell-failed     { background: var(--danger); }
-.cell-complete   { background: rgba(16, 185, 129, .35); }
+.cell-complete   { background: var(--success); opacity: 0.55; }
 .cell-empty      { background: transparent; }
 .cell-gap {
-  background: transparent;
-  outline: 2px solid var(--danger);
-  outline-offset: -2px;
+  background: var(--danger);
+  opacity: 0.55;
+  outline: 1px solid var(--danger);
 }
 
-:root[data-theme="light"] .cell-complete { background: rgba(5, 150, 105, .35); }
+:root[data-theme="light"] .cell-complete { opacity: 0.5; }
+:root[data-theme="light"] .cell-pending { background: rgba(100, 116, 139, 0.18); }
 :root[data-theme="light"] .gantt td.cell { border-right-color: var(--bg-app); }
 
 .gantt tr.coverage-row th {

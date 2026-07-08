@@ -55,7 +55,7 @@ async def dashboard(request: Request):
             for t in tasks:
                 if t.start_time == c.start and t.end_time == c.end and t.status in (
                     TaskStatus.ACTIVE, TaskStatus.SUBMITTING, TaskStatus.LEAVING,
-                    TaskStatus.FAILED,
+                    TaskStatus.FAILED, TaskStatus.COMPLETE,
                 ):
                     status = t.status.value
                     task_id = t.id
@@ -63,7 +63,7 @@ async def dashboard(request: Request):
                     t_end = t.end_time
                     break
             info: dict = {"id": aid, "status": status}
-            if status in ("active", "submitting", "failed") and task_id is not None:
+            if status in ("active", "submitting", "failed", "leaving") and task_id is not None:
                 info["task_id"] = task_id
                 info["day"] = today.isoformat()
                 info["start_time"] = t_start.isoformat(timespec="minutes") if t_start else ""
@@ -179,19 +179,21 @@ async def coverage_view(request: Request, day: str | None = None):
 # =========================================================================
 @router.get("/accounts", response_class=HTMLResponse)
 async def accounts_list(request: Request):
+    cfg = request.app.state.cfg
     store = request.app.state.store
     accs = await store.list_accounts()
     return _templates(request).TemplateResponse(
         request, "accounts_list.html",
-        {"request": request, "accounts": accs, "active_page": "accounts"},
+        {"request": request, "cfg": cfg, "accounts": accs, "active_page": "accounts"},
     )
 
 
 @router.get("/accounts/new", response_class=HTMLResponse)
 async def accounts_new(request: Request):
+    cfg = request.app.state.cfg
     return _templates(request).TemplateResponse(
         request, "accounts_form.html",
-        {"request": request, "account": None, "error": None, "active_page": "accounts"},
+        {"request": request, "cfg": cfg, "account": None, "error": None, "active_page": "accounts"},
     )
 
 
@@ -204,6 +206,7 @@ async def accounts_create(
     slots: str = Form("full"),
     slots_custom: str = Form(""),
 ):
+    cfg = request.app.state.cfg
     store = request.app.state.store
     slots_value: str | list[str] = slots
     if slots == "custom":
@@ -212,7 +215,7 @@ async def accounts_create(
         except json.JSONDecodeError as e:
             return _templates(request).TemplateResponse(
                 request, "accounts_form.html",
-                {"request": request, "account": None, "error": f"slots JSON 错误: {e}",
+                {"request": request, "cfg": cfg, "account": None, "error": f"slots JSON 错误: {e}",
                  "active_page": "accounts"},
                 status_code=400,
             )
@@ -222,7 +225,7 @@ async def accounts_create(
     except Exception as e:
         return _templates(request).TemplateResponse(
             request, "accounts_form.html",
-            {"request": request, "account": acc, "error": str(e), "active_page": "accounts"},
+            {"request": request, "cfg": cfg, "account": acc, "error": str(e), "active_page": "accounts"},
             status_code=400,
         )
     return RedirectResponse("/accounts", status_code=303)
@@ -230,13 +233,14 @@ async def accounts_create(
 
 @router.get("/accounts/{acc_id}/edit", response_class=HTMLResponse)
 async def accounts_edit(request: Request, acc_id: str):
+    cfg = request.app.state.cfg
     store = request.app.state.store
     acc = await store.get_account(acc_id)
     if not acc:
         raise HTTPException(404)
     return _templates(request).TemplateResponse(
         request, "accounts_form.html",
-        {"request": request, "account": acc, "error": None, "active_page": "accounts"},
+        {"request": request, "cfg": cfg, "account": acc, "error": None, "active_page": "accounts"},
     )
 
 
@@ -259,7 +263,7 @@ async def accounts_update(
         except json.JSONDecodeError as e:
             return _templates(request).TemplateResponse(
                 request, "accounts_form.html",
-                {"request": request, "account": existing, "error": f"slots JSON 错误: {e}",
+                {"request": request, "cfg": request.app.state.cfg, "account": existing, "error": f"slots JSON 错误: {e}",
                  "active_page": "accounts"},
                 status_code=400,
             )
@@ -300,13 +304,14 @@ async def accounts_test_login(request: Request, acc_id: str):
 # =========================================================================
 @router.get("/tasks", response_class=HTMLResponse)
 async def tasks_list(request: Request, account_id: str | None = None, day: str | None = None):
+    cfg = request.app.state.cfg
     store = request.app.state.store
     d = date.fromisoformat(day) if day else today_cst()
     tasks = await store.list_tasks(account_id=account_id, day=d)
     accounts = await store.list_accounts()
     return _templates(request).TemplateResponse(
         request, "tasks_list.html",
-        {"request": request, "tasks": tasks, "accounts": accounts,
+        {"request": request, "cfg": cfg, "tasks": tasks, "accounts": accounts,
          "filter_account": account_id, "filter_day": d.isoformat(),
          "active_page": "tasks"},
     )
@@ -610,12 +615,13 @@ async def logs_view(
     account_id: str | None = None,
     level: str | None = None,
 ):
+    cfg = request.app.state.cfg
     store = request.app.state.store
     rows = await store.list_logs(account_id=account_id, level=level, limit=300)
     accounts = await store.list_accounts()
     return _templates(request).TemplateResponse(
         request, "logs.html",
-        {"request": request, "logs": rows, "accounts": accounts,
+        {"request": request, "cfg": cfg, "logs": rows, "accounts": accounts,
          "filter_account": account_id, "filter_level": level,
          "active_page": "logs"},
     )
