@@ -107,19 +107,55 @@ class ChaoxingClient:
             url, {"id": room_id}, referer=referer
         )
 
-    # The methods below are added in Tasks 9-10. They raise NotImplementedError
-    # for now so the class compiles cleanly.
-    async def submit_reserve(self, *a, **kw) -> dict[str, Any]:
-        raise NotImplementedError
+    # ---------- submit ----------
+    async def submit_reserve(
+        self,
+        room_id: int,
+        day: str,           # 'YYYY-MM-DD'
+        start_time: str,    # 'HH:MM'
+        end_time: str,      # 'HH:MM'
+        seat_num: str,
+        enc: str,
+        wy_token: str = "",
+        captcha: str = "",
+    ) -> dict[str, Any]:
+        url = f"{self.OFFICE_BASE}/data/apps/seat/submit"
+        referer = (
+            f"{self.OFFICE_BASE}/front/apps/seat/code"
+            f"?id={room_id}&seatNum={seat_num}"
+        )
+        data = {
+            "roomId": room_id,
+            "day": day,
+            "startTime": start_time,
+            "endTime": end_time,
+            "seatNum": seat_num,
+            "captcha": captcha,
+            "type": 1,
+            "verifyData": 1,
+            "wyToken": wy_token,
+            "enc": enc,
+        }
+        return await self._post_form(url, data, referer=referer)
 
-    async def sign(self, *a, **kw) -> dict[str, Any]:
-        raise NotImplementedError
+    # ---------- action endpoints ----------
+    async def sign(self, reserve_id: int) -> dict[str, Any]:
+        url = f"{self.OFFICE_BASE}/data/apps/seat/sign"
+        return await self._post_form(
+            url, {"id": reserve_id}, referer=self.OFFICE_BASE + "/"
+        )
 
-    async def leave(self, *a, **kw) -> dict[str, Any]:
-        raise NotImplementedError
+    async def leave(self, reserve_id: int) -> dict[str, Any]:
+        url = f"{self.OFFICE_BASE}/data/apps/seat/leave"
+        return await self._post_form(
+            url, {"id": reserve_id}, referer=self.OFFICE_BASE + "/"
+        )
 
-    async def cancel(self, *a, **kw) -> dict[str, Any]:
-        raise NotImplementedError
+    async def cancel(self, reserve_id: int) -> dict[str, Any]:
+        url = f"{self.OFFICE_BASE}/data/apps/seat/cancel"
+        return await self._post_form(
+            url, {"id": reserve_id}, referer=self.OFFICE_BASE + "/"
+        )
 
     async def get_active_reservation(self, *a, **kw) -> dict[str, Any] | None:
         raise NotImplementedError
