@@ -15,6 +15,16 @@ def today_cst() -> date:
     return now_cst().date()
 
 
+def at_cst(d: date, t: time) -> datetime:
+    """Combine a date and a time into a tz-aware CST datetime.
+
+    Use this whenever you need to compare a (date, time-of-day) pair
+    with anything `now_cst()` produces. Bare `datetime.combine()` produces
+    a naive datetime which raises TypeError on comparison.
+    """
+    return datetime.combine(d, t, tzinfo=CST)
+
+
 def parse_hhmm(s: str) -> time:
     """Parse 'HH:MM' into a time. Reject 'H:MM' (must be 2-digit hour)."""
     parts = s.split(":")
