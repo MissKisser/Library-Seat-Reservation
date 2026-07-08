@@ -2,25 +2,88 @@
 {% block title %}座位图 · SeatBot{% endblock %}
 {% block content %}
 <h1>座位图</h1>
-<p>每 30 秒轮询 {{ cfg.library.room_name }} 实时状态。</p>
-<div id="seats-grid" class="card" style="display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px;">
+<p>
+  图书馆: <b>{{ cfg.library.room_name }}</b> (id={{ cfg.library.room_id }}) ·
+  目标座位: <b>{{ cfg.library.target_seat_num }}</b> ·
+  每 30 秒轮询。
+</p>
+
+<div id="seats-grid" class="card seats-grid"
+     style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px;
+            padding: 16px; min-height: 200px;">
   加载中…
 </div>
+
+<div id="seats-info" style="margin-top: 12px; color: #6b7280; font-size: 13px;">
+  <span class="legend-cell legend-target"></span> 目标座位
+  <span class="legend-cell legend-occupied" style="margin-left: 12px;"></span> 已被预约
+  <span class="legend-cell legend-free" style="margin-left: 12px;"></span> 空闲
+  <span class="legend-cell legend-error" style="margin-left: 12px;"></span> 查询失败
+</div>
+
 <script>
+  const TARGET = {{ cfg.library.target_seat_num }};
+
   async function load() {
     const r = await fetch("/api/seats/{{ cfg.library.room_id }}");
     const j = await r.json();
     const grid = document.getElementById("seats-grid");
-    if (!j.seats || j.seats.length === 0) { grid.innerText = "暂无数据"; return; }
+    if (!j.seats || j.seats.length === 0) {
+      grid.innerHTML = "<i style='color:#6b7280;'>暂无数据 / 未登录 / 无账号</i>";
+      return;
+    }
     grid.innerHTML = "";
     for (const s of j.seats) {
       const cell = document.createElement("div");
-      cell.style.cssText = "padding: 6px; text-align: center; border-radius: 4px; font-size: 11px; background: #e5e7eb;";
-      cell.innerText = s.seat_num;
+      let cls = "seat";
+      let title = "";
+      if (s.occupied) {
+        cls += " seat-occupied";
+        title = `seat ${s.seat_num} · uid=${s.occupier_uid} · end=${s.end_ts}`;
+      } else if (s.error) {
+        cls += " seat-error";
+        title = `seat ${s.seat_num} · ${s.error}`;
+      } else {
+        cls += " seat-free";
+        title = `seat ${s.seat_num} · 空闲`;
+      }
+      if (s.is_target) cls += " seat-target";
+      cell.className = cls;
+      cell.title = title;
+      cell.innerHTML = `<span class="num">${s.seat_num}</span>` +
+                       (s.occupied ? `<span class="occ">●</span>` : "");
       grid.appendChild(cell);
     }
   }
   load();
   setInterval(load, 30000);
 </script>
+
+<style>
+  .seats-grid .seat {
+    padding: 10px 6px; text-align: center; border-radius: 4px;
+    font-size: 12px; background: #e5e7eb; color: #1f2937;
+    position: relative;
+  }
+  .seats-grid .seat .num { display: block; font-weight: 600; }
+  .seats-grid .seat .occ {
+    position: absolute; top: 2px; right: 4px;
+    color: #fff; font-size: 10px;
+  }
+  .seats-grid .seat-free { background: #d1fae5; }
+  .seats-grid .seat-occupied { background: #fca5a5; color: #7f1d1d; }
+  .seats-grid .seat-target {
+    background: #2563eb; color: #fff; outline: 3px solid #fbbf24;
+    font-weight: 700;
+  }
+  .seats-grid .seat-error { background: #9ca3af; color: #fff; }
+  .legend-cell {
+    display: inline-block; width: 14px; height: 14px; vertical-align: middle;
+    border-radius: 3px; margin-right: 4px;
+  }
+  .legend-target { background: #2563eb; outline: 2px solid #fbbf24; }
+  .legend-occupied { background: #fca5a5; }
+  .legend-free { background: #d1fae5; }
+  .legend-error { background: #9ca3af; }
+</style>
 {% endblock %}
