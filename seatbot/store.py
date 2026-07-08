@@ -161,6 +161,12 @@ class StateStore:
                 out.append(a)
         return out
 
+    async def sync_accounts(self, accounts: list[Account]) -> int:
+        """Upsert a batch of accounts from config. Returns count upserted."""
+        for acc in accounts:
+            await self.upsert_account(acc)
+        return len(accounts)
+
     async def delete_account(self, acc_id: str) -> None:
         await self.db.execute("DELETE FROM accounts WHERE id=?", (acc_id,))
         await self.db.commit()

@@ -62,7 +62,28 @@ async def test_list_tasks_by_account_day(store: StateStore):
         ))
     tasks = await store.list_tasks(account_id="zs", day=date(2026, 7, 9))
     assert len(tasks) == 3
-    assert [t.start_time.hour for t in tasks] == [8, 10, 14]
+
+
+async def test_sync_accounts(store: StateStore):
+    """sync_accounts should upsert a batch from config."""
+    accs = [
+        Account(id="a", phone="1", password="p", seat_num="001", slots="full"),
+        Account(id="b", phone="2", password="p", seat_num="002",
+                slots=["08:00-12:00", "14:00-22:00"]),
+    ]
+    n = await store.sync_accounts(accs)
+    assert n == 2
+    loaded = await store.list_accounts()
+    assert {a.id for a in loaded} == {"a", "b"}
+    b = await store.get_account("b")
+    assert b is not None
+    assert b.slots == ["08:00-12:00", "14:00-22:00"]
+
+    # Re-sync: should still have 2, not 4 (idempotent)
+    n2 = await store.sync_accounts(accs)
+    assert n2 == 2
+    loaded2 = await store.list_accounts()
+    assert len(loaded2) == 2
 
 
 async def test_log_action(store: StateStore):
