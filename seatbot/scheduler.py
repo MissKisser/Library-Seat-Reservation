@@ -53,7 +53,7 @@ class Scheduler:
     # ---------- bootstrap ----------
     async def bootstrap_today(self) -> None:
         today = today_cst()
-        for acc in self.cfg.accounts:
+        for acc in await self.store.list_accounts():
             await self._bootstrap_for_account(acc, today)
 
     async def _bootstrap_for_account(self, acc: Account, day: date) -> None:
@@ -83,7 +83,7 @@ class Scheduler:
 
     # ---------- per-account tick ----------
     async def tick_account(self, acc_id: str) -> None:
-        acc_cfg = next((a for a in self.cfg.accounts if a.id == acc_id), None)
+        acc_cfg = await self.store.get_account(acc_id)
         if not acc_cfg:
             return
         active = await self.store.find_active_task(acc_id)
@@ -216,9 +216,29 @@ class Scheduler:
             await self._error(f"sign error: {e}", acc.id)
 
     # ---------- cron wiring ----------
-    def start(self) -> None:
-        # every minute: tick all accounts (with stagger)
-        for i, acc in enumerate(self.cfg.accounts):
+    async def sync_jobs(self) -> None:
+        """Re-register tick jobs from the current set of DB accounts.
+
+        Called on startup and every 30s so accounts added via the Web UI
+        pick up scheduling without a restart.
+        """
+        accounts = await self.store.list_accounts()
+        wanted_ids = {a.id for a in accounts}
+        existing_ids = {
+            j.id.removeprefix("tick_")
+            for j in self.scheduler.get_jobs()
+            if j.id.startswith("tick_")
+        }
+        # drop tick jobs for accounts that no longer exist
+        for stale in existing_ids - wanted_ids:
+            try:
+                self.scheduler.remove_job(f"tick_{stale}")
+            except Exception:
+                pass
+        # add tick jobs for any new accounts
+        for i, acc in enumerate(accounts):
+            if acc.id in existing_ids:
+                continue
             delay = random.uniform(*self.cfg.runtime.stagger_seconds)
             self.scheduler.add_job(
                 self._tick_account_with_bootstrap,
@@ -227,6 +247,14 @@ class Scheduler:
                 id=f"tick_{acc.id}",
                 replace_existing=True,
             )
+
+    def start(self) -> None:
+        # initial sync (accounts may be added via Web later)
+        self.scheduler.add_job(
+            self.sync_jobs,
+            "interval", seconds=30,
+            id="sync_jobs", replace_existing=True,
+        )
         # 00:00:05 every day: bootstrap next day
         self.scheduler.add_job(
             self._new_day_bootstrap,
@@ -240,14 +268,14 @@ class Scheduler:
         await self.tick_account(acc_id)
 
     async def _bootstrap_for_account_if_needed(self, acc_id: str) -> None:
-        acc_cfg = next((a for a in self.cfg.accounts if a.id == acc_id), None)
+        acc_cfg = await self.store.get_account(acc_id)
         if not acc_cfg:
             return
         await self._bootstrap_for_account(acc_cfg, today_cst())
 
     async def _new_day_bootstrap(self) -> None:
         today = today_cst()
-        for acc in self.cfg.accounts:
+        for acc in await self.store.list_accounts():
             await self._bootstrap_for_account(acc, today)
 
     async def shutdown(self) -> None:

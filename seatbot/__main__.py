@@ -35,10 +35,11 @@ async def _cmd_run(args) -> int:
     store = StateStore(cfg.runtime.db_path)
     await store.init()
     n = await store.sync_accounts(cfg.accounts)
-    print(f"synced {n} account(s) from config")
+    print(f"synced {n} account(s) from config (web UI is the primary source)")
     sched = Scheduler(cfg, store)
     sched.start()
     await sched.bootstrap_today()
+    await sched.sync_jobs()  # register tick jobs for all DB accounts
     # start web in parallel
     from seatbot.web.app import make_app
     app = make_app(cfg, store, sched)
@@ -80,20 +81,25 @@ async def _cmd_once(args) -> int:
 
 async def _cmd_login(args) -> int:
     cfg = load_config(args.config)
-    acc = next((a for a in cfg.accounts if a.id == args.account), None)
-    if not acc:
-        print(f"account {args.account} not found", file=sys.stderr)
-        return 1
-    from seatbot.client import ChaoxingClient, ChaoxingError
-    c = ChaoxingClient()
+    store = StateStore(cfg.runtime.db_path)
+    await store.init()
     try:
-        await c.login(acc.phone, acc.password)
-        print(f"login OK; cookies: {list(c.cookies().keys())}")
-    except ChaoxingError as e:
-        print(f"login failed: {e}", file=sys.stderr)
-        return 2
+        acc = await store.get_account(args.account)
+        if not acc:
+            print(f"account {args.account} not found in DB", file=sys.stderr)
+            return 1
+        from seatbot.client import ChaoxingClient, ChaoxingError
+        c = ChaoxingClient()
+        try:
+            await c.login(acc.phone, acc.password)
+            print(f"login OK; cookies: {list(c.cookies().keys())}")
+        except ChaoxingError as e:
+            print(f"login failed: {e}", file=sys.stderr)
+            return 2
+        finally:
+            await c.close()
     finally:
-        await c.close()
+        await store.close()
     return 0
 
 
@@ -104,7 +110,7 @@ async def _cmd_status(args) -> int:
     try:
         for acc in await store.list_accounts():
             tasks = await store.list_tasks(account_id=acc.id)
-            print(f"\n[{acc.id}] seat={acc.seat_num} slots={acc.slots}")
+            print(f"\n[{acc.id}] phone={acc.phone} slots={acc.slots}")
             for t in tasks:
                 print(f"  {t.day} {t.start_time}-{t.end_time} {t.status.value} "
                       f"reserve={t.reserve_id} err={t.last_error}")
