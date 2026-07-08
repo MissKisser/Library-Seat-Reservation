@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from pathlib import Path
 
 from seatbot.config import load_config, ConfigError
 from seatbot.scheduler import Scheduler

@@ -1,12 +1,10 @@
-from datetime import date, time, datetime, timezone, timedelta
+from datetime import time, timedelta
 
 import pytest
 
 from seatbot.utils.timeutil import (
     parse_hhmm,
     parse_range,
-    today_cst,
-    now_cst,
     expand_full_day,
     split_into_chunks,
     CST,

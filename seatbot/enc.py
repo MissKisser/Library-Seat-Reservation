@@ -15,7 +15,6 @@ For v1 the JS driver is a stub that returns `{"enc":"","wyToken":""}`
 """
 from __future__ import annotations
 
-import asyncio
 import time as _time
 from dataclasses import dataclass
 from urllib.parse import parse_qs

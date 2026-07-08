@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import json
 from datetime import date, time
-from pathlib import Path
-from typing import Any
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -124,7 +122,14 @@ async def accounts_update(
         raise HTTPException(404)
     slots_value: str | list[str] = slots
     if slots == "custom":
-        slots_value = json.loads(slots_custom) if slots_custom.strip() else []
+        try:
+            slots_value = json.loads(slots_custom) if slots_custom.strip() else []
+        except json.JSONDecodeError as e:
+            return _templates(request).TemplateResponse(
+                "accounts_form.html",
+                {"request": request, "account": existing, "error": f"slots JSON 错误: {e}"},
+                status_code=400,
+            )
     existing.phone = phone
     existing.password = password
     existing.seat_num = seat_num.zfill(3)
@@ -166,8 +171,13 @@ async def quick_reserve(
     acc = next((a for a in request.app.state.cfg.accounts if a.id == account_id), None)
     if not acc:
         raise HTTPException(404, f"account {account_id} not found")
-    h1, m1 = map(int, start.split(":"))
-    h2, m2 = map(int, end.split(":"))
+    try:
+        h1, m1 = map(int, start.split(":"))
+        h2, m2 = map(int, end.split(":"))
+        if not (0 <= h1 <= 23 and 0 <= m1 <= 59 and 0 <= h2 <= 23 and 0 <= m2 <= 59):
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise HTTPException(400, "时间格式必须为 HH:MM, 例如 09:30")
     t = Task(
         id=None, account_id=acc.id, day=today_cst(),
         start_time=time(h1, m1), end_time=time(h2, m2),

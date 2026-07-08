@@ -22,7 +22,6 @@ async def test_login_success():
     try:
         await client.login(phone, password)
         # cookies should be set; second call should not re-login
-        cookies = client.cookies()
         assert any("_uid" in c.name or "vc3" in c.name for c in client._cookie_jar.jar)
     finally:
         await client.close()
