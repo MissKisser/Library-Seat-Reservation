@@ -157,8 +157,33 @@ class ChaoxingClient:
             url, {"id": reserve_id}, referer=self.OFFICE_BASE + "/"
         )
 
-    async def get_active_reservation(self, *a, **kw) -> dict[str, Any] | None:
-        raise NotImplementedError
+    async def get_active_reservation(self, room_id: int, seat_num: str) -> dict[str, Any] | None:
+        url = (
+            f"{self.OFFICE_BASE}/data/apps/seat/reserve/info"
+            f"?id={room_id}&seatNum={seat_num}"
+        )
+        r = await self._client.get(url, headers={"Referer": self.OFFICE_BASE + "/"})
+        r.raise_for_status()
+        try:
+            payload = r.json()
+        except json.JSONDecodeError as e:
+            raise ChaoxingError(f"reserve/info non-JSON: {r.text[:200]}") from e
+        if not payload.get("success"):
+            return None
+        sr = (payload.get("data") or {}).get("seatReserve")
+        return sr
 
-    async def get_seat_status(self, *a, **kw) -> list[dict[str, Any]]:
-        raise NotImplementedError
+    async def get_seat_status(
+        self, room_id: int, day: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return seat status list for a given room + day.
+
+        NOTE: the actual public endpoint that lists 108 seats was observed
+        only via the floor SVG UI; we expose this method as a best-effort
+        that pulls `seatIntervalMap` from `get_room_info`. If finer-grained
+        status is needed, the web panel can call this and cross-reference
+        with /data/apps/seat/getusedtimes. v1 keeps it simple.
+        """
+        info = await self.get_room_info(room_id)
+        interval_map = (info.get("data") or {}).get("seatIntervalMap") or {}
+        return [{"seat_num": k, "intervals": v} for k, v in interval_map.items()]
