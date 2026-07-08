@@ -1,0 +1,80 @@
+from datetime import date, time
+
+import pytest
+
+from seatbot.models import Account, Task, TaskStatus
+from seatbot.store import StateStore
+
+
+@pytest.fixture
+async def store(tmp_path):
+    db = tmp_path / "test.db"
+    s = StateStore(str(db))
+    await s.init()
+    yield s
+    await s.close()
+
+
+async def test_init_creates_tables(store: StateStore):
+    tables = await store.list_tables()
+    assert {"accounts", "tasks", "actions", "logs"}.issubset(set(tables))
+
+
+async def test_account_upsert_and_get(store: StateStore):
+    acc = Account(id="zs", phone="138", password="p", seat_num="084", slots="full")
+    await store.upsert_account(acc)
+    loaded = await store.get_account("zs")
+    assert loaded is not None
+    assert loaded.id == "zs"
+    assert loaded.seat_num == "084"
+    assert loaded.slots == "full"
+
+
+async def test_list_accounts(store: StateStore):
+    for i in range(3):
+        await store.upsert_account(
+            Account(id=f"a{i}", phone=str(i), password="p", seat_num=f"00{i}", slots="full")
+        )
+    accs = await store.list_accounts()
+    assert {a.id for a in accs} == {"a0", "a1", "a2"}
+
+
+async def test_task_lifecycle(store: StateStore):
+    acc = Account(id="zs", phone="1", password="p", seat_num="001", slots="full")
+    await store.upsert_account(acc)
+    t = Task(id=None, account_id="zs", day=date(2026, 7, 9),
+             start_time=time(8, 0), end_time=time(10, 0))
+    tid = await store.add_task(t)
+    assert tid is not None
+    await store.update_task_status(tid, TaskStatus.ACTIVE, reserve_id=12345)
+    got = await store.get_task(tid)
+    assert got.status == TaskStatus.ACTIVE
+    assert got.reserve_id == 12345
+
+
+async def test_list_tasks_by_account_day(store: StateStore):
+    acc = Account(id="zs", phone="1", password="p", seat_num="001", slots="full")
+    await store.upsert_account(acc)
+    for h in (8, 10, 14):
+        await store.add_task(Task(
+            id=None, account_id="zs", day=date(2026, 7, 9),
+            start_time=time(h, 0), end_time=time(h + 2, 0),
+        ))
+    tasks = await store.list_tasks(account_id="zs", day=date(2026, 7, 9))
+    assert len(tasks) == 3
+    assert [t.start_time.hour for t in tasks] == [8, 10, 14]
+
+
+async def test_log_action(store: StateStore):
+    await store.log_action("zs", "submit", '{"x":1}', '{"y":2}', True, "ok")
+    rows = await store.list_actions(account_id="zs", limit=10)
+    assert len(rows) == 1
+    assert rows[0].action == "submit"
+    assert rows[0].success is True
+
+
+async def test_log_message(store: StateStore):
+    await store.log_message("INFO", "zs", "hello world")
+    rows = await store.list_logs(account_id="zs", limit=10)
+    assert len(rows) == 1
+    assert rows[0].level == "INFO"
