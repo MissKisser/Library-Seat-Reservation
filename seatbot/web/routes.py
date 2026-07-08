@@ -7,6 +7,7 @@ that are actually free at the target seat.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date
 
@@ -422,6 +423,11 @@ async def api_seats(room_id: int, request: Request):
 
     This gives the operator a quick visual on whether anyone is sitting
     on or near the protected seat right now.
+
+    Login: if the scheduler's ChaoxingClient for the chosen guard
+    account has no cookies yet, we try to log in. We retry up to twice
+    on transient YiDun / fanyalogin rejections (it blocks when called
+    too soon after a previous attempt) before reporting failure.
     """
     sched = request.app.state.sched
     store = request.app.state.store
@@ -435,12 +441,21 @@ async def api_seats(room_id: int, request: Request):
 
     client = sched._client_for(acc)
     if not client.cookies():
-        try:
-            await client.login(acc.phone, acc.password)
-        except Exception as e:
-            return JSONResponse(
-                {"seats": [], "target": cfg.library.target_seat_num, "error": f"login failed: {e}"},
-            )
+        last_err: str | None = None
+        for attempt in range(3):
+            try:
+                await client.login(acc.phone, acc.password)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = str(e)
+                await asyncio.sleep(5 + attempt * 5)  # back off
+        if last_err is not None:
+            return JSONResponse({
+                "seats": [],
+                "target": cfg.library.target_seat_num,
+                "error": f"login failed after 3 attempts: {last_err}",
+            })
 
     target = int(cfg.library.target_seat_num)
     probe = [target + d for d in range(-10, 11)]
