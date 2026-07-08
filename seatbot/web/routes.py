@@ -140,4 +140,142 @@ async def accounts_delete(request: Request, acc_id: str):
     return RedirectResponse("/accounts", status_code=303)
 
 
+# ---------- tasks ----------
+@router.get("/tasks", response_class=HTMLResponse)
+async def tasks_list(request: Request, account_id: str | None = None, day: str | None = None):
+    store = request.app.state.store
+    d = date.fromisoformat(day) if day else today_cst()
+    tasks = await store.list_tasks(account_id=account_id, day=d)
+    accounts = await store.list_accounts()
+    return _templates(request).TemplateResponse(
+        "tasks_list.html",
+        {"request": request, "tasks": tasks, "accounts": accounts,
+         "filter_account": account_id, "filter_day": d.isoformat()},
+    )
+
+
+@router.post("/tasks/quick-reserve")
+async def quick_reserve(
+    request: Request,
+    account_id: str = Form(...),
+    start: str = Form(...),
+    end: str = Form(...),
+):
+    sched = request.app.state.sched
+    store = request.app.state.store
+    acc = next((a for a in request.app.state.cfg.accounts if a.id == account_id), None)
+    if not acc:
+        raise HTTPException(404, f"account {account_id} not found")
+    h1, m1 = map(int, start.split(":"))
+    h2, m2 = map(int, end.split(":"))
+    t = Task(
+        id=None, account_id=acc.id, day=today_cst(),
+        start_time=time(h1, m1), end_time=time(h2, m2),
+        status=TaskStatus.READY,
+    )
+    tid = await store.add_task(t)
+    await sched._run_submit_sign(acc, await store.get_task(tid))
+    return RedirectResponse("/tasks", status_code=303)
+
+
+@router.post("/tasks/{task_id}/sign")
+async def task_sign(request: Request, task_id: int):
+    sched = request.app.state.sched
+    store = request.app.state.store
+    t = await store.get_task(task_id)
+    if not t or not t.reserve_id:
+        raise HTTPException(400, "no active reservation")
+    acc = next((a for a in request.app.state.cfg.accounts if a.id == t.account_id), None)
+    if not acc:
+        raise HTTPException(404)
+    client = sched._client_for(acc)
+    if not client.cookies():
+        await client.login(acc.phone, acc.password)
+    r = await client.sign(t.reserve_id)
+    await store.log_action(acc.id, "sign", str(t.reserve_id), str(r)[:500], bool(r.get("success")))
+    return RedirectResponse("/tasks", status_code=303)
+
+
+@router.post("/tasks/{task_id}/leave")
+async def task_leave(request: Request, task_id: int):
+    sched = request.app.state.sched
+    store = request.app.state.store
+    t = await store.get_task(task_id)
+    if not t or not t.reserve_id:
+        raise HTTPException(400)
+    acc = next((a for a in request.app.state.cfg.accounts if a.id == t.account_id), None)
+    if not acc:
+        raise HTTPException(404)
+    client = sched._client_for(acc)
+    if not client.cookies():
+        await client.login(acc.phone, acc.password)
+    r = await client.leave(t.reserve_id)
+    await store.log_action(acc.id, "leave", str(t.reserve_id), str(r)[:500], bool(r.get("success")))
+    await store.update_task_status(task_id, TaskStatus.COMPLETE)
+    return RedirectResponse("/tasks", status_code=303)
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def task_cancel(request: Request, task_id: int):
+    sched = request.app.state.sched
+    store = request.app.state.store
+    t = await store.get_task(task_id)
+    if not t or not t.reserve_id:
+        raise HTTPException(400)
+    acc = next((a for a in request.app.state.cfg.accounts if a.id == t.account_id), None)
+    if not acc:
+        raise HTTPException(404)
+    client = sched._client_for(acc)
+    if not client.cookies():
+        await client.login(acc.phone, acc.password)
+    r = await client.cancel(t.reserve_id)
+    await store.log_action(acc.id, "cancel", str(t.reserve_id), str(r)[:500], bool(r.get("success")))
+    await store.update_task_status(task_id, TaskStatus.COMPLETE)
+    return RedirectResponse("/tasks", status_code=303)
+
+
+# ---------- seats ----------
+@router.get("/seats", response_class=HTMLResponse)
+async def seats_view(request: Request):
+    cfg = request.app.state.cfg
+    return _templates(request).TemplateResponse(
+        "seats.html", {"request": request, "cfg": cfg}
+    )
+
+
+@router.get("/api/seats/{room_id}")
+async def api_seats(room_id: int, request: Request):
+    sched = request.app.state.sched
+    cfg = request.app.state.cfg
+    # Use the first account's client just to call the API
+    acc = cfg.accounts[0] if cfg.accounts else None
+    if not acc:
+        return JSONResponse({"seats": []})
+    client = sched._client_for(acc)
+    if not client.cookies():
+        try:
+            await client.login(acc.phone, acc.password)
+        except Exception:
+            return JSONResponse({"seats": [], "error": "login failed"})
+    seats = await client.get_seat_status(room_id)
+    return JSONResponse({"seats": seats})
+
+
+# ---------- logs ----------
+@router.get("/logs", response_class=HTMLResponse)
+async def logs_view(
+    request: Request,
+    account_id: str | None = None,
+    level: str | None = None,
+):
+    store = request.app.state.store
+    rows = await store.list_logs(account_id=account_id, level=level, limit=300)
+    accounts = await store.list_accounts()
+    return _templates(request).TemplateResponse(
+        "logs.html",
+        {"request": request, "logs": rows, "accounts": accounts,
+         "filter_account": account_id, "filter_level": level},
+    )
+
+
 # NOTE: tasks / seats / logs routes are added in Task 16.

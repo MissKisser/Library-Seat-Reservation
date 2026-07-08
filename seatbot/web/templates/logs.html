@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}日志 · SeatBot{% endblock %}
+{% block content %}
+<h1>日志</h1>
+<form method="get" class="card">
+  账号: <select name="account_id">
+    <option value="">全部</option>
+    {% for a in accounts %}
+      <option value="{{ a.id }}" {% if filter_account == a.id %}selected{% endif %}>{{ a.id }}</option>
+    {% endfor %}
+  </select>
+  级别:
+  <select name="level">
+    <option value="">全部</option>
+    {% for l in ['INFO','WARN','ERROR'] %}
+      <option value="{{ l }}" {% if filter_level == l %}selected{% endif %}>{{ l }}</option>
+    {% endfor %}
+  </select>
+  <button class="btn" type="submit">过滤</button>
+</form>
+<pre class="card" style="max-height: 70vh; overflow: auto; font-size: 12px;">
+{% for l in logs %}{{ l.ts }} [{{ l.level }}] {{ l.account_id or '-' }} {{ l.message }}
+{% endfor %}</pre>
+{% endblock %}
