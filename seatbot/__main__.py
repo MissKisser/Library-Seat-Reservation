@@ -35,6 +35,8 @@ async def _cmd_run(args) -> int:
     cfg = load_config(args.config)
     store = StateStore(cfg.runtime.db_path)
     await store.init()
+    n = await store.sync_accounts(cfg.accounts)
+    print(f"synced {n} account(s) from config")
     sched = Scheduler(cfg, store)
     sched.start()
     await sched.bootstrap_today()
@@ -58,8 +60,9 @@ async def _cmd_init_db(args) -> int:
     cfg = load_config(args.config)
     store = StateStore(cfg.runtime.db_path)
     await store.init()
+    n = await store.sync_accounts(cfg.accounts)
     await store.close()
-    print(f"initialized: {cfg.runtime.db_path}")
+    print(f"initialized: {cfg.runtime.db_path}; synced {n} account(s)")
     return 0
 
 
@@ -67,6 +70,7 @@ async def _cmd_once(args) -> int:
     cfg = load_config(args.config)
     store = StateStore(cfg.runtime.db_path)
     await store.init()
+    await store.sync_accounts(cfg.accounts)
     sched = Scheduler(cfg, store)
     await sched.bootstrap_today()
     await sched.tick_account(args.account)
