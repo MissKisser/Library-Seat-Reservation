@@ -13,7 +13,7 @@ from seatbot.enc import EncGenerator
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.planner import ReservationPlanner
 from seatbot.store import StateStore
-from seatbot.utils.timeutil import now_cst, today_cst
+from seatbot.utils.timeutil import at_cst, now_cst, today_cst
 
 
 class Scheduler:
@@ -97,8 +97,8 @@ class Scheduler:
         for t in tasks:
             if t.status not in (TaskStatus.PENDING, TaskStatus.READY, TaskStatus.FAILED):
                 continue
-            t_start = datetime.combine(t.day, t.start_time)
-            t_end = datetime.combine(t.day, t.end_time)
+            t_start = at_cst(t.day, t.start_time)
+            t_end = at_cst(t.day, t.end_time)
             # currently inside the slot
             if t_start <= now < t_end:
                 await self._run_submit_sign(acc_cfg, t)
@@ -109,7 +109,7 @@ class Scheduler:
                 return
 
     async def _maybe_relay(self, acc: Account, t: Task, now: datetime) -> None:
-        t_end = datetime.combine(t.day, t.end_time)
+        t_end = at_cst(t.day, t.end_time)
         lead = t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS)
         if now < lead:
             return
