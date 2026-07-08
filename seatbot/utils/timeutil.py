@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Iterable
 
 
 CST = timezone(timedelta(hours=8), name="CST")
@@ -41,7 +40,12 @@ def parse_range(r: str) -> tuple[time, time]:
 def split_into_chunks(
     range_: tuple[time, time], max_hours: float
 ) -> list[tuple[time, time]]:
-    """Split a (start, end) range into chunks of at most max_hours."""
+    """Split a (start, end) range into chunks of at most max_hours.
+
+    Raises ValueError if max_hours is not positive.
+    """
+    if max_hours <= 0:
+        raise ValueError(f"max_hours must be > 0, got {max_hours!r}")
     start, end = range_
     start_min = start.hour * 60 + start.minute
     end_min = end.hour * 60 + end.minute
