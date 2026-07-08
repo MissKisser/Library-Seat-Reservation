@@ -70,6 +70,7 @@ async def dashboard(request: Request):
                 info["end_time"] = t_end.isoformat(timespec="minutes") if t_end else ""
             accs_info.append(info)
         annotated.append({"start": c.start, "end": c.end, "accounts_info": accs_info})
+    recent_logs = await store.list_logs(limit=10)
     return _templates(request).TemplateResponse(
         request, "dashboard.html",
         {
@@ -81,6 +82,7 @@ async def dashboard(request: Request):
             "today": today.isoformat(),
             "accounts": accounts,
             "now_hhmm": now_cst().strftime("%H:%M"),
+            "recent_logs": recent_logs,
             "active_page": "dashboard",
         },
     )
