@@ -5,13 +5,16 @@
 {% from "_macros/banner.html" import banner %}
 {% from "_macros/gantt.html" import gantt %}
 {% block content %}
+<h1 class="page-title">覆盖图</h1>
+<p class="page-sub">{{ subtitle or '' }}</p>
+
 <div class="stat-grid">
-  {{ stat_card(label="目标座位", value=cfg.library.target_seat_num, hint=cfg.library.room_name) }}
+  {{ stat_card(label="目标座位", value=cfg.library.target_seat_num, hint=((cfg.library.room_name[:8] + '…') if cfg.library.room_name|length > 10 else cfg.library.room_name)) }}
   {{ stat_card(label="守护账号", value=(accounts|length|string + " / " + accounts|length|string), hint="全部 active") }}
   {% set covered = cells|rejectattr('accounts_info', 'equalto', []) | list | length %}
   {% set total = cells|length %}
   {{ stat_card(label="今日覆盖", value=(covered|string + " / " + total|string), hint=("无失守" if not gaps else (gaps|length|string + " 个失守"))) }}
-  {{ stat_card(label="下次接力", value=now_hhmm, hint="由 clock.js 实时刷新") }}
+  {{ stat_card(label="现在", value=now_hhmm, hint="由 clock.js 实时刷新") }}
 </div>
 
 {% if gaps %}
@@ -22,7 +25,66 @@
   {{ banner(level="ok", text="08:00-22:00 全部覆盖，无失守时段") }}
 {% endif %}
 
-{{ gantt(accounts=accounts, cells=cells, gaps=gaps, overlaps=overlaps) }}
+<div class="dashboard-grid">
+  <section class="card dashboard-main">
+    <header class="card-header">
+      <h2 class="card-title">护城河</h2>
+      <span class="card-hint">点击单元格出操作菜单 · 30s 自动刷新</span>
+    </header>
+    {{ gantt(accounts=accounts, cells=cells, gaps=gaps, overlaps=overlaps) }}
+  </section>
+
+  <aside class="dashboard-side">
+    <section class="card">
+      <header class="card-header">
+        <h2 class="card-title">最近活动</h2>
+        <a class="card-action" href="/logs">全部 →</a>
+      </header>
+      {% if recent_logs %}
+        <ul class="activity-feed">
+          {% for log in recent_logs[:8] %}
+            <li class="activity-item activity-{{ log.level|lower }}">
+              <span class="activity-dot"></span>
+              <div class="activity-body">
+                <div class="activity-message">{{ log.message }}</div>
+                <div class="activity-meta">
+                  {% if log.account_id %}<span class="activity-account">{{ log.account_id }}</span> · {% endif %}
+                  <span class="activity-level">{{ log.level }}</span>
+                </div>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="empty-mini">暂无活动</div>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <header class="card-header">
+        <h2 class="card-title">快速操作</h2>
+      </header>
+      <div class="quick-actions">
+        <a class="quick-action" href="/seat-config">
+          <span class="quick-action-label">修改目标座位</span>
+          <span class="quick-action-hint">当前 {{ cfg.library.target_seat_num }}</span>
+        </a>
+        <a class="quick-action" href="/accounts/new">
+          <span class="quick-action-label">添加守护账号</span>
+          <span class="quick-action-hint">已有 {{ accounts|length }} 个</span>
+        </a>
+        <a class="quick-action" href="/coverage">
+          <span class="quick-action-label">查看覆盖报告</span>
+          <span class="quick-action-hint">Gantt 视图</span>
+        </a>
+        <a class="quick-action" href="/seats">
+          <span class="quick-action-label">实时座位图</span>
+          <span class="quick-action-hint">每 30s 轮询</span>
+        </a>
+      </div>
+    </section>
+  </aside>
+</div>
 
 <script>
   // 30s full-page reload (preserved from prior behavior per spec)
