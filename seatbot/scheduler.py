@@ -9,7 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.config import Config
-from seatbot.enc import EncError, EncGenerator
+from seatbot.enc import EncGenerator
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.planner import ReservationPlanner
 from seatbot.store import StateStore
@@ -139,54 +139,79 @@ class Scheduler:
         await self._run_submit_sign(acc, nxt)
 
     async def _run_submit_sign(self, acc: Account, t: Task) -> None:
+        """Try to book the seat for account `acc` for task `t`.
+
+        v1.1: instead of computing `enc` via the (incomplete) JS exec and
+        reusing it across a separate httpx call, we drive the actual
+        Chaoxing UI in a headless Chromium via
+        `ChaoxingClient.submit_in_browser()`. The browser runs the real
+        fanyalogin flow, fills the form, clicks the 30-min cells, clicks
+        "开始使用", intercepts the /submit response, and extracts the
+        reserve_id. We then immediately sign in the same call chain.
+        """
         await self.store.update_task_status(t.id, TaskStatus.SUBMITTING)
         client = self._client_for(acc)
 
-        # login if not yet
+        # login first so the in-browser call has the session cookies.
+        # If login itself fails, we still try `submit_in_browser()` —
+        # it will log in by itself if cookies are missing.
         if not client.cookies():
             try:
                 await client.login(acc.phone, acc.password)
+                await self._info(f"login ok ({len(client.cookies())} cookies)", acc.id)
             except ChaoxingError as e:
-                await self._error(f"login failed: {e}", acc.id)
-                await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error=str(e))
-                return
+                await self._warn(f"login prefetch failed ({e}); trying in-browser login", acc.id)
 
-        # compute enc
+        # submit via real browser interaction
         try:
-            enc = await self.enc.compute(
+            r = await client.submit_in_browser(
+                phone=acc.phone,
+                password=acc.password,
                 room_id=self.cfg.library.room_id,
                 seat_num=self.cfg.library.target_seat_num,
                 day=t.day.isoformat(),
                 start_time=t.start_time.strftime("%H:%M"),
                 end_time=t.end_time.strftime("%H:%M"),
-                client=client,
-            )
-        except EncError as e:
-            await self._error(f"enc failed: {e}", acc.id)
-            await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error=str(e))
-            return
-
-        # submit
-        try:
-            r = await client.submit_reserve(
-                room_id=self.cfg.library.room_id,
-                day=t.day.isoformat(),
-                start_time=t.start_time.strftime("%H:%M"),
-                end_time=t.end_time.strftime("%H:%M"),
-                seat_num=self.cfg.library.target_seat_num,
-                enc=enc["enc"],
-                wy_token=enc["wyToken"],
             )
         except Exception as e:
-            await self._error(f"submit error: {e}", acc.id)
+            await self._error(f"submit_in_browser exception: {e}", acc.id)
             await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error=str(e))
             return
 
         await self.store.log_action(
             acc.id, "submit",
             f"{t.day} {t.start_time}-{t.end_time}",
-            str(r)[:500], bool(r.get("success")), str(r.get("msg")),
+            str(r.get("raw"))[:500],
+            bool(r.get("success")),
+            r.get("msg"),
         )
+
+        if not r.get("success"):
+            msg = r.get("msg") or "submit failed"
+            await self._error(f"submit rejected: {msg}", acc.id)
+            await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error=msg)
+            return
+
+        reserve_id = r.get("reserve_id")
+        if not reserve_id:
+            await self._error("submit ok but no reserve_id", acc.id)
+            await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error="no reserve_id")
+            return
+
+        await self.store.update_task_status(t.id, TaskStatus.ACTIVE, reserve_id=reserve_id)
+        await self._info(f"reserved #{reserve_id} {t.chunk_key()}", acc.id)
+
+        # sign
+        try:
+            sr = await client.sign(reserve_id)
+            await self.store.log_action(
+                acc.id, "sign", str(reserve_id), str(sr)[:500],
+                bool(sr.get("success")), str(sr.get("msg")),
+            )
+            if not sr.get("success"):
+                await self._error(f"sign failed: {sr.get('msg')}", acc.id)
+        except Exception as e:
+            await self._error(f"sign error: {e}", acc.id)
 
         if not r.get("success"):
             msg = r.get("msg") or "submit failed"
