@@ -1,49 +1,55 @@
-{# Macro: gantt. Coverage grid: one row per account, one column per time cell, plus a merged coverage row. #}
-{% macro gantt(accounts, cells, gaps=[], overlaps=[]) %}
+{# Macro: gantt. 覆盖网格，v2 按座位。
+   rows = [{seat:{seat_num,label}, cells:[{start,end,accounts_info,user_reserved,others_occupied}, ...]}, ...] #}
+{% macro gantt(rows=[], by='seat') %}
 {% import "_macros/popover.html" as pop %}
 <div class="gantt-wrap">
   <table class="gantt">
     <thead>
       <tr>
-        <th class="row-label">账号 \ 时段</th>
-        {% for c in cells %}<th>{{ c.start.strftime('%H:%M') }}</th>{% endfor %}
+        <th class="row-label">{% if by == 'seat' %}座位 \ 时段{% else %}账号 \ 时段{% endif %}</th>
+        {% set _first_cells = (rows[0].cells if rows and (rows[0].cells is defined) else none) %}
+        {% if _first_cells %}
+          {% for c in _first_cells %}<th>{{ c.start.strftime('%H:%M') }}</th>{% endfor %}
+        {% endif %}
       </tr>
     </thead>
     <tbody>
-      {% for acc in accounts %}
+      {% for row in rows %}
       <tr>
-        <th class="row-label">{{ acc.id }}</th>
-        {% for c in cells %}
-          {% set hit_list = (c.accounts_info | selectattr('id', 'equalto', acc.id) | list) %}
-          {% set hit = (hit_list[0] if hit_list else None) %}
-          {% set _status = (hit.status if hit is not none else 'empty') %}
-          {% set _actionable = (hit is not none and hit.status in ('active', 'submitting', 'failed')) %}
-          <td class="cell cell-{{ _status }}{% if _actionable %} cell-actionable{% endif %}"
-              title="{{ acc.id }} · {{ c.start.strftime('%H:%M') }}-{{ c.end.strftime('%H:%M') }}{% if hit is not none %} · {{ hit.status }}{% endif %}">
-            {% if hit is not none and hit.status in ('active', 'submitting', 'leaving', 'failed') %}
-              {{ pop.cell_popover(task_id=hit.task_id, status=hit.status, account_id=acc.id, day=hit.day, start_time=c.start.isoformat(timespec='minutes'), end_time=c.end.isoformat(timespec='minutes')) }}
+        <th class="row-label">
+          {% if by == 'seat' %}
+            <span class="font-mono text-xs">{{ row.seat.seat_num }}</span>
+            {% if row.seat.label %}<span class="text-xs text-ink-muted ml-1">{{ row.seat.label }}</span>{% endif %}
+          {% else %}{{ row.id }}{% endif %}
+        </th>
+        {% for c in row.cells %}
+          {% set hit = (c.accounts_info[0] if c.accounts_info else None) %}
+          {% set _status = (hit.status if hit else 'empty') %}
+          {% set _actionable = (hit is not none and hit.status in ('active','submitting','failed','leaving')) %}
+          {% set _user_reserved = (c.user_reserved if c.user_reserved is defined else False) %}
+          {% set _others_occupied = (c.others_occupied if c.others_occupied is defined else False) %}
+          <td class="cell cell-{{ _status }}{% if _actionable %} cell-actionable{% endif %}{% if _user_reserved %} cell-user-reserved{% endif %}{% if _others_occupied %} cell-others-occupied{% endif %}"
+              title="{% if by == 'seat' %}{{ row.seat.seat_num }}{% else %}{{ row.id }}{% endif %} · {{ c.start.strftime('%H:%M') }}-{{ c.end.strftime('%H:%M') }}{% if _user_reserved %} · 👤 用户硬预约{% endif %}{% if _others_occupied %} · 🔒 他人已占{% endif %}{% if hit %} · {{ hit.id or '' }} · {{ hit.status }}{% endif %}">
+            {% if hit and hit.status in ('active','submitting','leaving','failed') and hit.task_id %}
+              {{ pop.cell_popover(task_id=hit.task_id, status=hit.status, account_id=hit.id or '', day=hit.day or '', start_time=c.start.isoformat(timespec='minutes'), end_time=c.end.isoformat(timespec='minutes')) }}
             {% endif %}
+            {% if _user_reserved and not hit %}<span class="text-xs">👤</span>{% endif %}
+            {% if _others_occupied and not hit %}<span class="text-xs">🔒</span>{% endif %}
           </td>
         {% endfor %}
       </tr>
       {% endfor %}
-      <tr class="coverage-row">
-        <th class="row-label">合并</th>
-        {% for c in cells %}
-          <td class="cell {% if c.accounts_info %}cell-coverage{% else %}cell-gap{% endif %}">
-            {% if c.accounts_info | length >= 2 %}⚡{% elif c.accounts_info %}✓{% else %}✗{% endif %}
-          </td>
-        {% endfor %}
-      </tr>
     </tbody>
   </table>
 </div>
 <div class="gantt-legend">
-  <span><span class="cell cell-active"></span>已预约</span>
-  <span><span class="cell cell-submitting"></span>提交中</span>
-  <span><span class="cell cell-leaving"></span>签退中</span>
-  <span><span class="cell cell-pending"></span>待执行</span>
-  <span><span class="cell cell-failed"></span>失守</span>
-  <span><span class="cell cell-complete"></span>已完成</span>
+  <span><span class="swatch cell-active"></span>已预约</span>
+  <span><span class="swatch cell-submitting"></span>提交中</span>
+  <span><span class="swatch cell-leaving"></span>签退中</span>
+  <span><span class="swatch cell-pending"></span>待执行</span>
+  <span><span class="swatch cell-failed"></span>失败</span>
+  <span><span class="swatch cell-complete"></span>已完成</span>
+  <span><span class="swatch cell-user-reserved"></span>👤 用户硬预约</span>
+  <span><span class="swatch cell-others-occupied"></span>🔒 他人已占</span>
 </div>
 {% endmacro %}
