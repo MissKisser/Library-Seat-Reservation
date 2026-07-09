@@ -1,78 +1,75 @@
 {% extends "base.html" %}
-{% block title %}{{ '新建' if not account else '编辑' }}守护账号 · SeatBot{% endblock %}
-{% from "_macros/banner.html" import banner %}
-{% from "_macros/form.html" import text_field, select_field, textarea_field, button_group %}
+{% from "_macros/form.html" import text_field, select_field, textarea_field, number_field, checkbox_grid_field, button_group %}
+{% block title %}{% if account %}编辑账号 · {{ account.id }}{% else %}新建守护账号{% endif %}{% endblock %}
+
 {% block content %}
-<h1 class="page-title">{{ '新建' if not account else '编辑' }}守护账号</h1>
-<p class="page-sub">守护账号用于在指定时段为同一个目标座位抢座。</p>
-
-{% if error %}{{ banner(level='error', text=error) }}{% endif %}
-
-<form method="post" class="card" action="{{ '/accounts' if not account else '/accounts/' + account.id }}">
-  {% if not account %}
-    {{ text_field(name='id', label='账号 ID', value='', placeholder='例: alice_01', required=True,
-                  hint='字母 / 数字 / 下划线 / 横线；保存后不可修改') }}
-  {% endif %}
-  {{ text_field(name='phone', label='手机号', value=(account.phone if account else ''),
-                placeholder='学习通登录手机号', required=True) }}
-  {{ text_field(name='password', label='密码', type='password', value=(account.password if account else ''),
-                required=True) }}
-  {{ select_field(
-      name='slots',
-      label='时段模式',
-      options=[('full', 'full (08:00-22:00 全天)'),
-               ('custom', 'custom (自定义时段列表)')],
-      value=('full' if not account or account.slots == 'full' else 'custom'),
-      required=True
-  ) }}
-  <div id="custom-wrap" class="form-field">
-    <label for="slots_custom">时段列表 (JSON, 每个 "HH:MM-HH:MM" ≤ 2h)</label>
-    <textarea id="slots_custom" name="slots_custom" rows="3"
-              placeholder='["09:00-11:00", "13:00-15:00"]'>{% if account and account.slots != 'full' %}{{ account.slots | tojson }}{% endif %}</textarea>
-    <div class="hint">例如：<code>["09:00-11:00", "13:00-15:00"]</code></div>
+<div class="max-w-2xl">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">{% if account %}编辑账号 · {{ account.id }}{% else %}新建守护账号{% endif %}</h1>
+      <p class="page-sub">守护账号会在绑定的目标座位上轮值预约</p>
+    </div>
+    <a class="btn btn-ghost btn-sm" href="/accounts">← 返回列表</a>
   </div>
 
-  {{ button_group(primary_label='保存', primary_href_or_type='submit',
-                  secondary_label='取消', secondary_href='/accounts') }}
-</form>
+  {# 编辑模式：验证按钮（重点交互）#}
+  {% if account %}
+  <div class="card mb-4" x-data="verifyButton('{{ account.id }}')">
+    <div class="card-body flex items-center justify-between gap-4 flex-wrap">
+      <div>
+        <div class="text-sm font-medium text-ink">账号登录验证</div>
+        <div class="text-xs text-ink-secondary mt-0.5">测试此账号能否成功登录超星（会发起真实登录）</div>
+      </div>
+      <div class="flex items-center gap-3">
+        <span x-show="message" x-text="message" :class="state==='success' ? 'text-success text-sm' : (state==='failed' ? 'text-danger text-sm' : 'text-ink-muted text-sm')"></span>
+        <button class="btn btn-primary btn-sm" @click="run()" :disabled="running" :aria-busy="running">
+          <svg x-show="running" class="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg>
+          <span x-text="label">验证登录</span>
+        </button>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
-{% if account %}
-<div class="card">
-  <header class="card-header">
-    <h2 class="card-title">测试登录</h2>
-  </header>
-  <p>用本页填写的手机号 + 密码尝试登录学习通，验证凭据是否有效。</p>
-  <button class="btn" type="button" onclick="testLogin()">🔐 测试此账号登录</button>
-  <pre id="test-login-result" style="margin-top: var(--sp-3); white-space: pre-wrap;"></pre>
+  <div class="card">
+    <div class="card-body">
+      <form method="post" action="{% if account %}/accounts/{{ account.id }}{% else %}/accounts{% endif %}" class="flex flex-col gap-4"
+            x-data="slotsToggle({% if account and account.slots != 'full' %}'custom'{% else %}'full'{% endif %})">
+        {% if not account %}
+          {{ text_field('id', '账号 ID', '', placeholder='如 xiongjt', required=True, pattern='[A-Za-z0-9_-]+', hint='保存后不可修改，仅字母/数字/下划线/连字符') }}
+        {% endif %}
+        {{ text_field('phone', '手机号', account.phone if account else '', placeholder='13800000000', required=True) }}
+        {{ text_field('password', '密码', account.password if account else '', type='password', required=True) }}
+
+        {# 时段模式：Alpine 控制 custom textarea 显隐 #}
+        <div class="form-field">
+          <label for="slots">时段模式</label>
+          <select id="slots" name="slots" class="select" x-model="mode">
+            <option value="full" {% if account and account.slots == 'full' %}selected{% endif %}>全天 08:00-22:00</option>
+            <option value="custom" {% if account and account.slots != 'full' %}selected{% endif %}>自定义</option>
+          </select>
+        </div>
+        <div x-show="isCustom()" x-cloak style="display:none">
+          {{ textarea_field('slots_custom', '自定义时段（JSON 数组）',
+              (account.slots | tojson) if account and account.slots != 'full' else '["09:00-11:00", "13:00-15:00"]',
+              hint='格式：["HH:MM-HH:MM", ...]') }}
+        </div>
+
+        {# 绑定座位 checkbox-grid #}
+        {% set _opts = [] %}
+        {% for s in target_seats %}{% set _ = _opts.append([s.seat_num, s.seat_num ~ (' · ' ~ s.label if s.label else '')]) %}{% endfor %}
+        {{ checkbox_grid_field('bound_seats', '绑定座位（不勾选 = 通用 wildcard，覆盖所有目标座位）',
+            _opts, checked_keys=(account.bound_seats if account else [])) }}
+
+        {{ number_field('one_account_max_concurrent_segments_per_day', '每日最大并发段数',
+            account.one_account_max_concurrent_segments_per_day if account else 1, min=1, max=6, hint='单账号每天最多同时持有的预约段数') }}
+
+        <div class="flex items-center gap-2 mt-2">
+          <button class="btn btn-primary" type="submit">保存账号</button>
+          <a class="btn btn-ghost" href="/accounts">取消</a>
+        </div>
+      </form>
+    </div>
+  </div>
 </div>
-{% endif %}
-{% endblock %}
-{% block scripts %}
-<script>
-  // toggle slots UI
-  function syncSlotsUI() {
-    const v = document.getElementById('slots-select').value;
-    document.getElementById('custom-wrap').style.display = v === 'custom' ? 'block' : 'none';
-  }
-  const sel = document.getElementById('slots-select');
-  if (sel) sel.addEventListener('change', syncSlotsUI);
-  syncSlotsUI();
-
-  // test-login
-  async function testLogin() {
-    const out = document.getElementById('test-login-result');
-    out.textContent = '测试中…';
-    try {
-      const r = await fetch('/accounts/{{ account.id if account else "" }}/test-login', {
-        method: 'POST',
-      });
-      const j = await r.json();
-      out.textContent = JSON.stringify(j, null, 2);
-      out.style.color = j.ok ? 'var(--success)' : 'var(--danger)';
-    } catch (e) {
-      out.textContent = '请求失败: ' + e;
-      out.style.color = 'var(--danger)';
-    }
-  }
-</script>
 {% endblock %}
