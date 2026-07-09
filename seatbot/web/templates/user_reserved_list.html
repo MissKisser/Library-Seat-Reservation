@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_macros/form.html" import select_field, text_field %}
+{% from "_macros/empty.html" import empty %}
+{% block title %}用户硬预约{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-5">
+  <div class="page-header">
+    <div><h1 class="page-title">用户硬预约</h1><p class="page-sub">你已在超星手动预约的时段，调度器会跳过不冲突</p></div>
+  </div>
+
+  {# 构建下拉选项：(value, label) 元组列表，select_field 宏所需格式 #}
+  {% set account_opts = [] %}
+  {% for a in accounts %}{% set _ = account_opts.append((a.id, a.id)) %}{% endfor %}
+  {% set seat_opts = [] %}
+  {% for s in target_seats %}{% set _ = seat_opts.append((s.seat_num, s.seat_num)) %}{% endfor %}
+
+  {# 添加表单 #}
+  <div class="card"><div class="card-header"><span class="card-title">登记硬预约</span></div>
+    <div class="card-body">
+      <form method="post" action="/user-reserved" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
+            x-data="{ check(){ const s=document.getElementById('start_time'),e=document.getElementById('end_time'); if(s.value&&e.value&&s.value>=e.value){window.showToast({type:'warn',title:'时段无效',desc:'结束时间需晚于开始时间'});return false;}return true;} }"
+            @submit="return check()">
+        {{ select_field('account_id', '账号', account_opts, '') }}
+        {{ select_field('seat_num', '座位', seat_opts, '') }}
+        {{ text_field('day', '日期', '', type='date', required=True) }}
+        {{ text_field('start_time', '开始时间', '19:30', type='time', required=True) }}
+        {{ text_field('end_time', '结束时间', '21:30', type='time', required=True) }}
+        {{ text_field('note', '备注', '', placeholder='用户手动预约') }}
+        <div class="flex items-end"><button class="btn btn-primary btn-sm" type="submit">登记</button></div>
+      </form>
+    </div>
+  </div>
+
+  {# 列表 #}
+  <div class="card">
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead><tr><th>账号</th><th>座位</th><th>日期</th><th>时段</th><th>备注</th><th class="actions">操作</th></tr></thead>
+        <tbody>
+          {% for r in reserved %}
+          <tr>
+            <td><code>{{ r.account_id }}</code></td>
+            <td class="font-mono">{{ r.seat_num }}</td>
+            <td class="num">{{ r.day }}</td>
+            <td class="num font-mono text-xs">{{ r.start_time }}-{{ r.end_time }}</td>
+            <td class="text-xs text-ink-secondary">{{ r.note or '—' }}</td>
+            <td class="actions">
+              <button class="btn btn-ghost btn-sm text-danger"
+                @click="confirmAction({title:'删除硬预约？',desc:'{{ r.account_id }} · {{ r.seat_num }} · {{ r.day }}',confirmText:'删除',danger:true}).then(ok=>{if(ok){const f=document.createElement('form');f.method='post';f.action='/user-reserved/{{ r.id }}/delete';document.body.appendChild(f);f.submit();}})">删除</button>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6">
+            {{ empty(title='暂无硬预约', hint='登记你已在超星手动预约的时段，避免调度器冲突') }}
+          </td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
