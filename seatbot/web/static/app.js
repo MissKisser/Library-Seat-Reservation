@@ -99,7 +99,12 @@
     const params = new URLSearchParams(location.search);
     let shown = false;
     for (const [k, v] of params) {
-      if (map[k]) { window.showToast(map[k]); shown = true; }
+      if (map[k]) {
+        // error 携带具体原因时，把它作为 toast 描述
+        const t = map[k];
+        window.showToast(k === 'error' && v && v !== '1' ? { ...t, desc: v } : t);
+        shown = true;
+      }
     }
     if (shown && window.history.replaceState) {
       const url = location.pathname + location.hash;

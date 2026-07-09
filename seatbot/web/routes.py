@@ -192,6 +192,8 @@ async def dashboard(request: Request):
             "recent_logs": recent_logs,
             "occ_err": occ_err,
             "active_page": "dashboard",
+            "accounts": accounts,
+            "target_seats": target_seats,
         },
     )
 
@@ -218,10 +220,8 @@ async def targets_list(request: Request):
 
 @router.get("/targets/new", response_class=HTMLResponse)
 async def targets_new(request: Request):
-    return _templates(request).TemplateResponse(
-        request, "targets_form.html",
-        await _ctx(request, seat=None, error=None, active_page="targets"),
-    )
+    # 表单已内联到列表页（targets_list.html），重定向到列表页
+    return RedirectResponse("/targets", status_code=303)
 
 
 @router.post("/targets")
@@ -233,13 +233,10 @@ async def targets_create(
     store = request.app.state.store
     sn = seat_num.strip()
     if not sn.isdigit() or not (1 <= len(sn) <= 4):
-        return _templates(request).TemplateResponse(
-            request, "targets_form.html",
-            await _ctx(request, seat=None,
-                        error=f"seat_num must be 1-4 digit number: {seat_num!r}",
-                        active_page="targets"),
-            status_code=400,
-        )
+        # 校验失败：重定向到列表页并提示（不再渲染已删除的 targets_form.html）
+        from urllib.parse import quote
+        msg = quote(f"座位号必须是 1-4 位数字：{seat_num!r}")
+        return RedirectResponse(f"/targets?error={msg}", status_code=303)
     await store.add_target_seat(sn.zfill(3), label=label)
     return RedirectResponse("/targets?created=1", status_code=303)
 

@@ -10,8 +10,8 @@
   {% set _gap = namespace(n=0) %}
   {% for r in rows %}{% for c in r.cells %}{% if not c.accounts_info and not c.user_reserved and not c.others_occupied %}{% set _gap.n = _gap.n + 1 %}{% endif %}{% endfor %}{% endfor %}
   <div class="stat-grid" x-data="{ countdown: 30, init(){ setInterval(()=>{this.countdown--; if(this.countdown<=0) location.reload();},1000);} }" x-init="init()">
-    {{ stat('目标座位', rows|length) }}
-    {{ stat('守护账号', '—', hint='见侧栏') }}
+    {{ stat('目标座位', target_seats|length if target_seats is defined else rows|length) }}
+    {{ stat('守护账号', accounts|length if accounts is defined else '—') }}
     {{ stat('今日覆盖', rows|length ~ ' 座', hint=(_gap.n ~ ' 个空缺') if _gap.n else '全覆盖', accent=_gap.n > 0) }}
     {{ stat('当前时间', now_hhmm) }}
   </div>

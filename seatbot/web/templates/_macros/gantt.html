@@ -31,7 +31,7 @@
           <td class="cell cell-{{ _status }}{% if _actionable %} cell-actionable{% endif %}{% if _user_reserved %} cell-user-reserved{% endif %}{% if _others_occupied %} cell-others-occupied{% endif %}"
               title="{% if by == 'seat' %}{{ row.seat.seat_num }}{% else %}{{ row.id }}{% endif %} · {{ c.start.strftime('%H:%M') }}-{{ c.end.strftime('%H:%M') }}{% if _user_reserved %} · 👤 用户硬预约{% endif %}{% if _others_occupied %} · 🔒 他人已占{% endif %}{% if hit %} · {{ hit.id or '' }} · {{ hit.status }}{% endif %}">
             {% if hit and hit.status in ('active','submitting','leaving','failed') and hit.task_id %}
-              {{ pop.cell_popover(task_id=hit.task_id, status=hit.status, account_id=hit.id or '', day=hit.day or '', start_time=c.start.isoformat(timespec='minutes'), end_time=c.end.isoformat(timespec='minutes')) }}
+              {{ pop.cell_popover(task_id=hit.task_id, status=hit.status, account_id=hit.id or '', seat_num=row.seat.seat_num, day=hit.day or '', start_time=c.start.isoformat(timespec='minutes'), end_time=c.end.isoformat(timespec='minutes')) }}
             {% endif %}
             {% if _user_reserved and not hit %}<span class="text-xs">👤</span>{% endif %}
             {% if _others_occupied and not hit %}<span class="text-xs">🔒</span>{% endif %}
