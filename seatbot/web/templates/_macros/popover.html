@@ -1,5 +1,5 @@
 {# Macro: popover. Gantt 单元操作弹层，Alpine 驱动。 #}
-{% macro cell_popover(task_id=None, status='', account_id='', day='', start_time='', end_time='') %}
+{% macro cell_popover(task_id=None, status='', account_id='', seat_num='', day='', start_time='', end_time='') %}
 <div class="relative inline-flex w-full h-full" x-data="{ open: false }" @click.outside="open=false">
   <button class="w-full h-full" @click="open=!open" aria-label="操作"></button>
   <div class="popover" x-show="open" x-cloak style="display:none">
@@ -10,7 +10,7 @@
     {% if status == 'failed' %}
     <form method="post" action="/tasks/quick-reserve">
       <input type="hidden" name="account_id" value="{{ account_id }}">
-      <input type="hidden" name="seat_num" value="">
+      <input type="hidden" name="seat_num" value="{{ seat_num }}">
       <input type="hidden" name="start" value="{{ start_time }}">
       <input type="hidden" name="end" value="{{ end_time }}">
       <button type="submit" class="text-accent">续约该段</button>
