@@ -1,66 +1,58 @@
 {% extends "base.html" %}
-{% block title %}覆盖报告 · SeatBot{% endblock %}
 {% from "_macros/banner.html" import banner %}
 {% from "_macros/gantt.html" import gantt %}
+{% from "_macros/empty.html" import empty %}
+{% block title %}覆盖报告{% endblock %}
+
 {% block content %}
-<h1 class="page-title">覆盖报告 <small style="color: var(--text-secondary); font-size: var(--fs-md); font-weight: 400;">({{ day }})</small></h1>
-<p class="page-sub">目标座位 <b>{{ cfg.library.target_seat_num }}</b> · 图书馆 {{ cfg.library.room_name }} · 开放 {{ cfg.library.open_time }}–{{ cfg.library.close_time }}</p>
-
-{# Bridge cov.cells (Coverage dataclass) -> the {start, end, accounts_info} shape
-   the gantt macro expects. accounts_info is a list of {id, status, ...} so the
-   macro's `c.accounts_info | selectattr('id', 'equalto', acc.id)` lookup works. #}
-{% set _cells = [] %}
-{% for c in cov.cells %}
-  {% set _info = [] %}
-  {% for aid in c.accounts %}
-    {% set _ = _info.append({'id': aid, 'status': 'pending', 'task_id': none, 'day': day}) %}
-  {% endfor %}
-  {% set _ = _cells.append({'start': c.start, 'end': c.end, 'accounts_info': _info}) %}
-{% endfor %}
-
-{% if cov.gaps %}
-  {{ banner(level='error', text='<b>⚠ 未覆盖时段 (失守):</b> ' ~ (cov.gaps | map(attribute=0) | join('–'))) }}
-{% else %}
-  {{ banner(level='ok', text='✅ ' ~ cfg.library.open_time ~ '-' ~ cfg.library.close_time ~ ' 已全部覆盖，无失守时段。') }}
-{% endif %}
-
-{% if cov.overlaps %}
-  {{ banner(level='info', text='<b>重叠时段 (多账号同时覆盖，可安全接力):</b> ' ~ (cov.overlaps | length) ~ ' 段。') }}
-{% endif %}
-
-<div class="card">
-  <header class="card-header">
-    <h2 class="card-title">每日覆盖 Gantt</h2>
-  </header>
-  <p style="color: var(--text-secondary);">每行一个守护账号；每格 30 分钟。颜色 = 是否在该时段有守护。</p>
-  {{ gantt(accounts=accounts, cells=_cells, gaps=cov.gaps, overlaps=cov.overlaps) }}
-</div>
-
-{% if cov.gaps %}
-  <div class="card">
-    <header class="card-header">
-      <h2 class="card-title">未覆盖时段</h2>
-    </header>
-    <ul>
-      {% for g in cov.gaps %}<li>{{ g[0] }} – {{ g[1] }}</li>{% endfor %}
-    </ul>
+<div class="flex flex-col gap-5">
+  <div class="page-header">
+    <div><h1 class="page-title">覆盖报告</h1><p class="page-sub">{{ day }}</p></div>
+    <form method="get" class="flex items-center gap-2">
+      <input type="date" name="day" value="{{ day }}" class="input" />
+      <button class="btn btn-secondary btn-sm" type="submit">查询</button>
+    </form>
   </div>
-{% endif %}
 
-{% if cov.overlaps %}
-  <div class="card">
-    <header class="card-header">
-      <h2 class="card-title">重叠时段</h2>
-    </header>
-    <ul>
-      {% for o in cov.overlaps %}
-        <li>{{ o[0] }} – {{ o[1] }} · {{ o[2]|join(', ') }}</li>
+  {% if not rows %}
+    {{ empty(title='暂无目标座位', hint='先添加目标座位再查看覆盖报告', action_label='去添加', action_href='/targets') }}
+  {% else %}
+    {# 缺口统计 #}
+    {% set _total_gaps = namespace(n=0) %}
+    {% set _gap_seats = namespace(n=0) %}
+    {% for r in rows %}
+      {% if r.gaps %}{% set _gap_seats.n = _gap_seats.n + 1 %}{% set _total_gaps.n = _total_gaps.n + (r.gaps|length) %}{% endif %}
+    {% endfor %}
+
+    {% if _total_gaps.n %}
+      {{ banner('error', '<b>' ~ _total_gaps.n ~ '</b> 个时段缺口，涉及 <b>' ~ _gap_seats.n ~ '</b> 个座位') }}
+    {% else %}
+      {{ banner('ok', '全天覆盖完整，无缺口。') }}
+    {% endif %}
+
+    {{ banner('info', '🔒 标记为超星实时他人占用数据（来自 getusedtimes）' ~ ('，本次获取失败：' ~ occ_err if occ_err else '')) }}
+
+    {# Gantt #}
+    <div class="card"><div class="card-body">{{ gantt(rows, by='seat') }}</div></div>
+
+    {# 缺口明细 #}
+    {% if _total_gaps.n %}
+    <div class="flex flex-col gap-3">
+      <h2 class="text-sm font-semibold text-ink">缺口明细</h2>
+      {% for r in rows %}
+        {% if r.gaps %}
+        <div class="card border-danger/40">
+          <div class="card-header"><span class="card-title text-danger">失守：座位 {{ r.seat.seat_num }}</span></div>
+          <div class="card-body flex flex-wrap gap-2">
+            {% for g in r.gaps %}
+            <span class="badge badge-danger font-mono">{{ g[0].strftime('%H:%M') }} – {{ g[1].strftime('%H:%M') }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
       {% endfor %}
-    </ul>
-  </div>
-{% endif %}
-
-<p style="margin-top: var(--sp-4);">
-  <a class="btn" href="/accounts">编辑守护账号 →</a>
-</p>
+    </div>
+    {% endif %}
+  {% endif %}
+</div>
 {% endblock %}
