@@ -43,6 +43,11 @@
     --accent: #4f46e5;            --accent-rgb: 79 70 229;
     --accent-hover: #4338ca;      --accent-hover-rgb: 67 56 202;
     --accent-soft: #eef2ff;
+    /* 语义色 soft 变体：亮色用淡底（与深色 rgba 对应） */
+    --success-soft: #ecfdf5;
+    --warn-soft: #fffbeb;
+    --danger-soft: #fef2f2;
+    --info-soft: #f0f9ff;
   }
 
   html { font-family: theme('fontFamily.sans'); -webkit-font-smoothing: antialiased; }
