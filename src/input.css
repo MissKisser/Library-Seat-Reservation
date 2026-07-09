@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== 设计 Token：深色（默认）===== */
+@layer base {
+  :root,
+  [data-theme="dark"] {
+    --bg-app: #0b1220;
+    --bg-elevated: #0f172a;
+    --bg-surface: #131c2f;
+    --bg-muted: #1e293b;
+    --border-subtle: #1e293b;
+    --border-strong: #334155;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --text-inverse: #0f172a;
+    --accent: #818cf8;
+    --accent-hover: #a5b4fc;
+    --accent-soft: rgba(129,140,248,0.12);
+    --success: #10b981;
+    --success-soft: rgba(16,185,129,0.12);
+    --warn: #f59e0b;
+    --warn-soft: rgba(245,158,11,0.12);
+    --danger: #ef4444;
+    --danger-soft: rgba(239,68,68,0.12);
+    --info: #38bdf8;
+    --info-soft: rgba(56,189,248,0.12);
+  }
+  /* ===== 亮色 ===== */
+  [data-theme="light"] {
+    --bg-app: #fafafa;
+    --bg-elevated: #ffffff;
+    --bg-surface: #ffffff;
+    --bg-muted: #f1f5f9;
+    --border-subtle: #e2e8f0;
+    --border-strong: #cbd5e1;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --text-inverse: #ffffff;
+    --accent: #4f46e5;
+    --accent-hover: #4338ca;
+    --accent-soft: #eef2ff;
+  }
+
+  html { font-family: theme('fontFamily.sans'); -webkit-font-smoothing: antialiased; }
+  body {
+    background-color: var(--bg-app);
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  /* 数字等宽 */
+  .num, .tabular { font-variant-numeric: tabular-nums; }
+}
+
+@layer components {
+  /* Task 2 填充：btn / card / badge / input / banner / stat / empty 等 */
+}
