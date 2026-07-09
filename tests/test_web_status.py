@@ -13,6 +13,9 @@ class FakeStore:
     async def list_logs(self, account_id=None, level=None, limit=200):
         return []
 
+    async def list_target_seats(self):
+        return []
+
 
 class FakeSched:
     async def peek_next_relay(self):
@@ -57,6 +60,7 @@ def test_status_with_relay(client):
         delta_minutes=15,
         account_id="guard_a",
         task_id=42,
+        seat_num="084",
         start_time=time(10, 0),
         end_time=time(12, 0),
         status="pending",

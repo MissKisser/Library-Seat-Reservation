@@ -1,93 +1,70 @@
 {% extends "base.html" %}
-{% block title %}覆盖图{% endblock %}
-{% block subtitle %}{{ cfg.library.room_name }} · 目标座位 {{ cfg.library.target_seat_num }} · 开放 {{ cfg.library.open_time }}–{{ cfg.library.close_time }}{% endblock %}
-{% from "_macros/stat_card.html" import stat_card %}
+{% from "_macros/stat.html" import stat %}
 {% from "_macros/banner.html" import banner %}
 {% from "_macros/gantt.html" import gantt %}
+{% block title %}覆盖图{% endblock %}
+
 {% block content %}
-<h1 class="page-title">覆盖图</h1>
-<p class="page-sub">{{ subtitle or '' }}</p>
+<div class="flex flex-col gap-5">
+  {# 指标卡 4 列 #}
+  {% set _gap = namespace(n=0) %}
+  {% for r in rows %}{% for c in r.cells %}{% if not c.accounts_info and not c.user_reserved and not c.others_occupied %}{% set _gap.n = _gap.n + 1 %}{% endif %}{% endfor %}{% endfor %}
+  <div class="stat-grid" x-data="{ countdown: 30, init(){ setInterval(()=>{this.countdown--; if(this.countdown<=0) location.reload();},1000);} }" x-init="init()">
+    {{ stat('目标座位', target_seats|length if target_seats is defined else rows|length) }}
+    {{ stat('守护账号', accounts|length if accounts is defined else '—') }}
+    {{ stat('今日覆盖', rows|length ~ ' 座', hint=(_gap.n ~ ' 个空缺') if _gap.n else '全覆盖', accent=_gap.n > 0) }}
+    {{ stat('当前时间', now_hhmm) }}
+  </div>
 
-<div class="stat-grid">
-  {{ stat_card(label="目标座位", value=cfg.library.target_seat_num, hint=((cfg.library.room_name[:8] + '…') if cfg.library.room_name|length > 10 else cfg.library.room_name)) }}
-  {{ stat_card(label="守护账号", value=(accounts|length|string + " / " + accounts|length|string), hint="全部 active") }}
-  {% set covered = cells|rejectattr('accounts_info', 'equalto', []) | list | length %}
-  {% set total = cells|length %}
-  {{ stat_card(label="今日覆盖", value=(covered|string + " / " + total|string), hint=("无失守" if not gaps else (gaps|length|string + " 个失守"))) }}
-  {{ stat_card(label="现在", value=now_hhmm, hint="由 clock.js 实时刷新") }}
-</div>
+  {# 状态 banner #}
+  {% if not rows %}
+    {{ banner('warn', '尚未设置目标座位。<a class="text-accent" href="/targets">去添加 →</a>') }}
+  {% elif _gap.n %}
+    {{ banner('error', '检测到 <b>' ~ _gap.n ~ '</b> 个时段空缺，护城河有缺口。<a class="text-danger" href="/coverage">查看报告 →</a>') }}
+  {% elif occ_err %}
+    {{ banner('warn', '无法获取超星他人占用数据：' ~ occ_err) }}
+  {% else %}
+    {{ banner('ok', '护城河稳固，全部目标座位已覆盖。') }}
+  {% endif %}
 
-{% if gaps %}
-  {% set gap_text = [] %}
-  {% for g in gaps %}{% set _ = gap_text.append(g[0].strftime('%H:%M') + '–' + g[1].strftime('%H:%M')) %}{% endfor %}
-  {{ banner(level="error", text="未覆盖时段: " + gap_text|join(', ')) }}
-{% else %}
-  {{ banner(level="ok", text="08:00-22:00 全部覆盖，无失守时段") }}
-{% endif %}
-
-<div class="dashboard-grid">
-  <section class="card dashboard-main">
-    <header class="card-header">
-      <h2 class="card-title">护城河</h2>
-      <span class="card-hint">点击单元格出操作菜单 · 30s 自动刷新</span>
-    </header>
-    {{ gantt(accounts=accounts, cells=cells, gaps=gaps, overlaps=overlaps) }}
-  </section>
-
-  <aside class="dashboard-side">
-    <section class="card">
-      <header class="card-header">
-        <h2 class="card-title">最近活动</h2>
-        <a class="card-action" href="/logs">全部 →</a>
-      </header>
-      {% if recent_logs %}
-        <ul class="activity-feed">
-          {% for log in recent_logs[:8] %}
-            <li class="activity-item activity-{{ log.level|lower }}">
-              <span class="activity-dot"></span>
-              <div class="activity-body">
-                <div class="activity-message">{{ log.message }}</div>
-                <div class="activity-meta">
-                  {% if log.account_id %}<span class="activity-account">{{ log.account_id }}</span> · {% endif %}
-                  <span class="activity-level">{{ log.level }}</span>
-                </div>
-              </div>
-            </li>
-          {% endfor %}
-        </ul>
-      {% else %}
-        <div class="empty-mini">暂无活动</div>
-      {% endif %}
-    </section>
-
-    <section class="card">
-      <header class="card-header">
-        <h2 class="card-title">快速操作</h2>
-      </header>
-      <div class="quick-actions">
-        <a class="quick-action" href="/seat-config">
-          <span class="quick-action-label">修改目标座位</span>
-          <span class="quick-action-hint">当前 {{ cfg.library.target_seat_num }}</span>
-        </a>
-        <a class="quick-action" href="/accounts/new">
-          <span class="quick-action-label">添加守护账号</span>
-          <span class="quick-action-hint">已有 {{ accounts|length }} 个</span>
-        </a>
-        <a class="quick-action" href="/coverage">
-          <span class="quick-action-label">查看覆盖报告</span>
-          <span class="quick-action-hint">Gantt 视图</span>
-        </a>
-        <a class="quick-action" href="/seats">
-          <span class="quick-action-label">实时座位图</span>
-          <span class="quick-action-hint">每 30s 轮询</span>
-        </a>
+  {# 主区：gantt + 侧栏 #}
+  <div class="dashboard-grid">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">护城河（按座位）</span>
+        <span class="text-xs text-ink-muted">点击单元格操作 · 30s 自动刷新</span>
       </div>
-    </section>
-  </aside>
+      <div class="card-body">
+        {{ gantt(rows, by='seat') }}
+      </div>
+    </div>
+    <div class="flex flex-col gap-4">
+      {# 目标座位 #}
+      <div class="card"><div class="card-header"><span class="card-title">目标座位</span><a class="text-xs text-accent" href="/targets">全部 →</a></div>
+        <div class="card-body flex flex-col gap-1.5">
+          {% for r in rows[:6] %}
+          <div class="flex items-center justify-between text-sm">
+            <span class="font-mono">{{ r.seat.seat_num }}</span>
+            <span class="text-xs text-ink-secondary">{{ r.seat.label or '—' }}</span>
+          </div>
+          {% else %}<div class="text-xs text-ink-muted">暂无</div>{% endfor %}
+        </div>
+      </div>
+      {# 最近活动 #}
+      <div class="card"><div class="card-header"><span class="card-title">最近活动</span><a class="text-xs text-accent" href="/logs">全部 →</a></div>
+        <div class="card-body flex flex-col gap-2">
+          {% for log in (recent_logs[:8] if recent_logs else []) %}
+          <div class="flex items-start gap-2 text-xs">
+            <span class="mt-1 h-1.5 w-1.5 rounded-full shrink-0 {% if log.level == 'ERROR' %}bg-danger{% elif log.level == 'WARN' %}bg-warn{% else %}bg-info{% endif %}"></span>
+            <div class="flex-1 min-w-0">
+              <div class="text-ink-secondary truncate">{{ log.message }}</div>
+              <div class="text-ink-muted">{{ log.account_id or '—' }}</div>
+            </div>
+          </div>
+          {% else %}<div class="text-xs text-ink-muted">暂无活动</div>{% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
-
-<script>
-  // 30s full-page reload (preserved from prior behavior per spec)
-  setTimeout(function () { location.reload(); }, 30000);
-</script>
 {% endblock %}
