@@ -1,0 +1,16 @@
+{# Macro: empty. 空状态。 #}
+{% macro empty(title='暂无数据', hint='', action_label=None, action_href=None) %}
+<div class="empty">
+  <svg class="text-ink-muted" width="96" height="64" viewBox="0 0 96 64" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+    <rect x="8" y="20" width="80" height="36" rx="4"/>
+    <path d="M16 28h20M16 36h14M16 44h18"/>
+    <circle cx="68" cy="40" r="12" stroke-dasharray="3 3"/>
+    <path d="M64 40l3 3 6-7"/>
+  </svg>
+  <div class="empty-title">{{ title }}</div>
+  {% if hint %}<div class="empty-hint">{{ hint }}</div>{% endif %}
+  {% if action_label and action_href %}
+  <a class="btn btn-primary btn-sm mt-2" href="{{ action_href }}">{{ action_label }}</a>
+  {% endif %}
+</div>
+{% endmacro %}
