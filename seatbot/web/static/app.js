@@ -197,27 +197,32 @@
         if (this.running) return;
         this.running = true; this.done = 0; this.failedIds = [];
         for (const id of this.ids) {
-          // 通过事件触发对应行的 verifyButton；若行不存在则直接 fetch
-          const btn = document.querySelector(`[data-verify-id="${id}"]`);
-          if (btn && btn._x_dataStack) {
-            // 触发该行 Alpine 组件的 run
-            btn.dispatchEvent(new CustomEvent('verify-run'));
-          } else {
-            try {
-              const r = await fetch(`/accounts/${id}/test-login`, { method: 'POST' });
-              const j = await r.json().catch(() => ({}));
-              if (!(r.ok && j.ok)) this.failedIds.push(id);
-            } catch (e) { this.failedIds.push(id); }
+          // 串行 fetch 每个账号；若该行有 verifyButton 组件则同步更新其 UI
+          let ok = false;
+          let errMsg = '';
+          try {
+            const r = await fetch(`/accounts/${id}/test-login`, { method: 'POST' });
+            const j = await r.json().catch(() => ({}));
+            ok = r.ok && j.ok;
+            if (!ok) errMsg = humanizeError(j.error);
+          } catch (e) { errMsg = '网络错误'; }
+          if (!ok) this.failedIds.push(id);
+          // 同步更新行内 verifyButton 状态（如果该行在 DOM 中）
+          const cell = document.querySelector(`[data-verify-id="${id}"]`);
+          const comp = cell && cell._x_dataStack && cell._x_dataStack[0];
+          if (comp) {
+            comp.state = ok ? 'success' : 'failed';
+            comp.message = ok ? '✓ 登录成功' : '✗ ' + errMsg;
           }
           this.done++;
           await new Promise(res => setTimeout(res, 400)); // 串行间隔，避免 Playwright 并发
         }
         this.running = false;
-        const ok = this.total - this.failedIds.length;
+        const okCount = this.total - this.failedIds.length;
         window.showToast({
           type: this.failedIds.length ? 'warn' : 'success',
           title: '批量验证完成',
-          desc: `${ok} 通过，${this.failedIds.length} 失败`,
+          desc: `${okCount} 通过，${this.failedIds.length} 失败`,
         });
       },
     };
