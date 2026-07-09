@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_macros/form.html" import text_field %}
+{% from "_macros/empty.html" import empty %}
+{% block title %}目标座位{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-5">
+  <div class="page-header">
+    <div><h1 class="page-title">目标座位</h1><p class="page-sub">守护账号会在这些座位上轮值预约</p></div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    {# 添加表单 #}
+    <div class="card"><div class="card-header"><span class="card-title">添加目标座位</span></div>
+      <div class="card-body">
+        <form method="post" action="/targets" class="flex flex-col gap-3">
+          {{ text_field('seat_num', '座位号', '', placeholder='084', required=True, pattern='\\d{1,4}', hint='1-4 位数字，自动补零到 3 位') }}
+          {{ text_field('label', '标签（可选）', '', placeholder='靠窗主座') }}
+          <button class="btn btn-primary btn-sm w-fit" type="submit">添加</button>
+        </form>
+      </div>
+    </div>
+
+    {# 列表 #}
+    <div class="card"><div class="card-header"><span class="card-title">已注册目标座位（{{ seats|length if seats else 0 }}）</span></div>
+      <div class="card-body">
+        {% if seats %}
+        <div class="flex flex-col gap-2">
+          {% for s in seats %}
+          <div class="flex items-center justify-between gap-3 py-2 border-b border-edge-subtle last:border-0">
+            <div class="flex items-center gap-3">
+              <span class="font-mono font-medium text-sm">{{ s.seat_num }}</span>
+              <span class="text-sm text-ink-secondary">{{ s.label or '—' }}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              {% if used_by and used_by.get(s.seat_num) %}
+                <span class="text-xs text-ink-muted">{{ used_by[s.seat_num]|length }} 账号</span>
+              {% else %}<span class="text-xs text-ink-muted">未绑定</span>{% endif %}
+              <button class="btn btn-ghost btn-sm text-danger"
+                @click="confirmAction({title:'删除座位？',desc:'删除 {{ s.seat_num }} 及相关绑定',confirmText:'删除',danger:true}).then(ok=>{if(ok){const f=document.createElement('form');f.method='post';f.action='/targets/{{ s.seat_num }}/delete';document.body.appendChild(f);f.submit();}})">删除</button>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+          {{ empty(title='还没有目标座位', hint='添加你想守护的座位号') }}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
