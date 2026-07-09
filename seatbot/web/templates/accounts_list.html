@@ -1,56 +1,75 @@
 {% extends "base.html" %}
-{% block title %}守护账号 · SeatBot{% endblock %}
-{% from "_macros/banner.html" import banner %}
+{% from "_macros/empty.html" import empty %}
+{% block title %}守护账号{% endblock %}
+
 {% block content %}
 <div class="page-header">
-  <h1 class="page-title">守护账号</h1>
-  <a class="btn btn-primary" href="/accounts/new">+ 新建</a>
+  <div>
+    <h1 class="page-title">守护账号</h1>
+    <p class="page-sub">轮值预约目标座位的超星账号</p>
+  </div>
+  <div class="flex items-center gap-2">
+    {# 批量验证 #}
+    <div x-data="verifyAll({{ accounts | map(attribute='id') | list | tojson }})">
+      <button class="btn btn-secondary btn-sm" @click="run()" :disabled="running || {{ accounts|length }} == 0">
+        <svg x-show="running" class="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg>
+        <span x-text="label">全部验证</span>
+      </button>
+    </div>
+    <a class="btn btn-primary btn-sm" href="/accounts/new">+ 新建账号</a>
+  </div>
 </div>
 
-<p class="page-sub">所有守护账号抢占同一个目标座位号：
-  <a href="/seat-config"><b>{{ request.app.state.cfg.library.target_seat_num }}</b></a>
-  （点击此处修改）
-</p>
-
-{% if not accounts %}
-  <div class="empty-state">
-    <div class="empty-illustration"></div>
-    <div class="empty-title">暂无守护账号</div>
-    <div class="empty-hint">新建一个守护账号开始保护你的座位</div>
-    <a class="btn btn-primary" href="/accounts/new">+ 新建守护账号</a>
-  </div>
-{% else %}
-  <div class="card">
-    <table class="table is-card-list">
+{% if accounts %}
+<div class="card">
+  <div class="overflow-x-auto">
+    <table class="table">
       <thead>
         <tr>
-          <th>ID</th>
-          <th>手机号</th>
-          <th>slots</th>
-          <th class="actions">操作</th>
+          <th>ID</th><th>手机号</th><th>时段</th><th>绑定座位</th><th>每日上限</th><th>验证</th><th class="actions">操作</th>
         </tr>
       </thead>
       <tbody>
         {% for a in accounts %}
         <tr>
-          <td data-label="ID"><code>{{ a.id }}</code></td>
-          <td data-label="手机号">{{ a.phone }}</td>
-          <td data-label="slots"><code style="max-width: 300px; display: inline-block; overflow: hidden; text-overflow: ellipsis;">{{ a.slots }}</code></td>
-          <td class="actions" data-label="操作">
-            <a class="btn" href="/accounts/{{ a.id }}/edit">编辑</a>
-            <form method="post" action="/accounts/{{ a.id }}/delete" style="display:inline"
-                  onsubmit="return confirm('删除账号 {{ a.id }}?')">
-              <button class="btn btn-danger" type="submit">删除</button>
-            </form>
+          <td><code>{{ a.id }}</code></td>
+          <td class="num">{{ a.phone }}</td>
+          <td class="text-xs text-ink-secondary">
+            {% if a.slots == 'full' %}全天{% else %}
+              <span class="font-mono">{{ a.slots | tojson }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if a.bound_seats %}
+              {% for s in a.bound_seats %}<span class="badge badge-muted mr-1">{{ s }}</span>{% endfor %}
+            {% else %}<span class="text-xs text-ink-muted">通用</span>{% endif %}
+          </td>
+          <td class="num">{{ a.one_account_max_concurrent_segments_per_day }}</td>
+          <td>
+            {# 行级验证按钮 #}
+            <div x-data="verifyButton('{{ a.id }}')" class="flex items-center gap-2" data-verify-id="{{ a.id }}">
+              <button class="btn btn-ghost btn-sm" @click="run()" :disabled="running" :aria-busy="running">
+                <svg x-show="running" class="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg>
+                <svg x-show="!running && state==='success'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+                <span x-text="label">验证</span>
+              </button>
+              <span x-show="message" x-text="message" :class="state==='success' ? 'text-success text-xs' : 'text-danger text-xs'"></span>
+            </div>
+          </td>
+          <td class="actions">
+            <a class="btn btn-ghost btn-sm" href="/accounts/{{ a.id }}/edit">编辑</a>
+            <button class="btn btn-ghost btn-sm text-danger"
+              @click="confirmAction({title:'删除账号？',desc:'删除 {{ a.id }} 及其绑定',confirmText:'删除',danger:true}).then(ok=>{if(ok){const f=document.createElement('form');f.method='post';f.action='/accounts/{{ a.id }}/delete';document.body.appendChild(f);f.submit();}})">删除</button>
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+</div>
+{% else %}
+<div class="card"><div class="card-body">
+  {{ empty(title='还没有守护账号', hint='添加第一个超星账号来开始轮值预约', action_label='+ 新建账号', action_href='/accounts/new') }}
+</div></div>
 {% endif %}
-
-<p style="margin-top: var(--sp-4);">
-  <a class="btn" href="/coverage">查看覆盖报告 →</a>
-</p>
 {% endblock %}

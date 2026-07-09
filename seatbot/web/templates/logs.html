@@ -1,61 +1,60 @@
 {% extends "base.html" %}
-{% block title %}日志 · SeatBot{% endblock %}
-{% from "_macros/badge.html" import badge %}
+{% from "_macros/empty.html" import empty %}
+{% block title %}日志{% endblock %}
+
 {% block content %}
-<h1 class="page-title">日志</h1>
-<p class="page-sub">调度器与抢座流程的运行记录（最近 300 条）。</p>
+<div class="flex flex-col gap-5">
+  <div class="page-header">
+    <div><h1 class="page-title">日志</h1><p class="page-sub">调度器与预约执行记录</p></div>
+  </div>
 
-<form method="get" class="card" style="display: flex; gap: var(--sp-3); align-items: end; flex-wrap: wrap;">
-  <div class="form-field" style="margin: 0;">
-    <label for="account_id">账号</label>
-    <select id="account_id" name="account_id">
-      <option value="">全部</option>
-      {% for a in accounts %}
-        <option value="{{ a.id }}" {% if filter_account == a.id %}selected{% endif %}>{{ a.id }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div class="form-field" style="margin: 0;">
-    <label for="level">级别</label>
-    <select id="level" name="level">
-      <option value="">全部</option>
-      {% for l in ['INFO','WARN','ERROR'] %}
-        <option value="{{ l }}" {% if filter_level == l %}selected{% endif %}>{{ l }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <button class="btn btn-primary" type="submit">过滤</button>
-  <a class="btn" href="/logs">重置</a>
-</form>
+  {# 筛选 #}
+  <div class="card"><div class="card-body">
+    <form method="get" class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+      <div class="form-field">
+        <label for="account_id">账号</label>
+        <select id="account_id" name="account_id" class="select">
+          <option value="">全部</option>
+          {% for a in accounts %}<option value="{{ a.id }}" {% if filter_account == a.id %}selected{% endif %}>{{ a.id }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="level">级别</label>
+        <select id="level" name="level" class="select">
+          <option value="">全部</option>
+          {% for lv in ['INFO','WARN','ERROR'] %}<option value="{{ lv }}" {% if filter_level == lv %}selected{% endif %}>{{ lv }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn btn-primary btn-sm" type="submit">筛选</button>
+        <a class="btn btn-ghost btn-sm" href="/logs">重置</a>
+      </div>
+    </form>
+  </div></div>
 
-{% if not logs %}
-  <div class="empty-state">
-    <div class="empty-illustration"></div>
-    <div class="empty-title">暂无日志</div>
-    <div class="empty-hint">运行调度器后会产出 INFO / WARN / ERROR 日志</div>
+  {# 列表 #}
+  <div class="card">
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead><tr><th>时间</th><th>级别</th><th>账号</th><th>消息</th></tr></thead>
+        <tbody>
+          {% for log in logs %}
+          <tr>
+            <td class="num font-mono text-xs whitespace-nowrap">{{ log.ts }}</td>
+            <td>
+              <span class="badge badge-{% if log.level == 'ERROR' %}danger{% elif log.level == 'WARN' %}warn{% else %}info{% endif %}">
+                <span class="dot"></span>{{ log.level }}
+              </span>
+            </td>
+            <td><code>{{ log.account_id or '—' }}</code></td>
+            <td class="font-mono text-xs">{{ log.message }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">{{ empty(title='暂无日志', hint='系统运行后将产生日志记录') }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
-{% else %}
-  <div class="card" style="padding: 0;">
-    <table class="table is-card-list">
-      <thead>
-        <tr>
-          <th>时间</th>
-          <th>级别</th>
-          <th>账号</th>
-          <th>消息</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for l in logs %}
-        <tr>
-          <td data-label="时间"><code>{{ l.ts }}</code></td>
-          <td data-label="级别">{{ badge(status=l.level.lower() if l.level in ('INFO','WARN','ERROR') else 'pending') }} <span style="color: var(--text-muted); font-size: var(--fs-xs);">{{ l.level }}</span></td>
-          <td data-label="账号">{{ l.account_id or '—' }}</td>
-          <td data-label="消息" style="font-family: var(--font-mono); font-size: var(--fs-sm);">{{ l.message }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-{% endif %}
+</div>
 {% endblock %}

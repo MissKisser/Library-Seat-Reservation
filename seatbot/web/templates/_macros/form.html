@@ -1,8 +1,9 @@
-{# Macro: form. Provides text_field, select_field, textarea_field, button_group. #}
+{# Macro: form. 表单原子。 #}
 {% macro text_field(name, label, value='', placeholder='', type='text', required=False, hint=None, error=None, pattern=None) %}
 <div class="form-field">
   <label for="{{ name }}">{{ label }}{% if required %}<span class="req">*</span>{% endif %}</label>
-  <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value }}" placeholder="{{ placeholder }}" {% if required %}required{% endif %} {% if pattern %}pattern="{{ pattern }}"{% endif %} />
+  <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value }}" placeholder="{{ placeholder }}"
+         class="input" {% if required %}required{% endif %} {% if pattern %}pattern="{{ pattern }}"{% endif %} />
   {% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
 </div>
@@ -11,30 +12,57 @@
 {% macro select_field(name, label, options, value='', required=False, hint=None) %}
 <div class="form-field">
   <label for="{{ name }}">{{ label }}{% if required %}<span class="req">*</span>{% endif %}</label>
-  <select id="{{ name }}" name="{{ name }}" {% if required %}required{% endif %}>
+  <select id="{{ name }}" name="{{ name }}" class="select" {% if required %}required{% endif %}>
     {% for opt in options %}
-      {% set _v = opt[0] %}
-      {% set _l = opt[1] %}
-      <option value="{{ _v }}" {% if _v == value %}selected{% endif %}>{{ _l }}</option>
+    {% set _v = opt[0] %}
+    {% set _l = opt[1] %}
+    <option value="{{ _v }}" {% if _v == value %}selected{% endif %}>{{ _l }}</option>
     {% endfor %}
   </select>
   {% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
 </div>
 {% endmacro %}
 
-{% macro textarea_field(name, label, value='', rows=3, hint=None) %}
+{% macro textarea_field(name, label, value='', rows=3, hint=None, placeholder='') %}
 <div class="form-field">
   <label for="{{ name }}">{{ label }}</label>
-  <textarea id="{{ name }}" name="{{ name }}" rows="{{ rows }}">{{ value }}</textarea>
+  <textarea id="{{ name }}" name="{{ name }}" rows="{{ rows }}" class="textarea" placeholder="{{ placeholder }}">{{ value }}</textarea>
   {% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
 </div>
 {% endmacro %}
 
-{% macro button_group(primary_label, primary_href_or_type='submit', secondary_label=None, secondary_href=None) %}
-<div class="button-group">
-  <button class="btn btn-primary" type="{{ primary_href_or_type }}">{{ primary_label }}</button>
-  {% if secondary_label %}
-  <a class="btn" href="{{ secondary_href }}">{{ secondary_label }}</a>
-  {% endif %}
+{% macro number_field(name, label, value='', min=None, max=None, step=None, required=False, hint=None) %}
+<div class="form-field">
+  <label for="{{ name }}">{{ label }}{% if required %}<span class="req">*</span>{% endif %}</label>
+  <input id="{{ name }}" name="{{ name }}" type="number" value="{{ value }}" class="input"
+         {% if min is not none %}min="{{ min }}"{% endif %}
+         {% if max is not none %}max="{{ max }}"{% endif %}
+         {% if step %}step="{{ step }}"{% endif %}
+         {% if required %}required{% endif %} />
+  {% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro checkbox_grid_field(name, label, options, checked_keys=[], hint=None) %}
+<div class="form-field">
+  <label>{{ label }}</label>
+  <div class="checkbox-grid">
+    {% for opt in options %}
+    {% set _v = opt[0] %}
+    {% set _l = opt[1] %}
+    <label class="checkbox-item">
+      <input type="checkbox" name="{{ name }}" value="{{ _v }}" {% if _v in checked_keys %}checked{% endif %} />
+      <span>{{ _l }}</span>
+    </label>
+    {% endfor %}
+  </div>
+  {% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro button_group(primary_label, primary_type='submit', secondary_label=None, secondary_href=None) %}
+<div class="flex items-center gap-2 mt-2">
+  <button class="btn btn-primary" type="{{ primary_type }}">{{ primary_label }}</button>
+  {% if secondary_label %}<a class="btn btn-ghost" href="{{ secondary_href }}">{{ secondary_label }}</a>{% endif %}
 </div>
 {% endmacro %}

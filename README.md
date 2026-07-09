@@ -70,6 +70,14 @@ python -m seatbot init-db
 python -m seatbot run               # 访问 http://localhost:8080
 ```
 
+> **Web 前端开发（可选）**：Web 面板用 Tailwind v3 构建，构建产物 `seatbot/web/static/style.css`
+> 已入库，**部署无需 Node**。仅在修改设计 token（`src/input.css` / `tailwind.config.js`）或
+> 组件类后需要重新构建：
+> ```bash
+> npm install && npm run build      # 产出 seatbot/web/static/style.css（提交产物）
+> npm run dev                       # watch 模式，开发时实时重建
+> ```
+
 ### 云服务器 (Linux + Docker)
 
 ```bash

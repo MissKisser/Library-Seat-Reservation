@@ -1,7 +1,7 @@
-{# Macro: banner. Alert banner with severity level. Callers may pass pre-rendered HTML via | safe. #}
+{# Macro: banner. 提示条，text 支持 | safe 内嵌 HTML。 #}
 {% macro banner(level='info', text='') %}
 <div class="banner banner-{{ level }}">
-  <span class="banner-dot"></span>
-  <span class="banner-text">{{ text | safe }}</span>
+  <span class="dot"></span>
+  <span class="flex-1">{{ text | safe }}</span>
 </div>
 {% endmacro %}
