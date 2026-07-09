@@ -1,9 +1,0 @@
-{# Macro: card. Generic card container with optional title and caller-provided body slot. #}
-{% macro card(title=None) %}
-{% if title %}
-<header class="card-header">
-  <h2 class="card-title">{{ title }}</h2>
-</header>
-{% endif %}
-<section class="card">{{ caller() }}</section>
-{% endmacro %}
