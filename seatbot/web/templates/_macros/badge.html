@@ -1,4 +1,4 @@
-{# Macro: badge. Status pill mapping raw status -> semantic CSS class + Chinese label. #}
+{# Macro: badge. 状态药丸，status -> semantic variant + 文案。 #}
 {% macro badge(status='') %}
 {% set _map = {
   'active':     ('success', '已预约'),
@@ -9,8 +9,6 @@
   'complete':   ('faded',   '已完成'),
   'ready':      ('muted',   '待执行'),
 } %}
-{% set _entry = _map.get(status, ('muted', status)) %}
-{% set _variant = _entry[0] %}
-{% set _label = _entry[1] %}
-<span class="badge badge-{{ _variant }}"><span class="badge-dot"></span>{{ _label }}</span>
+{% set _e = _map.get(status, ('muted', status)) %}
+<span class="badge badge-{{ _e[0] }}"><span class="dot"></span>{{ _e[1] }}</span>
 {% endmacro %}
