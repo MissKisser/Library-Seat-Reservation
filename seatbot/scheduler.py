@@ -162,13 +162,20 @@ class Scheduler:
                 continue
             t_start = at_cst(t.day, t.start_time)
             t_end = at_cst(t.day, t.end_time)
-            # currently inside the slot
+            # currently inside the slot — submit (如果还没) + sign
             if t_start <= now < t_end:
-                await self._run_submit_sign(acc_cfg, t)
+                if not t.reserve_id:
+                    await self._run_submit(acc_cfg, t)
+                    t = await self.store.get_task(t.id)
+                if t and t.reserve_id:
+                    await self._run_sign(acc_cfg, t)
                 return
-            # pre-sign window (within 20 min of start)
+            # pre_sign 窗口 (时段开始前 ≤20min) — submit (如果还没),不 sign
+            # sign 需要到时段开始时刻才被服务端接受
             if timedelta(0) <= (t_start - now) <= timedelta(minutes=20):
-                await self._run_submit_sign(acc_cfg, t)
+                if not t.reserve_id:
+                    await self._run_submit(acc_cfg, t)
+                # 故意**不**调 _run_sign — 等时段开始的下一个 tick
                 return
 
     async def peek_next_relay(self) -> NextRelay | None:
@@ -205,7 +212,11 @@ class Scheduler:
         return best[1] if best else None
 
     async def _maybe_relay(self, t: Task, now: datetime) -> None:
-        """(v2) 跨 account / 跨 seat 的接力:leave 当前段,从 DB 查下一段 task。"""
+        """(v2) 跨 account / 跨 seat 的接力:leave 当前段,从 DB 查下一段 task。
+
+        注意:接力只 leave 当前 + submit 下一段 (不 sign)。
+        sign 由下一段的 pre_sign 窗口 tick_account 触发。
+        """
         t_end = at_cst(t.day, t.end_time)
         lead = t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS)
         if now < lead:
@@ -215,14 +226,8 @@ class Scheduler:
             return
         await self._info(f"relay: leaving {t.chunk_key()}", acc.id)
         await self.store.update_task_status(t.id, TaskStatus.LEAVING)
-        client = self._client_for(acc)
-        if t.reserve_id:
-            try:
-                await client.leave(t.reserve_id)
-                await self.store.log_action(acc.id, "leave", str(t.reserve_id), "", True)
-            except Exception as e:
-                await self._error(f"leave failed: {e}", acc.id)
-        await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
+        # leave 当前段
+        await self._run_leave(acc, t)
 
         # 跨 account / 跨 seat 找下一段 (按 start_time 升序)
         nxt = await self.store.find_next_task_after(
@@ -235,9 +240,20 @@ class Scheduler:
         nxt_acc = await self.store.get_account(nxt.account_id)
         if not nxt_acc:
             return
-        await self._run_submit_sign(nxt_acc, nxt)
+        # submit 下一段 (但**不** sign — 下一段时段还未开始)
+        await self._run_submit(nxt_acc, nxt)
 
-    async def _run_submit_sign(self, acc: Account, t: Task) -> None:
+    async def _run_submit(self, acc: Account, t: Task) -> None:
+        """提交预约 (不签到)。
+
+        调用时机:
+          - 14:00 批量预约 ( _afternoon_bootstrap ) 时段离开始还远,不能签到
+          - _maybe_relay 接力:leave 完上一段后,预约下一段 (下一段时段还未开始)
+          - tick_account pre_sign 窗口:如果 task 还没有 reserve_id (14:00 未预约成功)
+
+        submit 成功后 task.status = ACTIVE, store 存 reserve_id。
+        sign 由 _run_sign 在时段开始后再调用。
+        """
         await self.store.update_task_status(t.id, TaskStatus.SUBMITTING)
         client = self._client_for(acc)
 
@@ -286,17 +302,43 @@ class Scheduler:
         await self.store.update_task_status(t.id, TaskStatus.ACTIVE, reserve_id=reserve_id)
         await self._info(f"reserved #{reserve_id} seat={t.seat_num} {t.chunk_key()}", acc.id)
 
-        # sign
+    async def _run_sign(self, acc: Account, t: Task) -> None:
+        """签到 (不 submit)。
+
+        调用时机:
+          - tick_account pre_sign 窗口 (时段开始前 ≤20min):task 应已 ACTIVE (14:00 已预约)
+          - tick_account 时段进行中:补签 (如果之前没签上)
+
+        需要 t.reserve_id。如果还没 reserve_id,说明 submit 还没成功,先调 _run_submit。
+        """
+        if not t.reserve_id:
+            await self._warn(f"sign skipped: no reserve_id seat={t.seat_num} {t.chunk_key()}", acc.id)
+            return
+        client = self._client_for(acc)
         try:
-            sr = await client.sign(reserve_id)
+            sr = await client.sign(t.reserve_id)
             await self.store.log_action(
-                acc.id, "sign", str(reserve_id), str(sr)[:500],
+                acc.id, "sign", str(t.reserve_id), str(sr)[:500],
                 bool(sr.get("success")), str(sr.get("msg")),
             )
             if not sr.get("success"):
                 await self._error(f"sign failed: {sr.get('msg')}", acc.id)
         except Exception as e:
             await self._error(f"sign error: {e}", acc.id)
+
+    async def _run_leave(self, acc: Account, t: Task) -> None:
+        """签退 (不 submit/sign)。"""
+        if not t.reserve_id:
+            await self._warn(f"leave skipped: no reserve_id seat={t.seat_num} {t.chunk_key()}", acc.id)
+            await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
+            return
+        client = self._client_for(acc)
+        try:
+            await client.leave(t.reserve_id)
+            await self.store.log_action(acc.id, "leave", str(t.reserve_id), "", True)
+        except Exception as e:
+            await self._error(f"leave failed: {e}", acc.id)
+        await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
 
     # ---------- cron wiring ----------
     async def sync_jobs(self) -> None:
@@ -372,24 +414,15 @@ class Scheduler:
         重复调用时幂等。
         """
         from datetime import timedelta
-        tomorrow = today_cst() + timedelta(days=1)
-        seats = await self.store.list_target_seats()
-        await self._info(f"afternoon bootstrap: generating tasks for {tomorrow}", "scheduler")
-        for acc in await self.store.list_accounts():
-            await self._bootstrap_for_account(acc, tomorrow, [s.seat_num for s in seats])
-        # 14:00 后立即 submit — 超星服务端会按 reserveBeforeTime 校验窗口。
-        # 对 tomorrow 的每个 pending task 都调一次 _run_submit_sign,
-        # 服务端拒绝的 (例如时段冲突) 会标 FAILED,成功的标 ACTIVE。
-        # 时段开始前的 pre_sign 窗口仍是 submit 的二次保险。
         from seatbot.models import TaskStatus
         submitted = 0
         for acc in await self.store.list_accounts():
             tasks = await self.store.list_tasks(account_id=acc.id, day=tomorrow)
             pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING]
             for t in pending_tasks:
-                await self._run_submit_sign(acc, t)
+                # 只 submit — sign 由 tick_account 在时段开始前的 pre_sign 窗口触发
+                await self._run_submit(acc, t)
                 submitted += 1
-        await self._info(f"afternoon bootstrap: submitted {submitted} tasks for {tomorrow}", "scheduler")
 
     async def shutdown(self) -> None:
         self.scheduler.shutdown(wait=False)
