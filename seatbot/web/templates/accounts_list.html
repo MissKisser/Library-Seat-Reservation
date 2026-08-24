@@ -35,7 +35,12 @@
           <td><code>{{ a.id }}</code></td>
           <td class="num">{{ a.phone }}</td>
           <td class="text-xs text-ink-secondary">
-            {% if a.slots == 'full' %}全天{% else %}
+            {% if a.seat_slots %}
+              {# per-seat slots (2026-08-24) — 优先显示 #}
+              {% for seat, slots in a.seat_slots.items() %}
+                <div class="font-mono">{{ seat }}: {{ slots | tojson }}</div>
+              {% endfor %}
+            {% elif a.slots == 'full' %}全天{% else %}
               <span class="font-mono">{{ a.slots | tojson }}</span>
             {% endif %}
           </td>
