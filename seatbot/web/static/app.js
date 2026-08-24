@@ -273,6 +273,191 @@
     };
   };
 
+  /* ===== Dashboard 局部刷新: 每 30s 拉一次 /api/dashboard-data ===== */
+  /* 替换之前每 30s location.reload() 的整页刷新。整页刷新会丢 gantt 上
+   * 未提交的 hover / popover 状态、输入框内容、滚动位置,且对 server 压力大。
+   * 这里只局部重渲染三块:
+   *   1. 状态 banner (occ_err)
+   *   2. Gantt <tbody> (含 cell 着色 + popover)
+   *   3. "最近活动" feed
+   * 其它 (侧栏、顶栏时钟、stat 卡计数) 不动。
+   */
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+  function popoverHtml(c, hit, seatNum) {
+    /* 复制 templates/_macros/popover.html 的 cell_popover 结构 (POST forms) */
+    const taskId = hit.task_id;
+    const status = hit.status;
+    const accId = hit.id || '';
+    const st = c.start, en = c.end;
+    if (status === 'active') {
+      return `
+        <form method="post" action="/tasks/${taskId}/sign"><button type="submit">立即签到</button></form>
+        <form method="post" action="/tasks/${taskId}/leave"><button type="submit">立即签退</button></form>`;
+    }
+    if (status === 'failed') {
+      return `<form method="post" action="/tasks/quick-reserve">
+        <input type="hidden" name="account_id" value="${escapeHtml(accId)}">
+        <input type="hidden" name="seat_num" value="${escapeHtml(seatNum)}">
+        <input type="hidden" name="start" value="${escapeHtml(st)}">
+        <input type="hidden" name="end" value="${escapeHtml(en)}">
+        <button type="submit" class="text-accent">续约该段</button>
+      </form>`;
+    }
+    if (taskId) {
+      return `<button @click="open=false; confirmAction({title:'确认取消？',desc:'取消该预约时段',confirmText:'取消预约',danger:true}).then(ok=>{if(ok){const f=document.createElement('form');f.method='post';f.action='/tasks/${taskId}/cancel';document.body.appendChild(f);f.submit();}})">取消</button>`;
+    }
+    return '';
+  }
+  function ganttRowsHtml(rows) {
+    if (!rows || !rows.length) {
+      return `<tr><td colspan="99" class="text-center text-ink-muted p-4">暂无目标座位</td></tr>`;
+    }
+    const headCells = rows[0].cells.map(c =>
+      `<th>${escapeHtml(c.start)}</th>`).join('');
+    const bodyRows = rows.map(r => {
+      const cells = r.cells.map(c => {
+        const hit = c.accounts_info && c.accounts_info[0] || null;
+        const status = hit ? hit.status : 'empty';
+        const actionable = hit && ['active','submitting','failed','leaving'].includes(status);
+        const classes = ['cell-' + status];
+        if (actionable) classes.push('cell-actionable');
+        if (c.user_reserved) classes.push('cell-user-reserved');
+        if (c.others_occupied) classes.push('cell-others-occupied');
+        const titleParts = [`${r.seat_num} · ${c.start}-${c.end}`];
+        if (c.user_reserved) titleParts.push('👤 用户硬预约');
+        if (c.others_occupied) titleParts.push('🔒 他人已占');
+        if (hit) titleParts.push(`${hit.id || ''} · ${status}`);
+        let inner = '';
+        if (hit && ['active','submitting','leaving','failed'].includes(status) && hit.task_id) {
+          inner = `<div class="relative inline-flex w-full h-full" x-data="{ open: false }" @click.outside="open=false">
+            <button class="w-full h-full" @click="open=!open" aria-label="操作"></button>
+            <div class="popover" x-show="open" x-cloak style="display:none">${popoverHtml(c, hit, r.seat_num)}</div>
+          </div>`;
+        } else {
+          if (c.user_reserved) inner = '<span class="text-xs">👤</span>';
+          else if (c.others_occupied) inner = '<span class="text-xs">🔒</span>';
+        }
+        return `<td class="cell ${classes.join(' ')}" title="${escapeHtml(titleParts.join(' · '))}">${inner}</td>`;
+      }).join('');
+      const labelHtml = `<span class="font-mono text-xs">${escapeHtml(r.seat_num)}</span>` +
+        (r.label ? `<span class="text-xs text-ink-muted ml-1">${escapeHtml(r.label)}</span>` : '');
+      return `<tr><th class="row-label">${labelHtml}</th>${cells}</tr>`;
+    }).join('');
+    return `<tr><th class="row-label">座位 \\ 时段</th>${headCells}</tr>${bodyRows}`;
+  }
+  function bannerHtml(occErr, gapCount, rowCount) {
+    if (!rowCount) return '<div class="banner banner-warn">尚未设置目标座位。<a class="text-accent" href="/targets">去添加 →</a></div>';
+    if (gapCount) return `<div class="banner banner-error">检测到 <b>${gapCount}</b> 个时段空缺，护城河有缺口。<a class="text-danger" href="/coverage">查看报告 →</a></div>`;
+    if (occErr) return `<div class="banner banner-warn">无法获取超星他人占用数据：${escapeHtml(occErr)}</div>`;
+    return '<div class="banner banner-ok">护城河稳固，全部目标座位已覆盖。</div>';
+  }
+  function recentLogsHtml(logs) {
+    if (!logs || !logs.length) return '<div class="text-xs text-ink-muted">暂无活动</div>';
+    return logs.slice(0, 8).map(l => {
+      const dotCls = l.level === 'ERROR' ? 'bg-danger' : l.level === 'WARN' ? 'bg-warn' : 'bg-info';
+      return `<div class="flex items-start gap-2 text-xs">
+        <span class="mt-1 h-1.5 w-1.5 rounded-full shrink-0 ${dotCls}"></span>
+        <div class="flex-1 min-w-0">
+          <div class="text-ink-secondary truncate">${escapeHtml(l.message || '')}</div>
+          <div class="text-ink-muted">${escapeHtml(l.account_id || '—')}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  function statHtml(value, hint, accent) {
+    const valCls = accent ? 'stat-value accent' : 'stat-value';
+    return `<div class="stat-card">
+      <div class="stat-label"></div>
+      <div class="${valCls}">${escapeHtml(String(value))}</div>
+      ${hint ? `<div class="stat-hint">${escapeHtml(String(hint))}</div>` : ''}
+    </div>`;
+  }
+
+  window.dashboardRefresh = function (initialRows) {
+    return {
+      countdown: 30,
+      busy: false,
+      rows: initialRows,
+      occErr: null,
+      gapCount: 0,
+      recentLogs: [],
+      targetSeatCount: 0,
+      accountCount: 0,
+      timer: null,
+      init() {
+        // Alpine 3 会自动调用 init(),不需要 x-init (避免 init 双调用 bug)
+        this.timer = setInterval(() => this.tick(), 1000);
+      },
+      destroy() { clearInterval(this.timer); },
+      tick() {
+        if (this.busy) return;
+        this.countdown = Math.max(0, this.countdown - 1);
+        if (this.countdown === 0) {
+          this.refresh();
+        }
+      },
+      async refresh() {
+        this.busy = true;
+        try {
+          const r = await fetch('/api/dashboard-data', { cache: 'no-store' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const j = await r.json();
+          this.rows = j.rows || [];
+          this.recentLogs = j.recent_logs || [];
+          this.occErr = j.occ_err || null;
+          this.gapCount = j.gap_count || 0;
+          this.targetSeatCount = j.target_seat_count || 0;
+          this.accountCount = j.account_count || 0;
+          this.applyToDom();
+        } catch (e) {
+          console.warn('dashboard refresh failed:', e);
+        } finally {
+          this.countdown = 30;
+          this.busy = false;
+        }
+      },
+      applyToDom() {
+        const gantt = document.getElementById('dashboard-gantt');
+        if (!gantt) return;
+        const ganttBody = gantt.querySelector('tbody');
+        const ganttHead = gantt.querySelector('thead');
+        const banner = document.getElementById('dashboard-banner');
+        const logsBox = document.getElementById('dashboard-recent-logs');
+        const statsBox = document.getElementById('dashboard-stats');
+        if (ganttHead && ganttBody && this.rows.length) {
+          const head = `<tr><th class="row-label">座位 \\ 时段</th>${
+            this.rows[0].cells.map(c => `<th>${escapeHtml(c.start)}</th>`).join('')
+          }</tr>`;
+          ganttHead.innerHTML = head;
+          ganttBody.innerHTML = ganttRowsHtml(this.rows);
+        } else if (ganttBody) {
+          ganttBody.innerHTML = `<tr><td colspan="99" class="text-center text-ink-muted p-4">暂无目标座位</td></tr>`;
+        }
+        if (banner) {
+          banner.innerHTML = bannerHtml(this.occErr, this.gapCount, this.rows.length);
+        }
+        if (logsBox) {
+          logsBox.innerHTML = recentLogsHtml(this.recentLogs);
+        }
+        if (statsBox) {
+          // 4 张 stat 卡:目标座位 / 守护账号 / 今日覆盖 (rows.length 座, gap_count 个空缺) / 当前时间
+          statsBox.innerHTML = statHtml(this.targetSeatCount, null, false) +
+            statHtml(this.accountCount, null, false) +
+            statHtml(this.rows.length + ' 座',
+              this.gapCount ? this.gapCount + ' 个空缺' : '全覆盖',
+              this.gapCount > 0) +
+            statHtml(new Date().toTimeString().slice(0, 5), null, false);
+        }
+      },
+      formatCountdown() {
+        return '下次刷新 ' + this.countdown + 's';
+      },
+    };
+  };
   /* ===== 移动端侧栏开关 ===== */
   window.mobileNav = function () {
     return { open: false, toggle() { this.open = !this.open; } };

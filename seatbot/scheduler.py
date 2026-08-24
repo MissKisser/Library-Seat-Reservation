@@ -1,4 +1,4 @@
-"""APScheduler wrapper that drives the reservation state machine."""
+"""APScheduler wrapper (v2: per-task seat_num, cross-account/cross-seat relay)."""
 from __future__ import annotations
 
 import random
@@ -17,12 +17,18 @@ from seatbot.store import StateStore
 from seatbot.utils.timeutil import at_cst, now_cst, today_cst
 
 
+def _overlap(s1, e1, s2, e2) -> bool:
+    """Half-open interval overlap: [s, e) ⋂ [s', e') ≠ ∅"""
+    return not (e1 <= s2 or s1 >= e2)
+
+
 @dataclass
 class NextRelay:
-    at: datetime           # when the next leave+sign chain will fire (lead = end_time - 5min)
-    delta_minutes: int     # minutes from now
+    at: datetime
+    delta_minutes: int
     account_id: str
     task_id: int
+    seat_num: str
     start_time: time
     end_time: time
     status: str
@@ -42,7 +48,7 @@ class Scheduler:
         self.enc = enc or EncGenerator()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         self._clients: dict[str, ChaoxingClient] = {}
-        self._bootstrap_done_for: set[tuple[str, str]] = set()  # (account_id, day)
+        self._bootstrap_done_for: set[tuple[str, str, str]] = set()  # (account_id, day, seat_num)
 
     def _client_for(self, acc: Account) -> ChaoxingClient:
         if acc.id not in self._clients:
@@ -65,46 +71,91 @@ class Scheduler:
     # ---------- bootstrap ----------
     async def bootstrap_today(self) -> None:
         today = today_cst()
+        target_seats = await self.store.list_target_seats()
         for acc in await self.store.list_accounts():
-            await self._bootstrap_for_account(acc, today)
+            await self._bootstrap_for_account(acc, today, [s.seat_num for s in target_seats])
 
-    async def _bootstrap_for_account(self, acc: Account, day: date) -> None:
-        if (acc.id, day.isoformat()) in self._bootstrap_done_for:
-            return
-        prev = await self.store.get_bootstrap_day(acc.id)
-        existing = await self.store.list_tasks(account_id=acc.id, day=day)
-        if existing:
-            self._bootstrap_done_for.add((acc.id, day.isoformat()))
-            await self._info(f"already has {len(existing)} tasks for {day}", acc.id)
-            return
-        if prev == day:
-            self._bootstrap_done_for.add((acc.id, day.isoformat()))
-            return
+    async def _bootstrap_for_account(self, acc: Account, day: date, fallback_seats: list[str]) -> None:
+        # 一个 (account, day, seat_num) 三元组视为一个 bootstrap 单位
+        seats = acc.bound_seats or fallback_seats
+        for seat_num in seats:
+            key = (acc.id, day.isoformat(), seat_num)
+            if key in self._bootstrap_done_for:
+                continue
+            existing = await self.store.list_tasks(account_id=acc.id, day=day, seat_num=seat_num)
+            if existing:
+                self._bootstrap_done_for.add(key)
+                await self._info(f"already has {len(existing)} tasks for {day} seat={seat_num}", acc.id)
+                continue
+            prev = await self.store.get_bootstrap_day(acc.id)
+            if prev == day:
+                self._bootstrap_done_for.add(key)
+                continue
 
-        planner = ReservationPlanner(acc, self.cfg.library.max_reserve_hours)
-        try:
-            tasks = planner.expand_for_day(day)
-        except Exception as e:
-            await self._error(f"planner failed: {e}", acc.id)
-            return
-        for t in tasks:
-            await self.store.add_task(t)
+            # ★ 拉取该 (day, seat) 上 user_reserved 段,跳过冲突
+            reserved_slots = await self.store.get_user_reserved_slot_set(day, seat_num)
+
+            planner = ReservationPlanner(
+                account=acc,
+                bound_seats=acc.bound_seats,
+                fallback_seats=fallback_seats,
+                max_reserve_hours=self.cfg.library.max_reserve_hours,
+            )
+            try:
+                tasks = planner.expand_for_day(day)
+            except Exception as e:
+                await self._error(f"planner failed: {e}", acc.id)
+                return
+            for t in tasks:
+                if t.seat_num != seat_num:
+                    continue
+                # ★ 跳过与 user_reserved 重叠的 task
+                if any(_overlap(t.start_time, t.end_time, rs, re_)
+                       for rs, re_ in reserved_slots):
+                    await self._info(
+                        f"skip user_reserved seat={seat_num} {t.start_time.strftime('%H:%M')}-{t.end_time.strftime('%H:%M')}",
+                        acc.id,
+                    )
+                    continue
+                # ★ E4 防护: 同 (account_id, day, start_time) 已存在任务则跳过
+                from datetime import time as _t
+                start_t = _t(t.start_time.hour, t.start_time.minute)
+                if await self.store.has_active_task_for_account_day_start(
+                    acc.id, day, start_t, seat_num,
+                ):
+                    await self._info(
+                        f"skip dup task seat={seat_num} {start_t.strftime('%H:%M')} (E4 guard)",
+                        acc.id,
+                    )
+                    continue
+                await self.store.add_task(t)
+            self._bootstrap_done_for.add(key)
+            await self._info(f"bootstrap for {day} seat={seat_num}", acc.id)
+        # 更新 bootstrap_day 一次 (一个账号每天只一次)
         await self.store.set_bootstrap_day(acc.id, day)
-        self._bootstrap_done_for.add((acc.id, day.isoformat()))
-        await self._info(f"bootstrap {len(tasks)} tasks for {day}", acc.id)
 
     # ---------- per-account tick ----------
     async def tick_account(self, acc_id: str) -> None:
         acc_cfg = await self.store.get_account(acc_id)
         if not acc_cfg:
             return
+        # 检查该账号是否已超出单日并发上限
+        today = today_cst()
+        n_today = await self.store.count_tasks_for_account_day(
+            acc_id, today,
+            statuses=("pending", "ready", "active", "submitting", "leaving"),
+        )
+        limit = acc_cfg.one_account_max_concurrent_segments_per_day
+        if n_today >= limit and limit > 0:
+            # 已经安排了 N 段,不再触发更多 (避免超出后端上限)
+            return
+
         active = await self.store.find_active_task(acc_id)
         now = now_cst()
         if active:
-            await self._maybe_relay(acc_cfg, active, now)
+            await self._maybe_relay(active, now)
             return
         # no active task — find the next pending task that should be running
-        today = today_cst()
         tasks = await self.store.list_tasks(account_id=acc_id, day=today)
         for t in tasks:
             if t.status not in (TaskStatus.PENDING, TaskStatus.READY, TaskStatus.FAILED):
@@ -121,21 +172,6 @@ class Scheduler:
                 return
 
     async def peek_next_relay(self) -> NextRelay | None:
-        """Find the next pending/ready/failed task that the scheduler will fire.
-
-        Strategy:
-          - Across all accounts and today, find the earliest task where
-            (start_time - now) <= 30min OR (end_time - RELAY_LEAD_SECONDS - now) <= 30min
-            and the task is in (PENDING, READY, FAILED) state.
-          - But more accurately: the *next* thing the scheduler will do is either
-            (a) a pre-sign submit for a task whose start is within 20min, OR
-            (b) a relay for an active task whose end - 5min is in the future.
-
-        Simpler implementation: pick the smallest `at` over all tasks where
-        `at > now` and the task is not complete.
-          `at = max(now + (start - now) clamped to [0, 20min] for pending,
-                    end - 5min for active/submitting/leaving)`.
-        """
         now = now_cst()
         today = today_cst()
         best: tuple[datetime, NextRelay] | None = None
@@ -146,14 +182,10 @@ class Scheduler:
                 if t.status in (TaskStatus.ACTIVE, TaskStatus.SUBMITTING, TaskStatus.LEAVING):
                     fire_at = t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS)
                 elif t.status in (TaskStatus.PENDING, TaskStatus.READY, TaskStatus.FAILED):
-                    # Will fire within the pre-sign window (start - 20min .. start)
-                    # Treat the "fire moment" as start_time (immediate submit when window opens)
                     fire_at = t_start
                 else:
                     continue
                 if fire_at <= now:
-                    # already-elapsed but not yet executed (likely scheduler just started);
-                    # treat as immediate (1 min away)
                     fire_at = now + timedelta(minutes=1)
                 if best is None or fire_at < best[0]:
                     delta = max(0, int((fire_at - now).total_seconds() // 60))
@@ -164,6 +196,7 @@ class Scheduler:
                             delta_minutes=delta,
                             account_id=acc.id,
                             task_id=t.id or 0,
+                            seat_num=t.seat_num,
                             start_time=t.start_time,
                             end_time=t.end_time,
                             status=t.status.value,
@@ -171,10 +204,14 @@ class Scheduler:
                     )
         return best[1] if best else None
 
-    async def _maybe_relay(self, acc: Account, t: Task, now: datetime) -> None:
+    async def _maybe_relay(self, t: Task, now: datetime) -> None:
+        """(v2) 跨 account / 跨 seat 的接力:leave 当前段,从 DB 查下一段 task。"""
         t_end = at_cst(t.day, t.end_time)
         lead = t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS)
         if now < lead:
+            return
+        acc = await self.store.get_account(t.account_id)
+        if not acc:
             return
         await self._info(f"relay: leaving {t.chunk_key()}", acc.id)
         await self.store.update_task_status(t.id, TaskStatus.LEAVING)
@@ -187,37 +224,23 @@ class Scheduler:
                 await self._error(f"leave failed: {e}", acc.id)
         await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
 
-        # find next task
-        today = today_cst()
-        tasks = await self.store.list_tasks(account_id=acc.id, day=today)
-        nxt = next(
-            (x for x in tasks
-             if x.start_time > t.start_time
-             and x.status in (TaskStatus.PENDING, TaskStatus.FAILED)),
-            None,
+        # 跨 account / 跨 seat 找下一段 (按 start_time 升序)
+        nxt = await self.store.find_next_task_after(
+            t.day, t.end_time,
+            statuses=("pending", "ready", "failed"),
         )
         if nxt is None:
             await self._info("relay: no next task", acc.id)
             return
-        await self._run_submit_sign(acc, nxt)
+        nxt_acc = await self.store.get_account(nxt.account_id)
+        if not nxt_acc:
+            return
+        await self._run_submit_sign(nxt_acc, nxt)
 
     async def _run_submit_sign(self, acc: Account, t: Task) -> None:
-        """Try to book the seat for account `acc` for task `t`.
-
-        v1.1: instead of computing `enc` via the (incomplete) JS exec and
-        reusing it across a separate httpx call, we drive the actual
-        Chaoxing UI in a headless Chromium via
-        `ChaoxingClient.submit_in_browser()`. The browser runs the real
-        fanyalogin flow, fills the form, clicks the 30-min cells, clicks
-        "开始使用", intercepts the /submit response, and extracts the
-        reserve_id. We then immediately sign in the same call chain.
-        """
         await self.store.update_task_status(t.id, TaskStatus.SUBMITTING)
         client = self._client_for(acc)
 
-        # login first so the in-browser call has the session cookies.
-        # If login itself fails, we still try `submit_in_browser()` —
-        # it will log in by itself if cookies are missing.
         if not client.cookies():
             try:
                 await client.login(acc.phone, acc.password)
@@ -225,13 +248,12 @@ class Scheduler:
             except ChaoxingError as e:
                 await self._warn(f"login prefetch failed ({e}); trying in-browser login", acc.id)
 
-        # submit via real browser interaction
         try:
             r = await client.submit_in_browser(
                 phone=acc.phone,
                 password=acc.password,
                 room_id=self.cfg.library.room_id,
-                seat_num=self.cfg.library.target_seat_num,
+                seat_num=t.seat_num,           # ★ v2: per-task
                 day=t.day.isoformat(),
                 start_time=t.start_time.strftime("%H:%M"),
                 end_time=t.end_time.strftime("%H:%M"),
@@ -243,7 +265,7 @@ class Scheduler:
 
         await self.store.log_action(
             acc.id, "submit",
-            f"{t.day} {t.start_time}-{t.end_time}",
+            f"seat={t.seat_num} {t.day} {t.start_time}-{t.end_time}",
             str(r.get("raw"))[:500],
             bool(r.get("success")),
             r.get("msg"),
@@ -251,7 +273,7 @@ class Scheduler:
 
         if not r.get("success"):
             msg = r.get("msg") or "submit failed"
-            await self._error(f"submit rejected: {msg}", acc.id)
+            await self._error(f"submit rejected: {msg} (seat={t.seat_num})", acc.id)
             await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error=msg)
             return
 
@@ -262,34 +284,7 @@ class Scheduler:
             return
 
         await self.store.update_task_status(t.id, TaskStatus.ACTIVE, reserve_id=reserve_id)
-        await self._info(f"reserved #{reserve_id} {t.chunk_key()}", acc.id)
-
-        # sign
-        try:
-            sr = await client.sign(reserve_id)
-            await self.store.log_action(
-                acc.id, "sign", str(reserve_id), str(sr)[:500],
-                bool(sr.get("success")), str(sr.get("msg")),
-            )
-            if not sr.get("success"):
-                await self._error(f"sign failed: {sr.get('msg')}", acc.id)
-        except Exception as e:
-            await self._error(f"sign error: {e}", acc.id)
-
-        if not r.get("success"):
-            msg = r.get("msg") or "submit failed"
-            await self._error(f"submit rejected: {msg}", acc.id)
-            await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error=msg)
-            return
-
-        reserve_id = (r.get("data") or {}).get("seatReserve", {}).get("id")
-        if not reserve_id:
-            await self._error("submit ok but no reserve_id", acc.id)
-            await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error="no reserve_id")
-            return
-
-        await self.store.update_task_status(t.id, TaskStatus.ACTIVE, reserve_id=reserve_id)
-        await self._info(f"reserved #{reserve_id} {t.chunk_key()}", acc.id)
+        await self._info(f"reserved #{reserve_id} seat={t.seat_num} {t.chunk_key()}", acc.id)
 
         # sign
         try:
@@ -305,11 +300,6 @@ class Scheduler:
 
     # ---------- cron wiring ----------
     async def sync_jobs(self) -> None:
-        """Re-register tick jobs from the current set of DB accounts.
-
-        Called on startup and every 30s so accounts added via the Web UI
-        pick up scheduling without a restart.
-        """
         accounts = await self.store.list_accounts()
         wanted_ids = {a.id for a in accounts}
         existing_ids = {
@@ -317,13 +307,11 @@ class Scheduler:
             for j in self.scheduler.get_jobs()
             if j.id.startswith("tick_")
         }
-        # drop tick jobs for accounts that no longer exist
         for stale in existing_ids - wanted_ids:
             try:
                 self.scheduler.remove_job(f"tick_{stale}")
             except Exception:
                 pass
-        # add tick jobs for any new accounts
         for i, acc in enumerate(accounts):
             if acc.id in existing_ids:
                 continue
@@ -337,17 +325,21 @@ class Scheduler:
             )
 
     def start(self) -> None:
-        # initial sync (accounts may be added via Web later)
         self.scheduler.add_job(
             self.sync_jobs,
             "interval", seconds=30,
             id="sync_jobs", replace_existing=True,
         )
-        # 00:00:05 every day: bootstrap next day
         self.scheduler.add_job(
             self._new_day_bootstrap,
             CronTrigger(hour=0, minute=0, second=5, timezone="Asia/Shanghai"),
             id="new_day_bootstrap", replace_existing=True,
+        )
+        # ★ 每天14:00触发：为明天生成预约任务（超星14:00后开放次日预约窗口）
+        self.scheduler.add_job(
+            self._afternoon_bootstrap,
+            CronTrigger(hour=14, minute=0, second=10, timezone="Asia/Shanghai"),
+            id="afternoon_bootstrap", replace_existing=True,
         )
         self.scheduler.start()
 
@@ -359,12 +351,31 @@ class Scheduler:
         acc_cfg = await self.store.get_account(acc_id)
         if not acc_cfg:
             return
-        await self._bootstrap_for_account(acc_cfg, today_cst())
+        today = today_cst()
+        seats = await self.store.list_target_seats()
+        await self._bootstrap_for_account(
+            acc_cfg, today, [s.seat_num for s in seats]
+        )
 
     async def _new_day_bootstrap(self) -> None:
         today = today_cst()
+        seats = await self.store.list_target_seats()
         for acc in await self.store.list_accounts():
-            await self._bootstrap_for_account(acc, today)
+            await self._bootstrap_for_account(acc, today, [s.seat_num for s in seats])
+
+    async def _afternoon_bootstrap(self) -> None:
+        """每天14:00触发：为明天生成预约任务。
+
+        超星预约系统在14:00后开放次日预约窗口，此时提前生成明天的任务并立即提交。
+        bootstrap_for_account 内部有 (account_id, day, seat_num) 三元组防重保护，
+        重复调用时幂等。
+        """
+        from datetime import timedelta
+        tomorrow = today_cst() + timedelta(days=1)
+        seats = await self.store.list_target_seats()
+        await self._info(f"afternoon bootstrap: generating tasks for {tomorrow}")
+        for acc in await self.store.list_accounts():
+            await self._bootstrap_for_account(acc, tomorrow, [s.seat_num for s in seats])
 
     async def shutdown(self) -> None:
         self.scheduler.shutdown(wait=False)

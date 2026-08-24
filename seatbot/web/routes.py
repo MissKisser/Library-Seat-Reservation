@@ -54,32 +54,33 @@ async def _fetch_others_occupied(
     logged in, or every seat lookup failed; callers should still render
     the dashboard, just without the "others_occupied" overlay.
 
-    Auth: uses the client on `request.app.state.client`. If that client
-    is not logged in, we attempt a silent login with the first configured
-    account that has phone+password (so dashboard works out-of-the-box
-    after a fresh start, as long as at least one account is configured).
+    Auth: 优先复用 scheduler._client_for(acc) 的已登录 cookie 缓存，
+    避免每次页面加载都触发一次无头浏览器登录。
     """
     if not seat_nums:
         return [], None
-    client: ChaoxingClient | None = getattr(request.app.state, "client", None)
-    if client is None:
-        return [], "no ChaoxingClient on app.state"
+
+    # 从 scheduler 的 client 池中取已登录的 client，复用 cookie 缓存。
+    sched = getattr(request.app.state, "sched", None)
+    try:
+        accounts = await store.list_accounts()
+    except Exception:
+        accounts = []
+
+    acc = next((a for a in accounts if a.phone and a.password), None)
+    if acc is None:
+        return [], "无可用账号"
+
+    if sched is not None:
+        client = sched._client_for(acc)
+    else:
+        client = ChaoxingClient()
 
     if not client.cookies():
-        # Try silent login with first account that has credentials.
         try:
-            accounts = await store.list_accounts()
-        except Exception:
-            accounts = []
-        for acc in accounts:
-            if acc.phone and acc.password:
-                try:
-                    await client.login(acc.phone, acc.password)
-                    break
-                except Exception as e:
-                    return [], f"silent login failed: {type(e).__name__}: {e}"
-        if not client.cookies():
-            return [], "app.state.client 未登录,且无可用账号自动登录"
+            await client.login(acc.phone, acc.password)
+        except Exception as e:
+            return [], f"silent login failed: {type(e).__name__}: {e}"
 
     day_str = day.isoformat()
     out: list[tuple[str, time, time]] = []
@@ -112,10 +113,9 @@ async def dashboard(request: Request):
     target_seats = await store.list_target_seats()
     # ★ 把 user_reserved 索引成 (seat_num, start, end) 三元组
     ur_rows = await store.list_user_reserved(day=today)
-    user_reserved: list[tuple[str, time, time]] = []
+    user_reserved: list[tuple[str, _time, _time]] = []
     for u in ur_rows:
         try:
-            from datetime import time as _time
             sh, sm = map(int, u["start_time"].split(":"))
             eh, em = map(int, u["end_time"].split(":"))
             user_reserved.append((u["seat_num"], _time(sh, sm), _time(eh, em)))
@@ -181,12 +181,27 @@ async def dashboard(request: Request):
         annotated_rows.append({"seat": sc.seat, "cells": cells})
 
     recent_logs = await store.list_logs(limit=10)
+    # JSON 字符串用于 dashboard.html 内嵌到 Alpine x-data, time 对象需预处理。
+    # 字段名与 /api/dashboard-data 保持一致 (seat_num / cells[].start 字符串),
+    # 让前端组件拿到首屏就立刻能 applyToDom,无需特殊处理。
+    rows_json = json.dumps(
+        [{"seat_num": r["seat"].seat_num,
+          "label": r["seat"].label,
+          "cells": [{"start": c["start"].strftime("%H:%M"),
+                     "end": c["end"].strftime("%H:%M"),
+                     "accounts_info": c["accounts_info"],
+                     "user_reserved": c["user_reserved"],
+                     "others_occupied": c["others_occupied"]} for c in r["cells"]]}
+         for r in annotated_rows],
+        ensure_ascii=False,
+    )
     return _templates(request).TemplateResponse(
         request, "dashboard.html",
         {
             "request": request,
             "cfg": cfg,
             "rows": annotated_rows,
+            "rows_json": rows_json,
             "today": today.isoformat(),
             "now_hhmm": now_cst().strftime("%H:%M"),
             "recent_logs": recent_logs,
@@ -199,8 +214,117 @@ async def dashboard(request: Request):
 
 
 # =========================================================================
+# Dashboard data — 局部刷新用的 JSON endpoint
+# =========================================================================
+async def _build_dashboard_data(request: Request) -> dict:
+    """Collect everything dashboard.html renders, as JSON-ready dict.
+
+    与 dashboard() 视图共用 helper, 避免双份逻辑漂移。
+    耗时点 (others_occupied) 30s 才触发一次,可接受。
+    """
+    cfg = request.app.state.cfg
+    store = request.app.state.store
+    today = today_cst()
+    accounts = await store.list_accounts()
+    target_seats = await store.list_target_seats()
+
+    ur_rows = await store.list_user_reserved(day=today)
+    user_reserved: list[tuple[str, _time, _time]] = []
+    for u in ur_rows:
+        try:
+            sh, sm = map(int, u["start_time"].split(":"))
+            eh, em = map(int, u["end_time"].split(":"))
+            user_reserved.append((u["seat_num"], _time(sh, sm), _time(eh, em)))
+        except Exception:
+            pass
+    others_occupied, occ_err = await _fetch_others_occupied(
+        request, store, today, [s.seat_num for s in target_seats],
+    )
+
+    rows = compute_seat_coverage(
+        accounts, target_seats, today,
+        open_time=cfg.library.open_time,
+        close_time=cfg.library.close_time,
+        user_reserved=user_reserved,
+        others_occupied=others_occupied,
+    )
+
+    annotated_rows = []
+    for sc in rows:
+        cells = []
+        for c in sc.coverage.cells:
+            accs_info: list[dict] = []
+            for aid in c.accounts:
+                tasks = await store.list_tasks(account_id=aid, day=today)
+                match_status = "pending"
+                match_task_id = None
+                match_day = None
+                match_start = None
+                match_end = None
+                for t in tasks:
+                    if (t.seat_num == sc.seat.seat_num
+                            and t.start_time == c.start
+                            and t.end_time == c.end
+                            and t.status in (
+                                TaskStatus.ACTIVE,
+                                TaskStatus.SUBMITTING,
+                                TaskStatus.LEAVING,
+                                TaskStatus.FAILED,
+                                TaskStatus.COMPLETE,
+                            )):
+                        match_status = t.status.value
+                        match_task_id = t.id
+                        match_day = t.day.isoformat()
+                        match_start = t.start_time
+                        match_end = t.end_time
+                        break
+                info: dict = {"id": aid, "status": match_status}
+                if match_status in ("active", "submitting", "failed", "leaving", "complete") and match_task_id:
+                    info["task_id"] = match_task_id
+                    info["day"] = match_day
+                    info["start_time"] = match_start.isoformat(timespec="minutes") if match_start else ""
+                    info["end_time"] = match_end.isoformat(timespec="minutes") if match_end else ""
+                accs_info.append(info)
+            cells.append({
+                "start": c.start.isoformat(timespec="minutes"),
+                "end": c.end.isoformat(timespec="minutes"),
+                "accounts_info": accs_info,
+                "user_reserved": c.user_reserved,
+                "others_occupied": c.others_occupied,
+            })
+        annotated_rows.append({"seat_num": sc.seat.seat_num,
+                                "label": sc.seat.label,
+                                "cells": cells})
+
+    recent_logs = await store.list_logs(limit=8)
+    return {
+        "today": today.isoformat(),
+        "now_hhmm": now_cst().strftime("%H:%M"),
+        "occ_err": occ_err,
+        "rows": annotated_rows,
+        "recent_logs": [{
+            "ts": l.ts, "level": l.level,
+            "account_id": l.account_id, "message": l.message,
+        } for l in recent_logs],
+        "gap_count": sum(
+            1 for sc in rows for c in sc.coverage.cells
+            if not c.accounts and not c.user_reserved and not c.others_occupied
+        ),
+        "target_seat_count": len(target_seats),
+        "account_count": len(accounts),
+    }
+
+
+@router.get("/api/dashboard-data")
+async def api_dashboard_data(request: Request):
+    """Dashboard 局部刷新用的 JSON 视图 (每 30s 拉一次)。"""
+    return JSONResponse(await _build_dashboard_data(request))
+
+
+# =========================================================================
 # Targets — 目标座位 CRUD (v2 取代 v1 /seat-config)
 # =========================================================================
+
 @router.get("/targets", response_class=HTMLResponse)
 async def targets_list(request: Request):
     store = request.app.state.store

@@ -5,41 +5,53 @@
 {% block title %}覆盖图{% endblock %}
 
 {% block content %}
-<div class="flex flex-col gap-5">
-  {# 指标卡 4 列 #}
+<div class="flex flex-col gap-5"
+     x-data='dashboardRefresh({{ rows_json|safe }})'>
+  {# 指标卡 4 列 —— dashboardRefresh.applyToDom() 在每次刷新后会重建 #id 区域,
+     所以服务端只渲染首屏占位,JS 接手后续更新。 #}
   {% set _gap = namespace(n=0) %}
   {% for r in rows %}{% for c in r.cells %}{% if not c.accounts_info and not c.user_reserved and not c.others_occupied %}{% set _gap.n = _gap.n + 1 %}{% endif %}{% endfor %}{% endfor %}
-  <div class="stat-grid" x-data="{ countdown: 30, init(){ setInterval(()=>{this.countdown--; if(this.countdown<=0) location.reload();},1000);} }" x-init="init()">
+  <div class="stat-grid" id="dashboard-stats">
     {{ stat('目标座位', target_seats|length if target_seats is defined else rows|length) }}
     {{ stat('守护账号', accounts|length if accounts is defined else '—') }}
     {{ stat('今日覆盖', rows|length ~ ' 座', hint=(_gap.n ~ ' 个空缺') if _gap.n else '全覆盖', accent=_gap.n > 0) }}
     {{ stat('当前时间', now_hhmm) }}
   </div>
 
-  {# 状态 banner #}
-  {% if not rows %}
-    {{ banner('warn', '尚未设置目标座位。<a class="text-accent" href="/targets">去添加 →</a>') }}
-  {% elif _gap.n %}
-    {{ banner('error', '检测到 <b>' ~ _gap.n ~ '</b> 个时段空缺，护城河有缺口。<a class="text-danger" href="/coverage">查看报告 →</a>') }}
-  {% elif occ_err %}
-    {{ banner('warn', '无法获取超星他人占用数据：' ~ occ_err) }}
-  {% else %}
-    {{ banner('ok', '护城河稳固，全部目标座位已覆盖。') }}
-  {% endif %}
+  {# 状态 banner —— JS 会重建内容 #}
+  <div id="dashboard-banner">
+    {% if not rows %}
+      {{ banner('warn', '尚未设置目标座位。<a class="text-accent" href="/targets">去添加 →</a>') }}
+    {% elif _gap.n %}
+      {{ banner('error', '检测到 <b>' ~ _gap.n ~ '</b> 个时段空缺，护城河有缺口。<a class="text-danger" href="/coverage">查看报告 →</a>') }}
+    {% elif occ_err %}
+      {{ banner('warn', '无法获取超星他人占用数据：' ~ occ_err) }}
+    {% else %}
+      {{ banner('ok', '护城河稳固，全部目标座位已覆盖。') }}
+    {% endif %}
+  </div>
 
-  {# 主区：gantt + 侧栏 #}
+  {# 主区:gantt + 侧栏 #}
   <div class="dashboard-grid">
     <div class="card">
       <div class="card-header">
         <span class="card-title">护城河（按座位）</span>
-        <span class="text-xs text-ink-muted">点击单元格操作 · 30s 自动刷新</span>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-ink-muted">点击单元格操作 · 30s 局部刷新</span>
+          <span class="text-xs px-2 py-0.5 rounded-full bg-ink-muted/20 text-ink-secondary font-mono"
+                x-text="formatCountdown()"></span>
+          <button class="btn btn-ghost btn-sm" type="button" @click="refresh()" :disabled="busy"
+                  aria-label="立即刷新">
+            <span x-text="busy ? '刷新中…' : '立即刷新'"></span>
+          </button>
+        </div>
       </div>
-      <div class="card-body">
+      <div class="card-body" id="dashboard-gantt">
         {{ gantt(rows, by='seat') }}
       </div>
     </div>
     <div class="flex flex-col gap-4">
-      {# 目标座位 #}
+      {# 目标座位(静态,不参与刷新) #}
       <div class="card"><div class="card-header"><span class="card-title">目标座位</span><a class="text-xs text-accent" href="/targets">全部 →</a></div>
         <div class="card-body flex flex-col gap-1.5">
           {% for r in rows[:6] %}
@@ -50,9 +62,9 @@
           {% else %}<div class="text-xs text-ink-muted">暂无</div>{% endfor %}
         </div>
       </div>
-      {# 最近活动 #}
+      {# 最近活动 —— JS 会重建内容 #}
       <div class="card"><div class="card-header"><span class="card-title">最近活动</span><a class="text-xs text-accent" href="/logs">全部 →</a></div>
-        <div class="card-body flex flex-col gap-2">
+        <div class="card-body flex flex-col gap-2" id="dashboard-recent-logs">
           {% for log in (recent_logs[:8] if recent_logs else []) %}
           <div class="flex items-start gap-2 text-xs">
             <span class="mt-1 h-1.5 w-1.5 rounded-full shrink-0 {% if log.level == 'ERROR' %}bg-danger{% elif log.level == 'WARN' %}bg-warn{% else %}bg-info{% endif %}"></span>
