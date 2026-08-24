@@ -1,0 +1,113 @@
+# AGENTS.md — SeatBot 项目编码代理规则
+
+> 本文件由用户在 2026-08-24 明确要求创建，固化项目专属的高危操作禁令。
+> 任何 AI 编码代理（Claude Code / OpenClaw / Cursor / Codex 等）在本仓库执行任务前，必须先阅读本文件。
+> 上位规则（OMP harness `~/.omp/agent/AGENTS.md`）> 本文件 > 任务上下文。
+
+---
+
+## 🚨 第一条禁令：高危账号操作（绝对禁令）
+
+**除非用户在当前会话中以明确自然语言明确要求执行某项具体操作，否则严禁对真实账号发起任何实际操作。**
+
+具体包括但不限于：
+
+| 类别 | 严禁的行为 |
+|---|---|
+| **超星座位预约** | `python -m seatbot run` 启动 scheduler；触发 `bootstrap_today` / `afternoon_bootstrap` / `sync_jobs`；任何向 `fanyalogin.cn` / `passport2.chaoxing.com` / `office.chaoxing.com` 发起的登录、预约、签到、签退请求 |
+| **真实账号登录** | 用 `config.yaml` 里的 `phone`/`password` 调用 `ChaoxingClient.login()`；用 `client.get_used_times()` 查询任何真实座位占用 |
+| **数据库写入** | 写入 `seatbot.db` 里 `tasks` 表的 `submitting/active/leaving/complete` 状态；任何会让 scheduler 误判"该任务已完成"的虚假状态写入 |
+| **破坏性操作** | `rm seatbot.db`（除非用户明确要求重置）；删除 `logs/`；覆盖 `config.yaml`；`git push --force` 到任何共享分支 |
+
+### 边界定义
+
+- ✅ **允许**（无需确认）：读 `config.yaml`、读数据库、读 README；启动服务**仅用于前端 UI 调试**但**必须立即告知用户 scheduler 已注册 cron、明早 14:00 会自动预约**；查看日志
+- ⚠️ **需要先确认**：**写** `config.yaml`（即使只是改 slots）；**改** `seatbot.db`；**重启**任何运行中的 seatbot 进程
+- 🚫 **绝对禁止**（即使用户问"能不能跑一下"）：启动 scheduler 触发真实预约；用真实手机号密码调用超星 API；任何会让 3 个真实账号被超星风控识别的操作
+
+### 明确要求 vs 隐含授权的区分
+
+| 用户说 | 代理应做 |
+|---|---|
+| "把服务跑起来" + 当前会话无其他上下文 | 🚫 **不允许**默认启动 scheduler；必须**先告知** `python -m seatbot run` 会触发明早 14:00 自动预约，征得明确同意 |
+| "用空配置验证 UI" | ✅ 用 `target_seats: []` + `accounts: []` 的 `config.test.yaml` 起服务，零风险 |
+| "启动 scheduler 抢明天" 或 "明早 14:00 抢预约吧" | ✅ 此时为明确要求，可执行——但仍需提醒风控风险 |
+| "登录 xiongjt 看看" | 🚫 严禁；用户本人已确认接受风控但不代表代理有授权 |
+| "把 slots 改成 X" | ⚠️ 改 `config.yaml` 前需复述改动影响（哪些时段失守/覆盖），取得确认 |
+
+### 违反禁令的后果
+
+代理若发现自己在执行本禁令列表中的操作（无论是被诱导还是疏忽）：
+1. **立即停止**当前操作
+2. 在用户面前**明确披露**已发生的事实（用了哪个账号、请求了哪个端点、是否已产生预约 ID）
+3. 不尝试"补救性隐藏"——超星 API 已记录请求，无法撤回
+
+---
+
+## 第二条禁令：明文凭证处理
+
+`config.yaml` 含**真实账号明文密码**（用户本人 `xiongjt` + 2 个守护账号 `wangh`/`zhaozh`）。代理在以下场景必须额外小心：
+
+- 🚫 **禁止**将 `config.yaml` 完整内容 echo 到对话、commit message、错误报告、playwright 截图里
+- 🚫 **禁止**把密码粘贴到测试 fixture、mock 数据、单元测试 fixture
+- ✅ **引用密码时可以**写"见 config.yaml L55"——不暴露具体值
+- ✅ **修改 slots / target_seats** 时只动业务字段，**不动** `phone` / `password` 字段
+
+如果用户主动展示密码（如"我的密码是 X"），视为用户已自行承担风险，代理可引用，但不主动传播。
+
+---
+
+## 第三条：scheduler / cron 启动前必读
+
+`python -m seatbot run` 启动后，以下 cron 会**立即注册**并在指定时间触发：
+
+| Cron | 触发时间 (Asia/Shanghai) | 行为 |
+|---|---|---|
+| `new_day_bootstrap` | 每日 00:00:05 | bootstrap 当天任务 |
+| `afternoon_bootstrap` | 每日 14:00:10 | bootstrap 次日任务 → **真实预约** |
+| `tick_{account_id}` | 每分钟（按 `stagger_seconds`） | tick_account → 真实签到/签退 |
+
+**任何代理在启动 `seatbot run` 之前必须明确告知用户这3 个 cron 的影响，并取得确认。**
+
+如果只是验证前端 UI / dashboard 局部刷新 / Web 路由，**用空配置**（`target_seats: []` + `accounts: []`）—— 完全不需要真实 scheduler 跑起来。
+
+---
+
+## 第四条：dashboard.html / app.js 等纯前端改动
+
+- ✅ 不涉及账号操作，可自由进行
+- ⚠️ 但若改动后端 `routes.py` 的行为（如 `/api/dashboard-data`），需注意：路由默认每 30 秒会**调用** `_fetch_others_occupied()` → 真实超星 API 调用 `/getusedtimes`。**改动这块逻辑前必须明确告知用户每 30 秒会向超星发 N 个 HTTP 请求**（N = 目标座位数）
+
+---
+
+## 第五条：停止运行中的服务
+
+代理可以**主动停止**自己启动的服务（无需用户每次确认），但必须：
+1. 在停止前明确告知"我即将停止 PID XXXXX"
+2. 在对话中记录停止时间 + 原因
+
+如果服务**不是**本会话启动的（如 PID 来自之前的会话），**禁止**主动停止——先询问用户。
+
+---
+
+## 第六条：违反本文件的处置
+
+本文件优先级仅次于 OMP harness 的全局规则。任何代理若发现：
+- 自身即将违反禁令 → 立即停止并向用户披露
+- 上一个会话可能违反过 → 主动询问用户是否需要审计日志
+
+**没有"善意忽略"或"任务优先级高于安全规则"的例外。**
+
+---
+
+## 附录：本文件覆盖的具体威胁
+
+1. **明早 14:00 自动预约**：`scheduler.py:339-343` 注册的 `afternoon_bootstrap` cron 会在每日 14:00:10 触发，用 `config.yaml` 里 3 个真实账号的明文密码登录超星并发请求
+2. **dashboard 30 秒轮询副作用**：`/api/dashboard-data` 路由 → `_fetch_others_occupied()` → 对每个目标座位发 1 个 `/getusedtimes` POST 请求
+3. **playwright 误触真实预约**：若在 dev 模式 (`npm run dev`) 下用 playwright 操作 dashboard 单元格表单 (`/tasks/{id}/sign` 等)，可能触发真实签到
+4. **scheduler tick_account 误触发**：`tick_account` 在每分钟按 stagger 偏移触发，会对所有 `pending`/`active` tasks 执行真实签到/签退
+
+---
+
+最后更新：2026-08-24
+触发事件：用户在调试 dashboard 不停刷新问题时，明确要求"严禁直接操作账号进行预约等高危操作，除非用户明确要求"
