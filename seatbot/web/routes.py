@@ -691,7 +691,7 @@ async def quick_reserve(
     tid = await store.add_task(t)
     loaded = await store.get_task(tid)
     if loaded:
-        await sched._run_submit_sign(acc, loaded)
+        await sched._run_submit(acc, loaded)
     return RedirectResponse("/tasks?reserved=1", status_code=303)
 
 
