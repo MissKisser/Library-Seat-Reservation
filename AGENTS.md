@@ -46,6 +46,57 @@ SeatBot 是一个**超星（学习通）图书馆座位自动预约守护系统*
 代码位置：`seatbot/scheduler.py` 的 `_run_submit` / `_run_sign` / `_run_leave`（v0.5+ 已重构）。
 
 
+## 业务规则：3 守护账号覆盖 2 座位 3 时段（v0.5+ 实战配置）
+
+> 2026-08-24 用户明确指定，作为本项目**默认配置**。
+
+### 业务约束
+
+| 约束 | 说明 |
+|---|---|
+| 目标座位 | 104 + 105 |
+| 时段数 | 3 个：09:00-11:00 / 15:00-17:00 / 19:00-21:00 |
+| 单段时长 | ≤2h（超星 `max_reserve_hours: 2.0` 硬约束） |
+| 时段 21:00-22:00 失守 | 主动接受（图书馆晚间使用率低） |
+| 账号数 | 3 个（xiongjt / wangh / zhaozh） |
+| 单账号每天段数 | 2 段（每账号对 2 个不同座位各守 1 个不同时段） |
+
+### 守护矩阵
+
+```
+              09:00-11:00  15:00-17:00  19:00-21:00
+104 号位      xiongjt       wangh         zhaozh
+105 号位      zhaozh        xiongjt       wangh
+```
+
+### 实现要求
+
+1. **每账号用 `seat_slots` 字段**（per-seat slots），不要用扁平 `slots` + `bound_seats` 笛卡尔积：
+   - `seat_slots: {"104": [...时段], "105": [...时段]}` ——planner 按 (seat, slot) 对精确展开，**不**做笛卡尔积
+   - 扁平 `slots` + `bound_seats` 会生成 16-22 段/天（实测），违反"6 段精确"目标
+2. **每段必须 ≤2h**。用户输入超 2h 的 range（如 19:00-21:30），planner 会自动拆段（如拆成 19:00-21:00 + 21:00-21:30 = 2 段），破坏精确分配。**代码层应拒绝**或**配置层应避免**超 2h range。
+3. **每日 14:00 触发时**，`_afternoon_bootstrap` 必须生成**恰好 6 条 pending tasks**（不是 16、不是 22），并**立即 `_run_submit` 全部**（不签到——签到等时段开始）。
+4. **`/api/dashboard-data` 应展示这 6 条 task 的状态**（pending / active / failed）。
+
+### 验证方法
+
+启动服务后，下面的 Python 应输出 6 段：
+
+```python
+from datetime import date
+from seatbot.config import load_config
+from seatbot.planner import ReservationPlanner
+cfg = load_config('config.yaml')
+total = sum(
+    len(ReservationPlanner(
+        acc, bound_seats=acc.bound_seats, fallback_seats=['104', '105'],
+        max_reserve_hours=cfg.library.max_reserve_hours,
+    ).expand_for_day(date.today()))
+    for acc in cfg.accounts
+)
+assert total == 6, f"期望 6 段, 实际 {total}"
+```
+
 ## 🚨 第一条禁令：高危账号操作（绝对禁令）
 
 **除非用户在当前会话中以明确自然语言明确要求执行某项具体操作，否则严禁对真实账号发起任何实际操作。**
