@@ -155,28 +155,24 @@ class Scheduler:
         if active:
             await self._maybe_relay(active, now)
             return
-        # no active task — find the next pending task that should be running
+        # no active task — 找当前时段的 ACTIVE 任务签到
+        # ★ v0.5+: tick 不再 submit — submit 完全交给 _afternoon_bootstrap (每天 14:00) 一次性提交
+        # 这里只负责 sign (时段进行中) + leave (时段结束前)
         tasks = await self.store.list_tasks(account_id=acc_id, day=today)
         for t in tasks:
-            if t.status not in (TaskStatus.PENDING, TaskStatus.READY, TaskStatus.FAILED):
-                continue
-            t_start = at_cst(t.day, t.start_time)
-            t_end = at_cst(t.day, t.end_time)
-            # currently inside the slot — submit (如果还没) + sign
-            if t_start <= now < t_end:
-                if not t.reserve_id:
-                    await self._run_submit(acc_cfg, t)
-                    t = await self.store.get_task(t.id)
-                if t and t.reserve_id:
+            if t.status == TaskStatus.ACTIVE:
+                t_start = at_cst(t.day, t.start_time)
+                t_end = at_cst(t.day, t.end_time)
+                # 时段进行中 → sign (补签)
+                if t_start <= now < t_end:
                     await self._run_sign(acc_cfg, t)
-                return
-            # pre_sign 窗口 (时段开始前 ≤20min) — submit (如果还没),不 sign
-            # sign 需要到时段开始时刻才被服务端接受
-            if timedelta(0) <= (t_start - now) <= timedelta(minutes=20):
-                if not t.reserve_id:
-                    await self._run_submit(acc_cfg, t)
-                # 故意**不**调 _run_sign — 等时段开始的下一个 tick
-                return
+                    return
+                # 时段结束前 → leave
+                if now >= t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS):
+                    await self._maybe_relay(t, now)
+                    return
+            # PENDING task: 如果没 reserve_id 是 14:00 submit 失败,什么都不做(等下一个 tick)
+            # 如果有 reserve_id 但 status 还不是 ACTIVE(异常状态),同样不动
 
     async def peek_next_relay(self) -> NextRelay | None:
         now = now_cst()
