@@ -364,18 +364,32 @@ class Scheduler:
             await self._bootstrap_for_account(acc, today, [s.seat_num for s in seats])
 
     async def _afternoon_bootstrap(self) -> None:
-        """每天14:00触发：为明天生成预约任务。
+        """每天14:00触发：为明天生成预约任务并立即提交。
 
-        超星预约系统在14:00后开放次日预约窗口，此时提前生成明天的任务并立即提交。
-        bootstrap_for_account 内部有 (account_id, day, seat_num) 三元组防重保护，
+        超星预约系统在14:00后开放次日预约窗口(`reserveBeforeTime: 14:00`),
+        此时立即提交预约请求,服务端按 `reserveBeforeTime` 校验后接受/拒绝。
+        bootstrap_for_account 内部有 (account_id, day, seat_num) 三元组防重保护,
         重复调用时幂等。
         """
         from datetime import timedelta
         tomorrow = today_cst() + timedelta(days=1)
         seats = await self.store.list_target_seats()
-        await self._info(f"afternoon bootstrap: generating tasks for {tomorrow}")
+        await self._info(f"afternoon bootstrap: generating tasks for {tomorrow}", "scheduler")
         for acc in await self.store.list_accounts():
             await self._bootstrap_for_account(acc, tomorrow, [s.seat_num for s in seats])
+        # 14:00 后立即 submit — 超星服务端会按 reserveBeforeTime 校验窗口。
+        # 对 tomorrow 的每个 pending task 都调一次 _run_submit_sign,
+        # 服务端拒绝的 (例如时段冲突) 会标 FAILED,成功的标 ACTIVE。
+        # 时段开始前的 pre_sign 窗口仍是 submit 的二次保险。
+        from seatbot.models import TaskStatus
+        submitted = 0
+        for acc in await self.store.list_accounts():
+            tasks = await self.store.list_tasks(account_id=acc.id, day=tomorrow)
+            pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING]
+            for t in pending_tasks:
+                await self._run_submit_sign(acc, t)
+                submitted += 1
+        await self._info(f"afternoon bootstrap: submitted {submitted} tasks for {tomorrow}", "scheduler")
 
     async def shutdown(self) -> None:
         self.scheduler.shutdown(wait=False)
