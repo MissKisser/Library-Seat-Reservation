@@ -172,18 +172,22 @@
 
   /* ===== Gantt 单元 ===== */
   .gantt-wrap { @apply overflow-x-auto rounded-lg border border-edge-subtle; }
-  .gantt { @apply w-full text-xs border-collapse min-w-[720px] table-fixed; }
+  /* 14h 开放 × 2 座 × 30min/cell = 28 列 + 1 row-label(140px) = ~1260px 最小宽 */
+  .gantt { @apply w-full text-xs border-collapse min-w-[1280px] table-fixed; }
   .gantt thead th {
     @apply sticky top-0 bg-app-muted text-ink-muted font-medium px-1.5 py-1.5
-           border-b border-edge-subtle text-center;
+           border-b border-edge-subtle text-center w-[40px] min-w-[40px] overflow-hidden;
   }
+  /* row-label 列头不需要固定 40px, 单独占 140px */
+  .gantt thead th.row-label { @apply w-[140px] min-w-[140px]; }
   .gantt .row-label {
     @apply sticky left-0 z-[2] bg-app-muted text-left px-2 py-1.5
            border-b border-edge-subtle w-[140px] min-w-[140px];
   }
   .gantt td.cell {
-    @apply text-center p-0 w-[40px] h-[34px] border-b border-r border-edge-subtle/50
-           relative cursor-default;
+    @apply text-center p-0 w-[40px] min-w-[40px] h-[34px]
+           border-b border-r border-edge-subtle/50
+           relative cursor-default overflow-hidden;
   }
   .cell-active      { @apply bg-success/70; }
   .cell-submitting  { @apply bg-info/70; }
