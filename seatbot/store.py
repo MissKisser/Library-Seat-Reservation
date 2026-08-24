@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   phone       TEXT NOT NULL,
   password    TEXT NOT NULL,
   slots_json  TEXT NOT NULL,
+  seat_slots_json TEXT NOT NULL DEFAULT '{}',
   bound_seats_json  TEXT NOT NULL DEFAULT '[]',
   max_segments_per_day INTEGER NOT NULL DEFAULT 1,
   status      TEXT NOT NULL DEFAULT 'active',
@@ -293,21 +294,26 @@ class StateStore:
         if row is None:
             await self.db.execute(
                 """INSERT INTO accounts
-                   (id, phone, password, slots_json, bound_seats_json,
+                   (id, phone, password, slots_json, seat_slots_json, bound_seats_json,
                     max_segments_per_day, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
                 (
-                    acc.id, acc.phone, acc.password, slots_json, bound_json,
+                    acc.id, acc.phone, acc.password, slots_json,
+                    json.dumps(acc.seat_slots or {}),
+                    bound_json,
                     acc.one_account_max_concurrent_segments_per_day, now, now,
                 ),
             )
         else:
             await self.db.execute(
                 """UPDATE accounts SET phone=?, password=?, slots_json=?,
-                       bound_seats_json=?, max_segments_per_day=?, updated_at=?
+                       seat_slots_json=?, bound_seats_json=?,
+                       max_segments_per_day=?, updated_at=?
                    WHERE id=?""",
                 (
-                    acc.phone, acc.password, slots_json, bound_json,
+                    acc.phone, acc.password, slots_json,
+                    json.dumps(acc.seat_slots or {}),
+                    bound_json,
                     acc.one_account_max_concurrent_segments_per_day, now, acc.id,
                 ),
             )
@@ -326,7 +332,7 @@ class StateStore:
 
     async def get_account(self, acc_id: str) -> Account | None:
         cur = await self.db.execute(
-            "SELECT id, phone, password, slots_json, bound_seats_json, max_segments_per_day "
+            "SELECT id, phone, password, slots_json, seat_slots_json, bound_seats_json, max_segments_per_day "
             "FROM accounts WHERE id=?",
             (acc_id,),
         )
@@ -339,15 +345,21 @@ class StateStore:
                 slots = json.loads(slots)
             except Exception:
                 pass
-        bound = row[4] or "[]"
+        bound = row[5] or "[]"
         try:
             bound_list = json.loads(bound)
         except Exception:
             bound_list = []
+        seat_slots_raw = row[4] or "{}"
+        try:
+            seat_slots = json.loads(seat_slots_raw) or None
+        except Exception:
+            seat_slots = None
         return Account(
             id=row[0], phone=row[1], password=row[2],
             slots=slots, bound_seats=bound_list,
-            one_account_max_concurrent_segments_per_day=row[5] or 1,
+            one_account_max_concurrent_segments_per_day=row[6] or 1,
+            seat_slots=seat_slots,
         )
 
     async def list_accounts(self) -> list[Account]:
@@ -360,8 +372,29 @@ class StateStore:
                 out.append(a)
         return out
 
-    async def sync_accounts(self, accounts: list[Account]) -> int:
-        for acc in accounts:
+    async def sync_accounts(self, accounts) -> int:
+        """Sync accounts to DB. 可接受 AccountConfig (pydantic) 或 Account (dataclass)。
+        实际使用 cfg.accounts (AccountConfig 列表),这里转成 Account dataclass。
+        """
+        from seatbot.models import Account as _Account
+        for cfg_acc in accounts:
+            # cfg_acc 可能是 pydantic BaseModel 或 dataclass
+            raw_slots = cfg_acc.slots
+            if isinstance(raw_slots, str):
+                slots = raw_slots  # 'full' 原样
+            else:
+                slots = list(raw_slots) if raw_slots else []
+            bound = list(cfg_acc.bound_seats) if cfg_acc.bound_seats else []
+            seat_slots = getattr(cfg_acc, 'seat_slots', None)
+            acc = _Account(
+                id=cfg_acc.id,
+                phone=cfg_acc.phone,
+                password=cfg_acc.password,
+                slots=slots,
+                bound_seats=bound,
+                one_account_max_concurrent_segments_per_day=cfg_acc.one_account_max_concurrent_segments_per_day,
+                seat_slots=seat_slots,
+            )
             await self.upsert_account(acc)
         return len(accounts)
 
