@@ -356,10 +356,21 @@ class Scheduler:
             except ChaoxingError as e:
                 await self._warn(f"leave login prefetch failed ({e})", acc.id)
         try:
-            await client.leave(t.reserve_id)
-            await self.store.log_action(acc.id, "leave", str(t.reserve_id), "", True)
+            sr = await client.leave(t.reserve_id)
+            await self.store.log_action(
+                acc.id, "leave", str(t.reserve_id), str(sr)[:500],
+                bool(sr.get("success")), str(sr.get("msg")),
+            )
+            if not sr.get("success"):
+                await self._error(f"leave failed: {sr.get('msg')}", acc.id)
+                # ★ leave 失败时 **不要** 标 COMPLETE — 留给下次 tick 重试
+                await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
+                return
         except Exception as e:
-            await self._error(f"leave failed: {e}", acc.id)
+            await self._error(f"leave error: {e}", acc.id)
+            await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
+            return
+        # leave 成功 → 标 COMPLETE
         await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
 
     # ---------- cron wiring ----------
