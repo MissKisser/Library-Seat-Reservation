@@ -220,9 +220,10 @@ class Scheduler:
         return best[1] if best else None
 
     async def _maybe_relay(self, t: Task, now: datetime) -> None:
-        """(v2) 跨 account / 跨 seat 的接力:leave 当前段,从 DB 查下一段 task。
+        """(v2) 跨 account / 跨 seat 的接力:leave 当前段。
 
-        注意:接力只 leave 当前 + submit 下一段 (不 sign)。
+        注意 (v0.5+): 接力只 leave 当前段,**不** submit 下一段。
+        下一段已经在 _afternoon_bootstrap (14:00) 被预约过,无需再次 submit。
         sign 由下一段的 pre_sign 窗口 tick_account 触发。
         """
         t_end = at_cst(t.day, t.end_time)
@@ -236,20 +237,20 @@ class Scheduler:
         await self.store.update_task_status(t.id, TaskStatus.LEAVING)
         # leave 当前段
         await self._run_leave(acc, t)
-
-        # 跨 account / 跨 seat 找下一段 (按 start_time 升序)
+        # ★ v0.5+: 不再 submit 下一段 — 由 _afternoon_bootstrap 14:00 统一处理
         nxt = await self.store.find_next_task_after(
             t.day, t.end_time,
             statuses=("pending", "ready", "failed"),
         )
         if nxt is None:
-            await self._info("relay: no next task", acc.id)
+            await self._info("relay: no next task (不 submit,等 14:00 bootstrap)", acc.id)
             return
-        nxt_acc = await self.store.get_account(nxt.account_id)
-        if not nxt_acc:
-            return
-        # submit 下一段 (但**不** sign — 下一段时段还未开始)
-        await self._run_submit(nxt_acc, nxt)
+        await self._info(
+            f"relay: leave 完成,下一段 task={nxt.id} ({nxt.account_id} {nxt.seat_num} {nxt.day} "
+            f"{nxt.start_time.strftime('%H:%M')}-{nxt.end_time.strftime('%H:%M')}) 状态={nxt.status.value} "
+            f"reserve_id={nxt.reserve_id or 'None'} (不 submit,等 14:00 bootstrap)",
+            acc.id,
+        )
 
     async def _run_submit(self, acc: Account, t: Task) -> None:
         """提交预约 (不签到)。
