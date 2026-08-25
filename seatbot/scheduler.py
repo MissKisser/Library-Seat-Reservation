@@ -1,6 +1,7 @@
 """APScheduler wrapper (v2: per-task seat_num, cross-account/cross-seat relay)."""
 from __future__ import annotations
 
+import asyncio
 import random
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -408,19 +409,55 @@ class Scheduler:
         此时立即提交预约请求,服务端按 `reserveBeforeTime` 校验后接受/拒绝。
         bootstrap_for_account 内部有 (account_id, day, seat_num) 三元组防重保护,
         重复调用时幂等。
+
+        错误恢复 (v0.5+):
+          - 每个 task 的 _run_submit 独立 try/except
+          - 一个 task 失败不中断后续 task
+          - 失败的 task 状态保持 PENDING (让明天的 _afternoon_bootstrap 重试)
+          - 显式 ERROR 日志
         """
         from datetime import timedelta
         from seatbot.models import TaskStatus
         tomorrow = today_cst() + timedelta(days=1)
         submitted = 0
+        failed = 0
         for acc in await self.store.list_accounts():
             tasks = await self.store.list_tasks(account_id=acc.id, day=tomorrow)
             pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING]
+            if not pending_tasks:
+                continue
+            # 账号间错开 3 秒,避免 Playwright 资源冲突 / 风控检测
+            if submitted > 0:
+                await asyncio.sleep(3)
             for t in pending_tasks:
-                # 只 submit — sign 由 tick_account 在时段开始前的 pre_sign 窗口触发
-                await self._run_submit(acc, t)
-                submitted += 1
-
+                # 单 task 独立 try/except — 一个失败不影响其他
+                try:
+                    await self._run_submit(acc, t)
+                    # 检查结果:reserve_id 写入 = 成功,否则 _run_submit 已标 FAILED
+                    after = await self.store.get_task(t.id)
+                    if after and after.status == TaskStatus.ACTIVE and after.reserve_id:
+                        submitted += 1
+                    else:
+                        failed += 1
+                        await self._warn(
+                            f"afternoon_bootstrap: submit 不成功, task={t.id} "
+                            f"acc={acc.id} seat={t.seat_num} {t.day} {t.start_time}-{t.end_time}",
+                            acc.id,
+                        )
+                except Exception as e:
+                    failed += 1
+                    await self._error(
+                        f"afternoon_bootstrap: _run_submit 抛异常 {type(e).__name__}: {e} "
+                        f"task={t.id} acc={acc.id} seat={t.seat_num} {t.day} {t.start_time}-{t.end_time}",
+                        acc.id,
+                    )
+                    # 任务保持 PENDING, 让明天的 _afternoon_bootstrap 重试
+                # 单账号内 task 间错开 2 秒,避免连续 submit 触发风控
+                await asyncio.sleep(2)
+        await self._info(
+            f"afternoon_bootstrap 完成: submitted={submitted}, failed={failed}, day={tomorrow}",
+            "scheduler",
+        )
     async def shutdown(self) -> None:
         self.scheduler.shutdown(wait=False)
         for c in self._clients.values():
