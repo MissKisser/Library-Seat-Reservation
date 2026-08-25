@@ -36,7 +36,7 @@ class NextRelay:
 
 
 class Scheduler:
-    RELAY_LEAD_SECONDS = 5 * 60  # leave 5 minutes before end_time
+    RELAY_LEAD_SECONDS = -60  # leave 推迟到 end_time 之后 60s (用户要求"到点再签退", 加 60s 缓冲避免服务端拒绝)
 
     def __init__(
         self,
