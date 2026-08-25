@@ -140,23 +140,34 @@ class Scheduler:
         acc_cfg = await self.store.get_account(acc_id)
         if not acc_cfg:
             return
-        # 检查该账号是否已超出单日并发上限
+        # 检查该账号是否已超出单日并发段 (v0.5+: 只检查 ACTIVE,不再含 pending/ready)
+        # 原因: limit 本意是限制服务端并发段数,pending 是还没抢到的,
+        # 把 pending 算进去会导致已经 bootstrap 过的账号永远被拦截, sign/leave 永远不触发
         today = today_cst()
-        n_today = await self.store.count_tasks_for_account_day(
+        n_active = await self.store.count_tasks_for_account_day(
             acc_id, today,
-            statuses=("pending", "ready", "active", "submitting", "leaving"),
+            statuses=("active", "submitting", "leaving"),
         )
         limit = acc_cfg.one_account_max_concurrent_segments_per_day
-        if n_today >= limit and limit > 0:
-            # 已经安排了 N 段,不再触发更多 (避免超出后端上限)
+        if n_active >= limit and limit > 0:
+            # 已有 N 段激活中,不再触发更多 (避免超出后端上限)
             return
-
         active = await self.store.find_active_task(acc_id)
         now = now_cst()
         if active:
-            await self._maybe_relay(active, now)
+            t_start = at_cst(active.day, active.start_time)
+            t_end = at_cst(active.day, active.end_time)
+            # 1. 时段结束前 → leave (自动签退+接力)
+            if now >= t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS):
+                await self._maybe_relay(active, now)
+                return
+            # 2. 时段进行中 → sign (补签)
+            if t_start <= now < t_end:
+                await self._run_sign(acc_cfg, active)
+                return
+            # 3. ACTIVE 但时段未开始 (异常: 提前 activate 了) → 不动
             return
-        # no active task — 找当前时段的 ACTIVE 任务签到
+        # no active task — 检查今天 pending tasks 是否时段进行中需补签
         # ★ v0.5+: tick 不再 submit — submit 完全交给 _afternoon_bootstrap (每天 14:00) 一次性提交
         # 这里只负责 sign (时段进行中) + leave (时段结束前)
         tasks = await self.store.list_tasks(account_id=acc_id, day=today)
