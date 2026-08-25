@@ -411,6 +411,7 @@ class Scheduler:
         """
         from datetime import timedelta
         from seatbot.models import TaskStatus
+        tomorrow = today_cst() + timedelta(days=1)
         submitted = 0
         for acc in await self.store.list_accounts():
             tasks = await self.store.list_tasks(account_id=acc.id, day=tomorrow)
