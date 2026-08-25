@@ -312,6 +312,13 @@ class Scheduler:
             await self._warn(f"sign skipped: no reserve_id seat={t.seat_num} {t.chunk_key()}", acc.id)
             return
         client = self._client_for(acc)
+        # ★ v0.5+: lazy login — _run_sign 是独立调用路径,_run_submit 已登录过则 cookies 复用;否则这里登录
+        if not client.cookies():
+            try:
+                await client.login(acc.phone, acc.password)
+                await self._info(f"sign login ok ({len(client.cookies())} cookies)", acc.id)
+            except ChaoxingError as e:
+                await self._warn(f"sign login prefetch failed ({e})", acc.id)
         try:
             sr = await client.sign(t.reserve_id)
             await self.store.log_action(
@@ -322,7 +329,6 @@ class Scheduler:
                 await self._error(f"sign failed: {sr.get('msg')}", acc.id)
         except Exception as e:
             await self._error(f"sign error: {e}", acc.id)
-
     async def _run_leave(self, acc: Account, t: Task) -> None:
         """签退 (不 submit/sign)。"""
         if not t.reserve_id:
@@ -330,6 +336,13 @@ class Scheduler:
             await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
             return
         client = self._client_for(acc)
+        # ★ v0.5+: lazy login — _run_leave 是独立调用路径
+        if not client.cookies():
+            try:
+                await client.login(acc.phone, acc.password)
+                await self._info(f"leave login ok ({len(client.cookies())} cookies)", acc.id)
+            except ChaoxingError as e:
+                await self._warn(f"leave login prefetch failed ({e})", acc.id)
         try:
             await client.leave(t.reserve_id)
             await self.store.log_action(acc.id, "leave", str(t.reserve_id), "", True)
