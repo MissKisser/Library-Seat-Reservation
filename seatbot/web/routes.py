@@ -9,12 +9,12 @@ import json
 from datetime import date, datetime as _dt
 from datetime import time as _time
 
-from fastapi import APIRouter, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from seatbot.client import ChaoxingClient, ChaoxingError
-from seatbot.coverage import Coverage, compute_coverage, compute_seat_coverage
-from seatbot.models import Account, SeatTarget, Task, TaskStatus
+from seatbot.coverage import compute_seat_coverage
+from seatbot.models import Account, Task, TaskStatus
 from seatbot.scheduler import NextRelay
 from seatbot.utils.timeutil import now_cst, parse_hhmm, parse_range, today_cst
 
@@ -375,12 +375,6 @@ async def targets_list(request: Request):
     )
 
 
-@router.get("/targets/new", response_class=HTMLResponse)
-async def targets_new(request: Request):
-    # 表单已内联到列表页（targets_list.html），重定向到列表页
-    return RedirectResponse("/targets", status_code=303)
-
-
 @router.post("/targets")
 async def targets_create(
     request: Request,
@@ -465,77 +459,7 @@ async def user_reserved_delete(request: Request, rid: int):
 
 
 # =========================================================================
-# Coverage report — 行=座位 (v2)
-# =========================================================================
-@router.get("/coverage", response_class=HTMLResponse)
-async def coverage_view(request: Request, day: str | None = None):
-    cfg = request.app.state.cfg
-    store = request.app.state.store
-    d = date.fromisoformat(day) if day else today_cst()
-    accounts = await store.list_accounts()
-    target_seats = await store.list_target_seats()
-    ur_rows = await store.list_user_reserved(day=d)
-    from datetime import time as _time
-    user_reserved: list[tuple[str, time, time]] = []
-    for u in ur_rows:
-        sh, sm = map(int, u["start_time"].split(":"))
-        eh, em = map(int, u["end_time"].split(":"))
-        user_reserved.append((u["seat_num"], _time(sh, sm), _time(eh, em)))
-
-    others_occupied, occ_err = await _fetch_others_occupied(
-        request, store, d, [s.seat_num for s in target_seats],
-    )
-
-    if not target_seats:
-        return _templates(request).TemplateResponse(
-            request, "coverage.html",
-            await _ctx(request, cov=None, rows=[], day=d.isoformat(),
-                        user_reserved=user_reserved,
-                        others_occupied=others_occupied,
-                        occ_err=occ_err,
-                        active_page="coverage"),
-        )
-    rows = compute_seat_coverage(
-        accounts, target_seats, d,
-        open_time=cfg.library.open_time,
-        close_time=cfg.library.close_time,
-        user_reserved=user_reserved,
-        others_occupied=others_occupied,
-    )
-    # coverage 模板需要 dict 形态 rows (因为 dashboard.html 的 annotated_rows 是 dict,
-    # gantt 宏对 dict / dataclass 都能跑,但 coverage.html 里有 row.gaps 访问,
-    # gaps 是 SeatCoverage 的 @property — Jinja 不识别;统一转 dict 避免踩坑)
-    rendered_rows = [
-        {
-            "seat": sc.seat,
-            "gaps": [[g[0], g[1]] for g in sc.gaps],
-            "cells": [
-                {
-                    "start": c.start, "end": c.end,
-                    "accounts_info": [
-                        {"id": aid, "status": "pending"}
-                        for aid in c.accounts
-                    ],
-                    "user_reserved": c.user_reserved,
-                    "others_occupied": c.others_occupied,
-                }
-                for c in sc.coverage.cells
-            ],
-        }
-        for sc in rows
-    ]
-    return _templates(request).TemplateResponse(
-        request, "coverage.html",
-        await _ctx(request, rows=rendered_rows, day=d.isoformat(),
-                    user_reserved=user_reserved,
-                    others_occupied=others_occupied,
-                    occ_err=occ_err,
-                    active_page="coverage"),
-    )
-
-
-# =========================================================================
-# Accounts CRUD (v2: 包含 bound_seats, max_segments_per_day)
+# Accounts CRUD (v2: 包含 bound_seats)
 # =========================================================================
 @router.get("/accounts", response_class=HTMLResponse)
 async def accounts_list(request: Request):
@@ -563,7 +487,6 @@ async def accounts_create(
     slots: str = Form("full"),
     slots_custom: str = Form(""),
     bound_seats: list[str] = Form(default=[]),
-    one_account_max_concurrent_segments_per_day: int = Form(default=1),
 ):
     store = request.app.state.store
     slots_value: str | list[str] = slots
@@ -585,7 +508,6 @@ async def accounts_create(
         id=id, phone=phone, password=password,
         slots=slots_value,
         bound_seats=list(bound_seats),
-        one_account_max_concurrent_segments_per_day=one_account_max_concurrent_segments_per_day,
     )
     try:
         await store.upsert_account(acc)
@@ -618,7 +540,6 @@ async def accounts_update(
     slots: str = Form("full"),
     slots_custom: str = Form(""),
     bound_seats: list[str] = Form(default=[]),
-    one_account_max_concurrent_segments_per_day: int = Form(default=1),
 ):
     store = request.app.state.store
     existing = await store.get_account(acc_id)
@@ -643,7 +564,6 @@ async def accounts_update(
     existing.password = password
     existing.slots = slots_value
     existing.bound_seats = list(bound_seats)
-    existing.one_account_max_concurrent_segments_per_day = one_account_max_concurrent_segments_per_day
     await store.upsert_account(existing)
     return RedirectResponse("/accounts?updated=1", status_code=303)
 
@@ -752,30 +672,6 @@ async def task_sign(request: Request, task_id: int):
     return RedirectResponse("/tasks?signed=1", status_code=303)
 
 
-@router.post("/tasks/{task_id}/leave")
-async def task_leave(request: Request, task_id: int):
-    sched = request.app.state.sched
-    store = request.app.state.store
-    t = await store.get_task(task_id)
-    if not t or not t.reserve_id:
-        raise HTTPException(400)
-    acc = await store.get_account(t.account_id)
-    if not acc:
-        raise HTTPException(404)
-    client = sched._client_for(acc)
-    if not client.cookies():
-        await client.login(acc.phone, acc.password)
-    r = await client.leave(t.reserve_id)
-    await store.log_action(acc.id, "leave", str(t.reserve_id), str(r)[:500], bool(r.get("success")), str(r.get("msg")))
-    # ★ 只有服务端确认成功才置 COMPLETE; 失败保留原状态 (scheduler/用户可重试),
-    #   否则任务被虚假关闭, 预约会一直挂在账号上占座。
-    if r.get("success"):
-        await store.update_task_status(task_id, TaskStatus.COMPLETE)
-    else:
-        await store.update_task_status(task_id, t.status, last_error=f"leave: {r.get('msg')}")
-    return RedirectResponse("/tasks?left=1", status_code=303)
-
-
 @router.post("/tasks/{task_id}/cancel")
 async def task_cancel(request: Request, task_id: int):
     sched = request.app.state.sched
@@ -807,133 +703,6 @@ async def seats_view(request: Request):
         request, "seats.html",
         await _ctx(request, active_page="seats"),
     )
-
-
-# =========================================================================
-# Availability API — 检查某 seat × 时段 是否空闲
-# =========================================================================
-@router.get("/api/seats/availability")
-async def api_seat_availability(
-    request: Request,
-    day: str = Query(...),
-    seat: str = Query(...),
-    start: str = Query(...),
-    end: str = Query(...),
-):
-    """Return whether `seat` is free at [start, end) on `day`."""
-    cfg = request.app.state.cfg
-    sched = request.app.state.sched
-    store = request.app.state.store
-    sn = seat.zfill(3) if seat.isdigit() else seat
-    accounts = await store.list_accounts()
-    if not accounts:
-        return JSONResponse({"available": True, "seat": sn, "note": "no accounts"})
-    # 任选一个账号作为探针 (登录)
-    acc = accounts[0]
-    client = sched._client_for(acc)
-    if not client.cookies():
-        try:
-            await client.login(acc.phone, acc.password)
-        except Exception as e:
-            return JSONResponse(
-                {"available": True, "seat": sn, "error": f"login failed: {e}"},
-                status_code=200,
-            )
-    try:
-        reserve = await client.get_active_reservation(cfg.library.room_id, sn)
-    except Exception as e:
-        return JSONResponse({"available": True, "seat": sn, "error": str(e)})
-    if not reserve:
-        return JSONResponse({"available": True, "seat": sn})
-    return JSONResponse({
-        "available": False,
-        "seat": sn,
-        "occupied_by": str(reserve),
-        "end_time": (reserve.get("endTime") if isinstance(reserve, dict) else None),
-    })
-
-
-@router.get("/api/coverage")
-async def api_coverage(request: Request, day: str | None = None):
-    cfg = request.app.state.cfg
-    store = request.app.state.store
-    d = date.fromisoformat(day) if day else today_cst()
-    accounts = await store.list_accounts()
-    seats = await store.list_target_seats()
-    ur_rows = await store.list_user_reserved(day=d)
-    from datetime import time as _time
-    user_reserved = [(u["seat_num"],
-                      _time(*map(int, u["start_time"].split(":"))),
-                      _time(*map(int, u["end_time"].split(":"))))
-                     for u in ur_rows]
-
-    others_occupied, occ_err = await _fetch_others_occupied(
-        request, store, d, [s.seat_num for s in seats],
-    )
-
-    rows = compute_seat_coverage(
-        accounts, seats, d,
-        open_time=cfg.library.open_time, close_time=cfg.library.close_time,
-        user_reserved=user_reserved,
-        others_occupied=others_occupied,
-    )
-    return JSONResponse({
-        "day": d.isoformat(),
-        "open_time": rows[0].coverage.open_time.isoformat(timespec="minutes") if rows else "08:00",
-        "close_time": rows[0].coverage.close_time.isoformat(timespec="minutes") if rows else "22:00",
-        "user_reserved": [
-            {
-                "seat_num": sn,
-                "start": s.isoformat(timespec="minutes"),
-                "end": e.isoformat(timespec="minutes"),
-            }
-            for sn, s, e in user_reserved
-        ],
-        "others_occupied": [
-            {
-                "seat_num": sn,
-                "start": s.isoformat(timespec="minutes"),
-                "end": e.isoformat(timespec="minutes"),
-            }
-            for sn, s, e in others_occupied
-        ],
-        "occ_err": occ_err,
-        "rows": [
-            {
-                "seat_num": sc.seat.seat_num,
-                "label": sc.seat.label,
-                "cells": [
-                    {
-                        "start": c.start.isoformat(timespec="minutes"),
-                        "end": c.end.isoformat(timespec="minutes"),
-                        "accounts": c.accounts,
-                        "user_reserved": bool(getattr(c, "user_reserved", False)),
-                        "others_occupied": bool(getattr(c, "others_occupied", False)),
-                    }
-                    for c in sc.coverage.cells
-                ],
-                "gaps": [[g[0].isoformat(timespec="minutes"), g[1].isoformat(timespec="minutes")]
-                         for g in sc.gaps],
-            }
-            for sc in rows
-        ],
-        "by_account": _by_account_view(accounts, d,
-                                         open_time=cfg.library.open_time,
-                                         close_time=cfg.library.close_time),
-    })
-
-
-def _by_account_view(accounts: list[Account], d: date,
-                     open_time: str, close_time: str) -> list[dict]:
-    cov = compute_coverage(accounts, d, open_time=open_time, close_time=close_time)
-    return [
-        {
-            "start": c.start.isoformat(timespec="minutes"),
-            "end": c.end.isoformat(timespec="minutes"),
-            "accounts": c.accounts,
-        }
-        for c in cov.cells
-    ]
 
 
 @router.get("/api/status")

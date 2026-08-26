@@ -11,7 +11,6 @@ from apscheduler.triggers.cron import CronTrigger
 
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.config import Config
-from seatbot.enc import EncGenerator
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.planner import ReservationPlanner
 from seatbot.store import StateStore
@@ -42,11 +41,9 @@ class Scheduler:
         self,
         cfg: Config,
         store: StateStore,
-        enc: EncGenerator | None = None,
     ):
         self.cfg = cfg
         self.store = store
-        self.enc = enc or EncGenerator()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         self._clients: dict[str, ChaoxingClient] = {}
         self._bootstrap_done_for: set[tuple[str, str, str]] = set()  # (account_id, day, seat_num)
@@ -257,17 +254,42 @@ class Scheduler:
                 await self._warn(f"login prefetch failed ({e}); trying in-browser login", acc.id)
 
         try:
-            r = await client.submit_in_browser(
-                phone=acc.phone,
-                password=acc.password,
-                room_id=self.cfg.library.room_id,
-                seat_num=t.seat_num,           # ★ v2: per-task
-                day=t.day.isoformat(),
-                start_time=t.start_time.strftime("%H:%M"),
-                end_time=t.end_time.strftime("%H:%M"),
-            )
+            if t.day > today_cst():
+                # ★ 跨天任务走页面内改写通道 (2026-08-26 B1):
+                # 座位页只渲染今天 (R1); abort+httpx 重放被 303 风控全拒
+                # (14:00 实测 0/6) — 改由真实页面发提交, 网络层仅改写字段。
+                if not self.cfg.runtime.direct_submit_enabled:
+                    await self._error(
+                        f"direct submit disabled by config; refuse to book "
+                        f"future day {t.day} via today-page (would mis-book today)",
+                        acc.id,
+                    )
+                    await self.store.update_task_status(
+                        t.id, TaskStatus.FAILED,
+                        last_error="direct submit disabled; future-day task refused",
+                    )
+                    return
+                r = await client.submit_via_page_rewrite(
+                    phone=acc.phone,
+                    password=acc.password,
+                    room_id=self.cfg.library.room_id,
+                    seat_num=t.seat_num,
+                    day=t.day.isoformat(),
+                    start_time=t.start_time.strftime("%H:%M"),
+                    end_time=t.end_time.strftime("%H:%M"),
+                )
+            else:
+                r = await client.submit_in_browser(
+                    phone=acc.phone,
+                    password=acc.password,
+                    room_id=self.cfg.library.room_id,
+                    seat_num=t.seat_num,           # ★ v2: per-task
+                    day=t.day.isoformat(),
+                    start_time=t.start_time.strftime("%H:%M"),
+                    end_time=t.end_time.strftime("%H:%M"),
+                )
         except Exception as e:
-            await self._error(f"submit_in_browser exception: {e}", acc.id)
+            await self._error(f"submit exception: {e}", acc.id)
             await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error=str(e))
             return
 
@@ -291,8 +313,32 @@ class Scheduler:
             await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error="no reserve_id")
             return
 
-        await self.store.update_task_status(t.id, TaskStatus.ACTIVE, reserve_id=reserve_id)
+        await self.store.update_task_status(t.id, TaskStatus.ACTIVE, reserve_id=reserve_id, last_error="")
         await self._info(f"reserved #{reserve_id} seat={t.seat_num} {t.chunk_key()}", acc.id)
+
+        # ★ 事后核验 (仅跨天): 不信提交回执, 用服务端占用状态复核。
+        # 核验不一致时保留 ACTIVE (预约号是服务端发的, 大概率真实存在,
+        # 标 FAILED 反而会留下无人管理的真预约), 只打 ERROR 进人工视野。
+        if t.day > today_cst():
+            try:
+                used = await client.get_used_times(
+                    self.cfg.library.room_id, t.seat_num, t.day.isoformat(),
+                )
+                s, e = t.start_time.strftime("%H:%M"), t.end_time.strftime("%H:%M")
+                covered = any(us < e and ue > s for us, ue in used)
+                if covered:
+                    await self._info(
+                        f"occupancy verified: {t.day} seat={t.seat_num} {s}-{e} #{reserve_id}",
+                        acc.id,
+                    )
+                else:
+                    await self._error(
+                        f"occupancy check EMPTY for #{reserve_id} {t.day} seat={t.seat_num} "
+                        f"{s}-{e} (used={used}) — keep ACTIVE, 人工复核",
+                        acc.id,
+                    )
+            except Exception as e:
+                await self._warn(f"occupancy check failed: {e}", acc.id)
 
     async def _act_with_relogin(
         self, client: ChaoxingClient, acc: Account, fn, reserve_id: int, label: str,
@@ -335,14 +381,14 @@ class Scheduler:
             bool(sr.get("success")), str(sr.get("msg")),
         )
         if sr.get("success"):
-            await self.store.update_task_status(t.id, TaskStatus.SIGNED)
+            await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
             await self._info(f"signed #{t.reserve_id} seat={t.seat_num} → SIGNED", acc.id)
             return
         msg = str(sr.get("msg") or "")
         if "不在签到时间" in msg:
             # 已签过, 或签到窗口 (start+signDuration≈20min) 已过 — 预约要么已生效
             # 要么已失效, 继续重试只会每分钟打一次无效 API。置 SIGNED 终止。
-            await self.store.update_task_status(t.id, TaskStatus.SIGNED)
+            await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
             await self._warn(f"sign window closed ({msg}); mark SIGNED, stop retrying", acc.id)
             return
         await self._error(f"sign failed: {msg} (keep ACTIVE, retry next tick)", acc.id)
@@ -387,7 +433,7 @@ class Scheduler:
         )
         msg = str(sr.get("msg") or "")
         if sr.get("success"):
-            await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
+            await self.store.update_task_status(t.id, TaskStatus.COMPLETE, last_error="")
             return
         # 幂等收尾: 预约已在服务端终结, 继续重试无意义 → COMPLETE 停止循环。
         # ("剩余时长小于暂离时长" = 离结束不足 leaveDuration, 预约将自然到期)
@@ -396,7 +442,7 @@ class Scheduler:
         )
         if idempotent:
             await self._info(f"leave idempotent end ({msg}) → COMPLETE", acc.id)
-            await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
+            await self.store.update_task_status(t.id, TaskStatus.COMPLETE, last_error="")
             return
         await self._error(f"leave failed: {msg} (keep in-flight, retry next tick)", acc.id)
         # ★ leave 失败时 **不要** 标 COMPLETE — 留给下次 tick 重试

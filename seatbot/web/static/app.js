@@ -351,7 +351,7 @@
   }
   function bannerHtml(occErr, gapCount, rowCount) {
     if (!rowCount) return '<div class="banner banner-warn">尚未设置目标座位。<a class="text-accent" href="/targets">去添加 →</a></div>';
-    if (gapCount) return `<div class="banner banner-error">检测到 <b>${gapCount}</b> 个时段空缺，护城河有缺口。<a class="text-danger" href="/coverage">查看报告 →</a></div>`;
+    if (gapCount) return `<div class="banner banner-error">检测到 <b>${gapCount}</b> 个时段空缺，护城河有缺口。</div>`;
     if (occErr) return `<div class="banner banner-warn">无法获取超星他人占用数据：${escapeHtml(occErr)}</div>`;
     return '<div class="banner banner-ok">护城河稳固，全部目标座位已覆盖。</div>';
   }

@@ -10,10 +10,9 @@
     </div>
     <nav class="sidebar-nav">
       {{ nav_link('/', '覆盖图', active, 'dashboard') }}
-      {{ nav_link('/targets', '目标座位', active, ['targets','seat-config'], target_seats|length) }}
+      {{ nav_link('/targets', '目标座位', active, 'targets', target_seats|length) }}
       {{ nav_link('/accounts', '守护账号', active, 'accounts', accounts_count) }}
       {{ nav_link('/user-reserved', '用户硬预约', active, 'user-reserved') }}
-      {{ nav_link('/coverage', '覆盖报告', active, 'coverage') }}
       {{ nav_link('/tasks', '任务', active, 'tasks') }}
       {{ nav_link('/seats', '座位图', active, 'seats') }}
       {{ nav_link('/logs', '日志', active, 'logs') }}

@@ -30,10 +30,10 @@ class ChaoxingClient:
 
     # fidEnc values used by different Chaoxing frontends.
     # The mobile (学习通 app) fidEnc is REQUIRED for /getusedtimes to return
-    # others' reservations; the PC web fidEnc returns an empty array.
-    # Reference: docs/superpowers/specs/2026-07-09-investigation-status.md
+    # others' reservations; the PC web fidEnc (documented in
+    # docs/superpowers/specs/2026-07-09-chaoxing-api-reference.md) returns
+    # an empty array, so only the mobile value is used in code.
     FID_ENC_MOBILE = "24680a1d287b60c7"
-    FID_ENC_PCWEB = "85a5894481db5d7a"
 
     def __init__(self, *, ua: str | None = None):
         self._ua = ua or random_ua()
@@ -67,9 +67,6 @@ class ChaoxingClient:
         self._logged_at = None
 
     # ---------- low-level helpers ----------
-    def _referer(self, path: str) -> str:
-        return f"{self.OFFICE_BASE}{path}"
-
     async def _post_form(
         self, url: str, data: dict[str, Any], *, referer: str | None = None,
     ) -> dict[str, Any]:
@@ -87,19 +84,13 @@ class ChaoxingClient:
     async def login(self, phone: str, password: str) -> None:
         """Log in to passport2.chaoxing.com and capture auth cookies.
 
-        v1.1: the fanyalogin endpoint now requires AES-encrypted `uname` /
-        `password` fields (key `u2oh6Vu^HWe4_AES`) + several extra fields,
-        which are produced by the page's JS. Reproducing that in pure httpx
-        is fragile, so we use a **headless Chromium** via Playwright to fill
-        the real login form and then harvest the cookies back into httpx.
-
-        Falls back to the legacy fanyalogin POST if Playwright is not
-        installed (network may reject it; documented for reference only).
+        The fanyalogin endpoint requires AES-encrypted `uname` / `password`
+        fields (key `u2oh6Vu^HWe4_AES`) + several extra fields produced by
+        the page's JS. Reproducing that in pure httpx is fragile, so we use
+        a **headless Chromium** via Playwright to fill the real login form
+        and then harvest the cookies back into httpx.
         """
-        try:
-            cookies = await self._login_via_browser(phone, password)
-        except ImportError:
-            cookies = await self._login_via_httpx(phone, password)
+        cookies = await self._login_via_browser(phone, password)
 
         # Inject cookies into httpx's cookie jar.
         from httpx import Cookies
@@ -181,86 +172,6 @@ class ChaoxingClient:
                 captured[c["name"]] = c["value"]
             await browser.close()
         return captured
-
-    async def _login_via_httpx(self, phone: str, password: str) -> dict[str, str]:
-        """Legacy fanyalogin fallback. The endpoint now requires AES-encrypted
-        fields which we don't have, so this will usually fail. Kept only for
-        environments without Playwright (e.g. minimal CI).
-        """
-        url = f"{self.PASSPORT_BASE}/fanyalogin"
-        data = {
-            "fid": -1,
-            "pid": -1,
-            "refer": "https%3A%2F%2Foffice.chaoxing.com%2F",
-            "fidName": "",
-            "allowForce": 1,
-            "autoLogin": 0,
-            "loginName": phone,
-            "password": password,
-            "verCode": "",
-        }
-        r = await self._client.post(
-            url, data=data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        r.raise_for_status()
-        text = r.text
-        try:
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start < 0 or end <= start:
-                raise ChaoxingError(f"no JSON in fanyalogin response: {text[:200]}")
-            payload = json.loads(text[start:end])
-        except json.JSONDecodeError as e:
-            raise ChaoxingError(f"fanyalogin parse error: {text[:200]}") from e
-        if not payload.get("status"):
-            raise ChaoxingError(
-                f"login failed: {payload.get('msg2') or payload.get('msg1') or 'unknown'}"
-            )
-        url1 = payload.get("url1")
-        if url1:
-            await self._client.get(url1, headers={"Referer": f"{self.PASSPORT_BASE}/"})
-        return dict(self._client.cookies)
-
-    # ---------- room info ----------
-    async def get_room_info(self, room_id: int) -> dict[str, Any]:
-        """Get the seatConfig + seatRoom for a given room_id."""
-        url = f"{self.OFFICE_BASE}/data/apps/seat/room/info"
-        referer = f"{self.OFFICE_BASE}/front/apps/seat/list"
-        return await self._post_form(
-            url, {"id": room_id}, referer=referer
-        )
-
-    # ---------- submit ----------
-    async def submit_reserve(
-        self,
-        room_id: int,
-        day: str,           # 'YYYY-MM-DD'
-        start_time: str,    # 'HH:MM'
-        end_time: str,      # 'HH:MM'
-        seat_num: str,
-        enc: str,
-        wy_token: str = "",
-        captcha: str = "",
-    ) -> dict[str, Any]:
-        url = f"{self.OFFICE_BASE}/data/apps/seat/submit"
-        referer = (
-            f"{self.OFFICE_BASE}/front/apps/seat/code"
-            f"?id={room_id}&seatNum={seat_num}"
-        )
-        data = {
-            "roomId": room_id,
-            "day": day,
-            "startTime": start_time,
-            "endTime": end_time,
-            "seatNum": seat_num,
-            "captcha": captcha,
-            "type": 1,
-            "verifyData": 1,
-            "wyToken": wy_token,
-            "enc": enc,
-        }
-        return await self._post_form(url, data, referer=referer)
 
     async def submit_in_browser(
         self,
@@ -394,13 +305,13 @@ class ChaoxingClient:
                     await page.wait_for_load_state("networkidle")
                     await page.wait_for_timeout(500)
 
-                # click start
-                if not await self._click_cell(page, cells[0]):
+                # click start (逐格验证选中态 — R2 加固, 见 _click_cell_verified)
+                if not await self._click_cell_verified(page, cells[0]):
                     result["msg"] = f"start cell {cells[0]} not clickable"
                     return result
                 # additional cells (if span > 30 min)
                 for label in cells[1:]:
-                    if not await self._click_cell(page, label):
+                    if not await self._click_cell_verified(page, label):
                         result["msg"] = f"cell {label} not clickable"
                         return result
 
@@ -488,19 +399,243 @@ class ChaoxingClient:
         return False
 
     @staticmethod
-    async def _click_cell(page, label: str) -> bool:
-        """Click the 30-min cell whose visible text contains `label`."""
-        try:
-            await page.locator(f"li:has-text('{label}')").first.click(timeout=2000)
-            return True
-        except Exception:
+    async def _click_cell_verified(page, label: str) -> bool:
+        """点 30 分钟格子并验证选中态 (2026-08-26 修复计划 通道B)。
+
+        R2 根因: noSelect 格子点击静默无效 (页面吞掉事件且无报错),
+        旧行为把"点了"当"选中", 导致只约到尾部时段。
+        加固: 点击后该格 class 必须发生变化且不带 noSelect, 否则重试 (最多 3 次)。
+        """
+        selectors = [f"li:has-text('{label}')"]
+        prefix = label.split("-")[0]
+        if prefix != label:
             # the page sometimes shows "21:00" instead of "21:00-21:30"
-            prefix = label.split("-")[0]
+            selectors.append(f"li:has-text('{prefix}')")
+        for sel in selectors:
+            loc = page.locator(sel).first
+            for _ in range(3):
+                if await loc.count() == 0:
+                    break
+                try:
+                    before = await loc.get_attribute("class") or ""
+                    await loc.click(timeout=2000)
+                    await page.wait_for_timeout(300)
+                    after = await loc.get_attribute("class") or ""
+                    if after != before and "noSelect" not in after:
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    @staticmethod
+    async def _click_first_selectable_cell(page) -> bool:
+        """点页面上第一个可选格子 (供 enc harvest 触发表单构造用)。"""
+        for sel in ("li:not(.noSelect)", "li"):
+            loc = page.locator(sel)
+            n = await loc.count()
+            for i in range(min(n, 30)):
+                el = loc.nth(i)
+                try:
+                    cls = await el.get_attribute("class") or ""
+                    if "noSelect" in cls:
+                        continue
+                    await el.click(timeout=1500)
+                    await page.wait_for_timeout(300)
+                    cls2 = await el.get_attribute("class") or ""
+                    if cls2 != cls:
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    async def submit_via_page_rewrite(
+        self,
+        phone: str,
+        password: str,
+        room_id: int,
+        seat_num: str,
+        day: str,            # 'YYYY-MM-DD' — 目标日期 (可为未来日期)
+        start_time: str,     # 'HH:MM'
+        end_time: str,       # 'HH:MM'
+    ) -> dict[str, Any]:
+        """跨天预约通道 B1 (2026-08-26 下午): 页面内改写放行。
+
+        前代通道 A (abort 截获 enc + httpx 重放) 被 303 风控全量拒绝
+        (14:00 批量 0/6): 服务端校验的不只是 enc 字段, 还绑定请求环境
+        (TLS 指纹 / header 序列 / 全部 cookie), 跨进程重放无法仿真。
+
+        本通道让页面 JS 在真实 Chromium 里自己构造并发出 /submit,
+        在网络层改写 day/时段字段并按页面自有算法 (submitVerify.min.js 逆向:
+        md5("[k=v]"按 key 排序拼接 + "[submit_enc种子]") 重算 enc 后放行。
+        303 实证: 只改字段不重算 enc, 服务端判为篡改直接拒绝。
+        """
+        from playwright.async_api import async_playwright
+        from urllib.parse import parse_qs, urlencode
+
+        result: dict[str, Any] = {
+            "success": False, "reserve_id": None, "msg": None, "raw": None,
+        }
+
+        if not self.cookies():
+            await self.login(phone, password)
+
+        submit_response: dict[str, Any] = {}
+        rewrite_info: dict[str, str] = {}
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
             try:
-                await page.locator(f"li:has-text('{prefix}')").first.click(timeout=2000)
-                return True
-            except Exception:
-                return False
+                ctx = await browser.new_context(
+                    viewport={"width": 1280, "height": 800}, user_agent=self._ua,
+                )
+                cookies = self.cookies()
+                if cookies:
+                    await ctx.add_cookies([
+                        {"name": k, "value": v, "url": self.OFFICE_BASE}
+                        for k, v in cookies.items()
+                    ])
+
+                page = await ctx.new_page()
+
+                async def on_response(resp):
+                    if "/data/apps/seat/submit" in resp.url and resp.request.method == "POST":
+                        try:
+                            if "body" not in submit_response:
+                                submit_response["status"] = resp.status
+                                submit_response["body"] = await resp.text()
+                        except Exception as e:
+                            submit_response.setdefault("err", str(e))
+
+                page.on("response", on_response)
+
+                page_state: dict[str, str] = {}
+                async def rewrite_route(route, request):
+                    """改写目标字段并按页面算法重算 enc (verifyParam 逆向)。
+                    任一环节失败 → abort, 绝不放行原始(今天)请求。"""
+                    raw = request.post_data or ""
+                    try:
+                        parsed = parse_qs(raw, keep_blank_values=True)
+                        flat = {k: v[-1] for k, v in parsed.items()}
+                        token = page_state.get("enc_seed")
+                        if not token:
+                            raise ValueError("submit_enc seed not captured")
+                        import hashlib
+                        # 字段集 = doSubmit 的 paramObj 九件套 (缺则取原值/默认)
+                        fields = {
+                            "roomId": flat.get("roomId", str(room_id)),
+                            "day": day,
+                            "startTime": start_time,
+                            "endTime": end_time,
+                            "seatNum": seat_num,
+                            "captcha": flat.get("captcha", ""),
+                            "type": flat.get("type", "1"),
+                            "verifyData": flat.get("verifyData", "1"),
+                            "wyToken": flat.get("wyToken", ""),
+                        }
+                        concat = "".join(
+                            f"[{k}={fields[k]}]" for k in sorted(fields)
+                        )
+                        new_enc = hashlib.md5(
+                            (concat + f"[{token}]").encode("utf-8")
+                        ).hexdigest()
+                        out = dict(flat)
+                        out.update(fields)
+                        out["enc"] = new_enc
+                    except Exception:
+                        # ★ 安全阀: 解析/重签失败绝不能放行 — 宁可失败不可约错日
+                        await route.abort()
+                        return
+                    rewrite_info["original_day"] = flat.get("day", "?")
+                    rewrite_info["sent_day"] = day
+                    await route.continue_(post_data=urlencode(out))
+
+                # route 必须在 goto 前注册, 覆盖页面生命周期内的所有 /submit
+                await page.route("**/data/apps/seat/submit", rewrite_route)
+
+                url = (
+                    f"{self.OFFICE_BASE}/front/apps/seat/code"
+                    f"?id={room_id}&seatNum={seat_num}"
+                )
+                await page.goto(url)
+                await page.wait_for_load_state("networkidle")
+                await page.wait_for_timeout(500)
+
+                # 会话失效自愈: 页内补登录后重进座位页 (route 注册不受导航影响)
+                if "passport2.chaoxing.com" in page.url:
+                    if not await self._login_in_page(page, phone, password):
+                        result["msg"] = "session expired; in-page relogin failed"
+                        return result
+                    for c in await ctx.cookies():
+                        self._cookie_jar.set(
+                            c["name"], c["value"],
+                            domain=c["domain"], path=c.get("path", "/"),
+                        )
+                    import time as _time
+                    self._logged_at = _time.monotonic()
+                    await page.goto(url)
+                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_timeout(500)
+
+                # 捕获服务端渲染的 enc 种子 (隐藏域 #submit_enc = verifyParam 的盐)
+                try:
+                    page_state["enc_seed"] = await page.locator(
+                        "#submit_enc"
+                    ).first.input_value(timeout=3000)
+                except Exception:
+                    page_state["enc_seed"] = ""
+                # 随点一个可选格子 — 只为让页面构造出完整请求体 (含新鲜 enc);
+                # 真实的日期/时段字段由 rewrite_route 在网络层覆盖。
+                if not await self._click_first_selectable_cell(page):
+                    result["msg"] = "today-page has no selectable cell; cannot trigger form"
+                    return result
+                await page.wait_for_timeout(300)
+
+                try:
+                    btn = page.locator("p.can_submit:has-text('开始使用')")
+                    if await btn.count() == 0:
+                        btn = page.locator(":text('开始使用')")
+                    await btn.first.click(timeout=5000)
+                except Exception as e:
+                    result["msg"] = f"begin-click failed: {e}"
+                    return result
+
+                # 等被改写放行的 /submit 响应 (最长 12s)
+                for _ in range(24):
+                    if "body" in submit_response or "err" in submit_response:
+                        break
+                    await page.wait_for_timeout(500)
+
+                if "body" not in submit_response:
+                    result["msg"] = (
+                        f"no rewritten /submit response in 12s "
+                        f"(original_day={rewrite_info.get('original_day')}, "
+                        f"sent_day={rewrite_info.get('sent_day')})"
+                    )
+                    return result
+                if "err" in submit_response:
+                    result["msg"] = f"network: {submit_response['err']}"
+                    return result
+
+                try:
+                    payload = json.loads(submit_response["body"])
+                except json.JSONDecodeError:
+                    result["raw"] = submit_response["body"][:500]
+                    result["msg"] = "submit response not JSON"
+                    return result
+
+                result["raw"] = {"server": payload, "rewrite": rewrite_info}
+                if payload.get("success"):
+                    sr = (payload.get("data") or {}).get("seatReserve") or {}
+                    rid = sr.get("id")
+                    result["success"] = bool(rid)
+                    result["reserve_id"] = rid
+                    if not rid:
+                        result["msg"] = "submit ok but no reserve_id"
+                else:
+                    result["msg"] = payload.get("msg") or "submit rejected"
+                return result
+            finally:
+                await browser.close()
 
     # ---------- action endpoints ----------
     async def sign(self, reserve_id: int) -> dict[str, Any]:
@@ -548,21 +683,6 @@ class ChaoxingClient:
             return None
         sr = (payload.get("data") or {}).get("seatReserve")
         return sr
-
-    async def get_seat_status(
-        self, room_id: int, day: str | None = None
-    ) -> list[dict[str, Any]]:
-        """Return seat status list for a given room + day.
-
-        NOTE: the actual public endpoint that lists 108 seats was observed
-        only via the floor SVG UI; we expose this method as a best-effort
-        that pulls `seatIntervalMap` from `get_room_info`. If finer-grained
-        status is needed, the web panel can call this and cross-reference
-        with /data/apps/seat/getusedtimes. v1 keeps it simple.
-        """
-        info = await self.get_room_info(room_id)
-        interval_map = (info.get("data") or {}).get("seatIntervalMap") or {}
-        return [{"seat_num": k, "intervals": v} for k, v in interval_map.items()]
 
     # ---------- occupancy lookup ----------
     async def get_used_times(

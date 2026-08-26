@@ -98,3 +98,26 @@ async def test_log_message(store: StateStore):
     rows = await store.list_logs(account_id="zs", limit=10)
     assert len(rows) == 1
     assert rows[0].level == "INFO"
+
+
+async def test_update_task_status_clears_last_error_on_success(store: StateStore):
+    """成功路径传 last_error="" 应清空历史错误; None 保持不变。"""
+    acc = Account(id="zs", phone="1", password="p", slots="full")
+    await store.upsert_account(acc)
+    t = Task(id=None, account_id="zs", day=date(2026, 8, 27),
+             start_time=time(9, 0), end_time=time(11, 0), seat_num="104",
+             status=TaskStatus.PENDING)
+    tid = await store.add_task(t)
+
+    await store.update_task_status(tid, TaskStatus.FAILED, last_error="boom")
+    assert (await store.get_task(tid)).last_error == "boom"
+
+    # None = keep (失败重试场景不抹审计线索)
+    await store.update_task_status(tid, TaskStatus.PENDING)
+    assert (await store.get_task(tid)).last_error == "boom"
+
+    # "" = clear (成功转 ACTIVE/SIGNED/COMPLETE 不残留旧文案)
+    await store.update_task_status(tid, TaskStatus.ACTIVE, reserve_id=99, last_error="")
+    got = await store.get_task(tid)
+    assert got.status == TaskStatus.ACTIVE and got.reserve_id == 99
+    assert got.last_error is None

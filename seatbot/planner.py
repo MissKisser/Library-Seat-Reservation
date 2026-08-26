@@ -6,14 +6,11 @@ v2:
     各 expand 一遍 slots。
   - 如果 `bound_seats` 为空 (wildcard 账号),调度时使用 `fallback_seats`
     (library 的 target_seats 表)逐一展开。
-  - 单账号每天段数上限由 `one_account_max_concurrent_segments_per_day` 控制,
-    超出时 round-robin 分配到其他可用的账号 (如有);无人接管的段落会
-    PlannerError 抛出 (UI 必须提示用户增加账号)。
+  - 推荐用 `seat_slots` 字段精确指定 (seat, slot) 组合 (AGENTS.md 2026-08-24)。
 """
 from __future__ import annotations
 
-from collections import defaultdict
-from datetime import date, datetime, time
+from datetime import date, datetime
 
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.utils.timeutil import expand_account_slots, parse_range
@@ -142,75 +139,3 @@ class ReservationPlanner:
                     status=TaskStatus.PENDING,
                 ))
         return out
-
-
-# ====================================================================
-# 跨账号编排:把一天的所有段 (seat × slot) 分配给账号并强制 N=1 上限
-# ====================================================================
-
-def plan_day_for_all_accounts(
-    accounts: list[Account],
-    target_seats: list[str],
-    day: date,
-    max_reserve_hours: float,
-) -> list[Task]:
-    """对每个 account 在每个目标座位上预 expand 一遍 slots, 然后按
-    `one_account_max_concurrent_segments_per_day` 严格约束做 round-robin 排序:
-
-      - 默认 1 段/账号/天:每账号每天只允许 1 个 task;溢出的 task 由
-        后续账号接管 (轮班)
-      - ≥2 段/账号/天:允许多段,但每个 task 仍要校验 distinct seat(可选)
-    """
-    raw: list[tuple[str, Account, list[tuple[time, time]], list[str]]] = []
-    # raw item: (account_id, account, chunks, bound_seats_for_this_account)
-    for acc in accounts:
-        bound = acc.bound_seats or list(target_seats)
-        if not bound:
-            continue
-        try:
-            chunks = expand_account_slots(acc.slots, max_reserve_hours)
-        except Exception:
-            continue
-        raw.append((acc.id, acc, chunks, bound))
-
-    if not raw:
-        return []
-
-    # 按 (seat, start_time) 排序所有 (account, seat, slot) 候选,然后做 round-robin
-    candidates: list[tuple[time, time, str, str]] = []
-    for acc_id, acc, chunks, bound in raw:
-        for seat in bound:
-            for s, e in chunks:
-                candidates.append((s, e, seat, acc_id))
-    candidates.sort(key=lambda x: (x[2], x[0], x[3]))   # seat, start, account
-
-    # 每天每个账号最多 N 段
-    per_acc: dict[str, int] = defaultdict(int)
-    chosen: list[tuple[time, time, str, str]] = []
-    for cand in candidates:
-        s, e, seat, acc_id = cand
-        limit = next(
-            a.one_account_max_concurrent_segments_per_day for a in accounts if a.id == acc_id
-        )
-        # 该段是否已被占 (同 seat, 同时段已有别的账号)? pick first only
-        already = any(c[2] == seat and not (c[1] <= s or c[0] >= e) for c in chosen)
-        if already:
-            continue
-        if per_acc[acc_id] >= limit:
-            continue
-        chosen.append(cand)
-        per_acc[acc_id] += 1
-
-    # 写入 Task 列表
-    out: list[Task] = []
-    for s, e, seat, acc_id in chosen:
-        out.append(Task(
-            id=None,
-            account_id=acc_id,
-            day=day,
-            start_time=s,
-            end_time=e,
-            seat_num=seat,
-            status=TaskStatus.PENDING,
-        ))
-    return out
