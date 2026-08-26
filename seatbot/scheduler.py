@@ -137,54 +137,37 @@ class Scheduler:
 
     # ---------- per-account tick ----------
     async def tick_account(self, acc_id: str) -> None:
+        """每分钟: 只处理**今天**的在途任务 (active/signed/leaving)。
+
+        v0.6 重写要点:
+          - 按 day=today 遍历, 不再用 find_active_task — 旧实现在 14:00 批量
+            提交后会抓到"明日最后一条 ACTIVE 任务"并 early-return, 导致当天
+            14:00 后的所有 sign/leave 被饿死。
+          - 移除"单日段数上限"闸门: tick 已不再 submit, 该闸门只会拦截进行中
+            任务的 sign/leave (limit=1 时自锁); 段数上限由 planner 生成端保证。
+          - sign 幂等: 成功 (或窗口已过) 置 SIGNED, 不再每分钟重复打 sign API。
+          - PENDING/FAILED 不在此 submit: 今天的交给 web quick-reserve,
+            明天的交给 _afternoon_bootstrap (14:00)。
+        """
         acc_cfg = await self.store.get_account(acc_id)
         if not acc_cfg:
             return
-        # 检查该账号是否已超出单日并发段 (v0.5+: 只检查 ACTIVE,不再含 pending/ready)
-        # 原因: limit 本意是限制服务端并发段数,pending 是还没抢到的,
-        # 把 pending 算进去会导致已经 bootstrap 过的账号永远被拦截, sign/leave 永远不触发
-        today = today_cst()
-        n_active = await self.store.count_tasks_for_account_day(
-            acc_id, today,
-            statuses=("active", "submitting", "leaving"),
-        )
-        limit = acc_cfg.one_account_max_concurrent_segments_per_day
-        if n_active >= limit and limit > 0:
-            # 已有 N 段激活中,不再触发更多 (避免超出后端上限)
-            return
-        active = await self.store.find_active_task(acc_id)
         now = now_cst()
-        if active:
-            t_start = at_cst(active.day, active.start_time)
-            t_end = at_cst(active.day, active.end_time)
-            # 1. 时段结束前 → leave (自动签退+接力)
+        today = today_cst()
+        for t in await self.store.list_tasks(account_id=acc_id, day=today):
+            if t.status not in (TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.LEAVING):
+                continue
+            t_start = at_cst(t.day, t.start_time)
+            t_end = at_cst(t.day, t.end_time)
+            # 1. 到 leave 时机 (RELAY_LEAD_SECONDS=-60 → end+60s) → 签退
             if now >= t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS):
-                await self._maybe_relay(active, now)
-                return
-            # 2. 时段进行中 → sign (补签)
-            if t_start <= now < t_end:
-                await self._run_sign(acc_cfg, active)
-                return
-            # 3. ACTIVE 但时段未开始 (异常: 提前 activate 了) → 不动
-            return
-        # no active task — 检查今天 pending tasks 是否时段进行中需补签
-        # ★ v0.5+: tick 不再 submit — submit 完全交给 _afternoon_bootstrap (每天 14:00) 一次性提交
-        # 这里只负责 sign (时段进行中) + leave (时段结束前)
-        tasks = await self.store.list_tasks(account_id=acc_id, day=today)
-        for t in tasks:
-            if t.status == TaskStatus.ACTIVE:
-                t_start = at_cst(t.day, t.start_time)
-                t_end = at_cst(t.day, t.end_time)
-                # 时段进行中 → sign (补签)
-                if t_start <= now < t_end:
-                    await self._run_sign(acc_cfg, t)
-                    return
-                # 时段结束前 → leave
-                if now >= t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS):
-                    await self._maybe_relay(t, now)
-                    return
-            # PENDING task: 如果没 reserve_id 是 14:00 submit 失败,什么都不做(等下一个 tick)
-            # 如果有 reserve_id 但 status 还不是 ACTIVE(异常状态),同样不动
+                await self._maybe_relay(t, now)
+                continue
+            # 2. 时段进行中且未签 → 签到 (成功后置 SIGNED)
+            if t.status == TaskStatus.ACTIVE and t_start <= now < t_end:
+                await self._run_sign(acc_cfg, t)
+                continue
+            # 3. SIGNED / 未开始的 ACTIVE / LEAVING 未到点 → 不动
 
     async def peek_next_relay(self) -> NextRelay | None:
         now = now_cst()
@@ -194,7 +177,7 @@ class Scheduler:
             for t in await self.store.list_tasks(account_id=acc.id, day=today):
                 t_start = at_cst(t.day, t.start_time)
                 t_end = at_cst(t.day, t.end_time)
-                if t.status in (TaskStatus.ACTIVE, TaskStatus.SUBMITTING, TaskStatus.LEAVING):
+                if t.status in (TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.SUBMITTING, TaskStatus.LEAVING):
                     fire_at = t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS)
                 elif t.status in (TaskStatus.PENDING, TaskStatus.READY, TaskStatus.FAILED):
                     fire_at = t_start
@@ -311,20 +294,31 @@ class Scheduler:
         await self.store.update_task_status(t.id, TaskStatus.ACTIVE, reserve_id=reserve_id)
         await self._info(f"reserved #{reserve_id} seat={t.seat_num} {t.chunk_key()}", acc.id)
 
-    async def _run_sign(self, acc: Account, t: Task) -> None:
-        """签到 (不 submit)。
+    async def _act_with_relogin(
+        self, client: ChaoxingClient, acc: Account, fn, reserve_id: int, label: str,
+    ) -> dict:
+        """执行 sign/leave; 服务端报"未登录"时清 cookie 重登并重试一次。
 
-        调用时机:
-          - tick_account pre_sign 窗口 (时段开始前 ≤20min):task 应已 ACTIVE (14:00 已预约)
-          - tick_account 时段进行中:补签 (如果之前没签上)
-
-        需要 t.reserve_id。如果还没 reserve_id,说明 submit 还没成功,先调 _run_submit。
+        背景 (2026-08-25 actions #2): httpx jar 里若残留陈旧 cookie,
+        `_run_sign` 的 lazy-login 分支 (只在 jar 为空时登录) 不会触发,
+        sign 会以 "您当前未登录" 失败且无自愈。
         """
+        sr = await fn(reserve_id)
+        msg = str(sr.get("msg") or "")
+        if not sr.get("success") and "未登录" in msg:
+            await self._warn(f"{label}: session expired (未登录) → reset & relogin retry", acc.id)
+            client.reset_session()
+            await client.login(acc.phone, acc.password)
+            sr = await fn(reserve_id)
+        return sr
+
+    async def _run_sign(self, acc: Account, t: Task) -> None:
+        """签到 (幂等: 成功或签到窗口已过 → SIGNED, 终止每分钟重试)。"""
         if not t.reserve_id:
             await self._warn(f"sign skipped: no reserve_id seat={t.seat_num} {t.chunk_key()}", acc.id)
             return
         client = self._client_for(acc)
-        # ★ v0.5+: lazy login — _run_sign 是独立调用路径,_run_submit 已登录过则 cookies 复用;否则这里登录
+        # ★ lazy login — jar 为空才登录 (陈旧 cookie 由 _act_with_relogin 自愈)
         if not client.cookies():
             try:
                 await client.login(acc.phone, acc.password)
@@ -332,23 +326,42 @@ class Scheduler:
             except ChaoxingError as e:
                 await self._warn(f"sign login prefetch failed ({e})", acc.id)
         try:
-            sr = await client.sign(t.reserve_id)
-            await self.store.log_action(
-                acc.id, "sign", str(t.reserve_id), str(sr)[:500],
-                bool(sr.get("success")), str(sr.get("msg")),
-            )
-            if not sr.get("success"):
-                await self._error(f"sign failed: {sr.get('msg')}", acc.id)
+            sr = await self._act_with_relogin(client, acc, client.sign, t.reserve_id, "sign")
         except Exception as e:
             await self._error(f"sign error: {e}", acc.id)
+            return
+        await self.store.log_action(
+            acc.id, "sign", str(t.reserve_id), str(sr)[:500],
+            bool(sr.get("success")), str(sr.get("msg")),
+        )
+        if sr.get("success"):
+            await self.store.update_task_status(t.id, TaskStatus.SIGNED)
+            await self._info(f"signed #{t.reserve_id} seat={t.seat_num} → SIGNED", acc.id)
+            return
+        msg = str(sr.get("msg") or "")
+        if "不在签到时间" in msg:
+            # 已签过, 或签到窗口 (start+signDuration≈20min) 已过 — 预约要么已生效
+            # 要么已失效, 继续重试只会每分钟打一次无效 API。置 SIGNED 终止。
+            await self.store.update_task_status(t.id, TaskStatus.SIGNED)
+            await self._warn(f"sign window closed ({msg}); mark SIGNED, stop retrying", acc.id)
+            return
+        await self._error(f"sign failed: {msg} (keep ACTIVE, retry next tick)", acc.id)
+
     async def _run_leave(self, acc: Account, t: Task) -> None:
-        """签退 (不 submit/sign)。"""
+        """签退 (不 submit/sign)。失败保留在途状态, 由下次 tick 重试。
+
+        ★ 2026-08-25: /leave 实为"暂离"(要求剩余 ≥20min, 接力时点必不满足);
+        真正的签退端点是 /signback (退座)。优先 signback, 失败回退 leave。
+        """
         if not t.reserve_id:
             await self._warn(f"leave skipped: no reserve_id seat={t.seat_num} {t.chunk_key()}", acc.id)
-            await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
+            # ★ 从未预约成功的任务不应伪装 COMPLETE (虚假完成态会误导审计)
+            await self.store.update_task_status(
+                t.id, TaskStatus.FAILED, last_error="leave: no reserve_id",
+            )
             return
         client = self._client_for(acc)
-        # ★ v0.5+: lazy login — _run_leave 是独立调用路径
+        # ★ lazy login — _run_leave 是独立调用路径
         if not client.cookies():
             try:
                 await client.login(acc.phone, acc.password)
@@ -356,22 +369,38 @@ class Scheduler:
             except ChaoxingError as e:
                 await self._warn(f"leave login prefetch failed ({e})", acc.id)
         try:
-            sr = await client.leave(t.reserve_id)
-            await self.store.log_action(
-                acc.id, "leave", str(t.reserve_id), str(sr)[:500],
-                bool(sr.get("success")), str(sr.get("msg")),
-            )
-            if not sr.get("success"):
-                await self._error(f"leave failed: {sr.get('msg')}", acc.id)
-                # ★ leave 失败时 **不要** 标 COMPLETE — 留给下次 tick 重试
+            sr = await self._act_with_relogin(client, acc, client.signback, t.reserve_id, "signback")
+        except Exception as e:
+            await self._error(f"signback error: {e}", acc.id)
+            sr = {}
+        if not sr.get("success"):
+            await self._warn(f"signback not ok ({sr.get('msg')}); fallback leave", acc.id)
+            try:
+                sr = await self._act_with_relogin(client, acc, client.leave, t.reserve_id, "leave")
+            except Exception as e:
+                await self._error(f"leave error: {e}", acc.id)
                 await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
                 return
-        except Exception as e:
-            await self._error(f"leave error: {e}", acc.id)
-            await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
+        await self.store.log_action(
+            acc.id, "signback", str(t.reserve_id), str(sr)[:500],
+            bool(sr.get("success")), str(sr.get("msg")),
+        )
+        msg = str(sr.get("msg") or "")
+        if sr.get("success"):
+            await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
             return
-        # leave 成功 → 标 COMPLETE
-        await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
+        # 幂等收尾: 预约已在服务端终结, 继续重试无意义 → COMPLETE 停止循环。
+        # ("剩余时长小于暂离时长" = 离结束不足 leaveDuration, 预约将自然到期)
+        idempotent = any(
+            k in msg for k in ("已签退", "已结束", "已取消", "不存在", "剩余时长小于暂离时长")
+        )
+        if idempotent:
+            await self._info(f"leave idempotent end ({msg}) → COMPLETE", acc.id)
+            await self.store.update_task_status(t.id, TaskStatus.COMPLETE)
+            return
+        await self._error(f"leave failed: {msg} (keep in-flight, retry next tick)", acc.id)
+        # ★ leave 失败时 **不要** 标 COMPLETE — 留给下次 tick 重试
+        await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
 
     # ---------- cron wiring ----------
     async def sync_jobs(self) -> None:
@@ -455,9 +484,18 @@ class Scheduler:
         from datetime import timedelta
         from seatbot.models import TaskStatus
         tomorrow = today_cst() + timedelta(days=1)
+
+        # ★ P0 修复 (2026-08-25): 旧代码只提交"明天"的 PENDING 任务, 但没有任何
+        # 代码为明天生成任务 (_bootstrap_for_account 的全部调用点都传 today) —
+        # 即使系统常驻运行, 14:00 也永远空转。现在先幂等地为明天生成任务, 再批量提交。
+        seats = [s.seat_num for s in await self.store.list_target_seats()]
+        accounts = await self.store.list_accounts()
+        for acc in accounts:
+            await self._bootstrap_for_account(acc, tomorrow, seats)
+
         submitted = 0
         failed = 0
-        for acc in await self.store.list_accounts():
+        for acc in accounts:
             tasks = await self.store.list_tasks(account_id=acc.id, day=tomorrow)
             pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING]
             if not pending_tasks:

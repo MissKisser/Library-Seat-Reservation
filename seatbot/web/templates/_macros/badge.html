@@ -2,6 +2,7 @@
 {% macro badge(status='') %}
 {% set _map = {
   'active':     ('success', '已预约'),
+  'signed':     ('success', '已签到'),
   'submitting': ('info',    '提交中'),
   'leaving':    ('warn',    '签退中'),
   'pending':    ('muted',   '待执行'),

@@ -16,10 +16,43 @@ from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import Coverage, compute_coverage, compute_seat_coverage
 from seatbot.models import Account, SeatTarget, Task, TaskStatus
 from seatbot.scheduler import NextRelay
-from seatbot.utils.timeutil import now_cst, parse_hhmm, today_cst
+from seatbot.utils.timeutil import now_cst, parse_hhmm, parse_range, today_cst
 
 
 router = APIRouter()
+
+
+async def _validate_custom_slots(request: Request, slots_value, template, ctx_account):
+    """★ v0.6: 校验自定义时段 — 格式合法且单段 ≤ max_reserve_hours (不自动拆段)。
+
+    返回 None 表示通过; 否则返回 400 TemplateResponse。
+    与 planner._reject_overlong_ranges 同一业务规则 (AGENTS.md 2026-08-24):
+    超长 range 自动拆开会破坏精确守护矩阵, 必须在输入处拒绝。
+    """
+    if slots_value == "full" or not slots_value:
+        return None
+    max_hours = request.app.state.cfg.library.max_reserve_hours
+    for r in slots_value:
+        try:
+            s, e = parse_range(r)
+        except ValueError as exc:
+            return _templates(request).TemplateResponse(
+                request, template,
+                await _ctx(request, account=ctx_account,
+                            error=f"时段格式错误: {exc}", active_page="accounts"),
+                status_code=400,
+            )
+        dur_h = (_dt.combine(date.today(), e) - _dt.combine(date.today(), s)).total_seconds() / 3600
+        if dur_h > max_hours:
+            return _templates(request).TemplateResponse(
+                request, template,
+                await _ctx(request, account=ctx_account,
+                            error=(f"时段 {r} 长 {dur_h}h, 超过单段上限 {max_hours}h — "
+                                   f"请在表单里拆成多段 (自动拆段已禁用, 避免破坏守护矩阵)"),
+                            active_page="accounts"),
+                status_code=400,
+            )
+    return None
 
 
 def _templates(request: Request):
@@ -545,6 +578,9 @@ async def accounts_create(
                             active_page="accounts"),
                 status_code=400,
             )
+        err_resp = await _validate_custom_slots(request, slots_value, "accounts_form.html", None)
+        if err_resp is not None:
+            return err_resp
     acc = Account(
         id=id, phone=phone, password=password,
         slots=slots_value,
@@ -600,6 +636,9 @@ async def accounts_update(
                             active_page="accounts"),
                 status_code=400,
             )
+        err_resp = await _validate_custom_slots(request, slots_value, "accounts_form.html", existing)
+        if err_resp is not None:
+            return err_resp
     existing.phone = phone
     existing.password = password
     existing.slots = slots_value
@@ -727,8 +766,13 @@ async def task_leave(request: Request, task_id: int):
     if not client.cookies():
         await client.login(acc.phone, acc.password)
     r = await client.leave(t.reserve_id)
-    await store.log_action(acc.id, "leave", str(t.reserve_id), str(r)[:500], bool(r.get("success")))
-    await store.update_task_status(task_id, TaskStatus.COMPLETE)
+    await store.log_action(acc.id, "leave", str(t.reserve_id), str(r)[:500], bool(r.get("success")), str(r.get("msg")))
+    # ★ 只有服务端确认成功才置 COMPLETE; 失败保留原状态 (scheduler/用户可重试),
+    #   否则任务被虚假关闭, 预约会一直挂在账号上占座。
+    if r.get("success"):
+        await store.update_task_status(task_id, TaskStatus.COMPLETE)
+    else:
+        await store.update_task_status(task_id, t.status, last_error=f"leave: {r.get('msg')}")
     return RedirectResponse("/tasks?left=1", status_code=303)
 
 
@@ -746,8 +790,11 @@ async def task_cancel(request: Request, task_id: int):
     if not client.cookies():
         await client.login(acc.phone, acc.password)
     r = await client.cancel(t.reserve_id)
-    await store.log_action(acc.id, "cancel", str(t.reserve_id), str(r)[:500], bool(r.get("success")))
-    await store.update_task_status(task_id, TaskStatus.COMPLETE)
+    await store.log_action(acc.id, "cancel", str(t.reserve_id), str(r)[:500], bool(r.get("success")), str(r.get("msg")))
+    if r.get("success"):
+        await store.update_task_status(task_id, TaskStatus.COMPLETE)
+    else:
+        await store.update_task_status(task_id, t.status, last_error=f"cancel: {r.get('msg')}")
     return RedirectResponse("/tasks?cancelled=1", status_code=303)
 
 

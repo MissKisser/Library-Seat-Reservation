@@ -471,13 +471,14 @@ class StateStore:
         now = int(_time.time() * 1000)
         cur = await self.db.execute(
             """INSERT INTO tasks
-               (account_id, seat_num, day, start_time, end_time, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (account_id, seat_num, day, start_time, end_time, status,
+                reserve_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.account_id, t.seat_num or "", t.day.isoformat(),
                 t.start_time.isoformat(timespec="minutes"),
                 t.end_time.isoformat(timespec="minutes"),
-                t.status.value, now, now,
+                t.status.value, t.reserve_id, now, now,
             ),
         )
         await self.db.commit()
@@ -537,9 +538,15 @@ class StateStore:
         return [_row_to_task(r) for r in rows]
 
     async def find_active_task(self, account_id: str) -> Task | None:
+        """该账号当前"在途"的任务 (active/signed/submitting/leaving)。
+
+        ★ 不限定 day: 14:00 批量提交后明日任务也会是 ACTIVE。
+          调用方若只关心今天, 应改用 list_tasks(day=...) 自行过滤
+          (v0.6 tick_account 已改为按日遍历, 不再使用本方法)。
+        """
         cur = await self.db.execute(
             "SELECT id, account_id, seat_num, day, start_time, end_time, status, reserve_id, last_error "
-            "FROM tasks WHERE account_id=? AND status IN ('active','submitting','leaving') "
+            "FROM tasks WHERE account_id=? AND status IN ('active','signed','submitting','leaving') "
             "ORDER BY day DESC, start_time DESC LIMIT 1",
             (account_id,),
         )
@@ -568,7 +575,7 @@ class StateStore:
 
     async def count_tasks_for_account_day(
         self, account_id: str, day: date,
-        statuses: tuple[str, ...] = ("pending", "ready", "active", "submitting", "leaving"),
+        statuses: tuple[str, ...] = ("pending", "ready", "active", "signed", "submitting", "leaving"),
     ) -> int:
         """统计某账号在指定 day 上当前占用的预约段数 (用于 N=1 悲观模式的强制校验)。"""
         placeholders = ",".join("?" for _ in statuses)
@@ -582,7 +589,7 @@ class StateStore:
     async def has_active_task_for_account_day_start(
         self, account_id: str, day: date, start_time: time,
         seat_num: str,
-        statuses: tuple[str, ...] = ("pending", "ready", "active", "submitting", "leaving"),
+        statuses: tuple[str, ...] = ("pending", "ready", "active", "signed", "submitting", "leaving"),
     ) -> bool:
         """E4 防护: 检查同 (account_id, day, seat_num, start_time) 是否已存在 task。
 

@@ -54,8 +54,10 @@
             <td class="num font-mono text-xs">{{ t.reserve_id or '—' }}</td>
             <td class="text-xs text-danger">{{ t.last_error or '' }}</td>
             <td class="actions">
-              {% if t.reserve_id and t.status.value == 'active' %}
+              {% if t.reserve_id and t.status.value in ('active', 'signed') %}
+              {% if t.status.value == 'active' %}
               <button class="btn btn-ghost btn-sm" @click="confirmAction({title:'立即签到？',desc:'task {{ t.id }}',confirmText:'签到'}).then(ok=>{if(ok)post('/tasks/{{ t.id }}/sign')})">签到</button>
+              {% endif %}
               <button class="btn btn-ghost btn-sm" @click="confirmAction({title:'立即签退？',desc:'task {{ t.id }}',confirmText:'签退'}).then(ok=>{if(ok)post('/tasks/{{ t.id }}/leave')})">签退</button>
               {% endif %}
               {% if t.reserve_id %}

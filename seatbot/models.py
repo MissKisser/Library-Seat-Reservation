@@ -51,11 +51,12 @@ class AccountSeatBinding:
 
 class TaskStatus(str, Enum):
     PENDING = "pending"          # 等待执行
-    READY = "ready"              # 已到时间, 准备执行
+    READY = "ready"              # 已到时间, 准备执行 (web quick-reserve 创建)
     SUBMITTING = "submitting"    # 正在 submit
-    ACTIVE = "active"            # 已预约 + 已签到
+    ACTIVE = "active"            # submit 成功 (已预约, 尚未签到)
+    SIGNED = "signed"            # ★ 已签到, 等待到点 leave (幂等防重签)
     LEAVING = "leaving"          # 正在 leave
-    COMPLETE = "complete"        # 已签退, 时段结束
+    COMPLETE = "complete"        # 已签退/取消, 时段结束
     FAILED = "failed"            # 出错
 
 

@@ -26,3 +26,4 @@ docs/screenshots/
 # Superpowers brainstorming artefacts
 .superpowers/
 node_modules/
+.session_cache/
