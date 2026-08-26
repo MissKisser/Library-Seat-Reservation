@@ -13,14 +13,32 @@ v2:
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, time
+from datetime import date, datetime, time
 
 from seatbot.models import Account, Task, TaskStatus
-from seatbot.utils.timeutil import expand_account_slots
+from seatbot.utils.timeutil import expand_account_slots, parse_range
 
 
 class PlannerError(Exception):
     pass
+
+
+def _reject_overlong_ranges(slots: list[str], max_hours: float, account_id: str) -> None:
+    """★ v0.6: 单个 range 超过 max_hours 时直接拒绝, 不再自动拆段。
+
+    业务规则 (AGENTS.md 2026-08-24): 自动拆段 (如 19:00-21:30 → 2 段) 会破坏
+    "每账号每座位精确 1 段" 的守护矩阵; 超长 range 属配置错误, 应显式暴露。
+    """
+    for r in slots:
+        s, e = parse_range(r)
+        dur_h = (
+            datetime.combine(date.today(), e) - datetime.combine(date.today(), s)
+        ).total_seconds() / 3600
+        if dur_h > max_hours:
+            raise PlannerError(
+                f"account {account_id}: slot {r} 时长 {dur_h}h 超过单段上限 "
+                f"{max_hours}h — 自动拆段已禁用, 请在配置层拆成多段"
+            )
 
 
 class ReservationPlanner:
@@ -67,6 +85,7 @@ class ReservationPlanner:
  "08:00", "22:00", max_hours=self.max_reserve_hours
                     )
                 elif isinstance(slots, list):
+                    _reject_overlong_ranges(slots, self.max_reserve_hours, self.account.id)
                     try:
                         chunks = expand_account_slots(slots, self.max_reserve_hours)
                     except Exception as e:
@@ -99,6 +118,8 @@ class ReservationPlanner:
             raise PlannerError(
                 f"account {self.account.id} has no bound seats and no fallback seats"
             )
+        if isinstance(self.account.slots, list):
+            _reject_overlong_ranges(self.account.slots, self.max_reserve_hours, self.account.id)
         try:
             chunks = expand_account_slots(self.account.slots, self.max_reserve_hours)
         except Exception as e:

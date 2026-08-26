@@ -12,7 +12,6 @@ def test_load_minimal_config(tmp_path: Path):
         library:
           room_id: 11692
           room_name: "2号楼图书馆-3F"
-          target_seat_num: "84"
           time_unit_minutes: 30
           open_time: "08:00"
           close_time: "22:00"
@@ -34,7 +33,8 @@ def test_load_minimal_config(tmp_path: Path):
 
     cfg = load_config(cfg_file)
     assert cfg.library.room_id == 11692
-    assert cfg.library.target_seat_num == "084"
+    assert cfg.library.open_time == "08:00"
+    assert cfg.library.max_reserve_hours == 2.0
     assert cfg.accounts[0].id == "zhangsan"
     assert cfg.accounts[0].slots == "full"
     assert cfg.runtime.web_port == 8080

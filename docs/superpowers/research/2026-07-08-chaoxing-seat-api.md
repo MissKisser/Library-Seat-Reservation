@@ -69,7 +69,9 @@ window.fetch = async (...args) => {
 | `/data/apps/seat/submit` | POST | 提交预约 | ✅ 抢到 id=188046390 |
 | `/data/apps/seat/reserve/info` | GET | 查某座位 active reservation | ✅ 拿到 id/uid/start/end/status |
 | `/data/apps/seat/sign` | POST | 签到 | ✅ `{success:true}` |
-| `/data/apps/seat/leave` | POST | 签退 | ✅ `{success:true}` (status→3) |
+| `/data/apps/seat/leave` | POST | ~~签退~~ **暂离** | ✅ 但语义误读(2026-08-25 修正: leave=暂离需剩余≥20min, status→3=暂离中; 真签退是 `/signback`) |
+| `/data/apps/seat/signback` | POST | **签退/退座(真签退)** | ✅ 2026-08-25 实测 `{success:true}`→status=2 已履约 |
+| `/data/apps/seat/cancel` | POST | 取消（仅本人） | ✅ `{success:true}` |
 | `/data/apps/seat/cancel` | POST | 取消（仅本人） | ✅ `{success:true}` |
 
 ### 2.4 风控/前置
@@ -99,7 +101,7 @@ window.fetch = async (...args) => {
       "timeUnit": 30,                 // 30 分钟为单位
       "preSignDuration": 20,          // 提前 20min 可签到
       "signDuration": 20,             // 签到后 20min 内必须到
-      "leaveDuration": 20,            // 提前 20min 可签退
+      "leaveDuration": 20,            // 暂离最短剩余时长(2026-08-25修正:非签退窗口)
       "reserveBeforeDay": 1,          // 提前 1 天可预约
       "reserveBeforeTime": "14:00",   // 14:00 后可预约明天的
       "dinnerStartTime": "17:30",
@@ -169,7 +171,7 @@ enc=<32位hex>                     # ⚠ 一次性，与浏览器 session 绑定
       "startTime": 1783515600000,  // ms 时间戳
       "endTime": 1783519200000,
       "duration": "1.0",           // 小时
-      "status": 0,                 // 0=待签到 1=使用中 3=已签退
+      "status": 0,                 // 0=待签到 1=使用中 3=暂离中(2026-08-25修正,原误标已签退) 8=已结束
       "deptId": 2096,
       "today": "2026-07-08"
     }

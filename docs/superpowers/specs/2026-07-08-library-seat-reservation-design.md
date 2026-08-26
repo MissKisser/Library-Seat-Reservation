@@ -220,7 +220,7 @@ python -m seatbot init-db                    # 初始化 SQLite
 target_seat_num=84, current task=guard_a@08:00-10:00, now=09:55
   1. ChaoxingClient.get_active_reservation(guard_a, seat=84)
        → {reserveId: 188xxx, endTime: 1783476000000, ...}
-  2. leave(188xxx)           # 签退 guard_a 当前段
+  2. signback(188xxx)      # 签退 guard_a 当前段 (2026-08-25 修正: 真签退=signback, leave=暂离)
   3. submit(seat=84, day, 10:00-12:00, by guard_b)  # 由下个时段配置的守护账号续约
        → 需要 EncGenerator.compute(...) → enc/wyToken
        → POST /submit → {reserveId: 189xxx}
