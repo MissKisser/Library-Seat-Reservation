@@ -105,21 +105,15 @@ assert total == 6, f"期望 6 段, 实际 {total}"
 
 | 类别 | 严禁的行为 |
 |---|---|
-| **超星座位预约** | `python -m seatbot run` 启动 scheduler；触发 `bootstrap_today` / `afternoon_bootstrap` / `sync_jobs`；任何向 `fanyalogin.cn` / `passport2.chaoxing.com` / `office.chaoxing.com` 发起的登录、预约、签到、签退请求 |
+| **超星座位预约** | `python -m seatbot run` 启动 scheduler；触发 `bootstrap_today` / `afternoon_bootstrap` / `sync_jobs`；任何向 `fanyalogin.cn` / `passport2.chaoxing.com` / `office.chaoxing.com` 发起的登录、预约、签到、签退请求；即使是要取消的预约也不可以，会增加账号的违约记录 |
 | **真实账号登录** | 用 `config.yaml` 里的 `phone`/`password` 调用 `ChaoxingClient.login()`；用 `client.get_used_times()` 查询任何真实座位占用 |
 | **数据库写入** | 写入 `seatbot.db` 里 `tasks` 表的 `submitting/active/leaving/complete` 状态；任何会让 scheduler 误判"该任务已完成"的虚假状态写入 |
 | **破坏性操作** | `rm seatbot.db`（除非用户明确要求重置）；删除 `logs/`；覆盖 `config.yaml`；`git push --force` 到任何共享分支 |
 
 ### 测试账号默认规则（2026-08-25 新增）
 
-**除非用户在当前指令中特别点名其他账号，任何测试用途的真实操作（预约 / 签到 / 签退 / 取消 / 登录验证 / 占用查询）默认只允许使用 `xiongjt`（用户本人账号）。**
+**除非用户在当前指令中特别点名其他账号，任何经过授权的测试用途的真实操作（预约 / 签到 / 签退 / 取消 / 登录验证 / 占用查询）默认只允许使用 `xiongjt`（用户本人账号）。**
 
-| 账号 | 测试权限 |
-|---|---|
-| `xiongjt` | ✅ 默认测试账号，常规测试无需逐次确认 |
-| `wangh` / `zhaozh` | 🚫 仅限 scheduler 生产护位任务；任何真实测试操作必须先获得用户对该账号的**明确点名** |
-
-背景：2026-08-25 会话中，代理在 xiongjt 登录受阻时自行改用守护账号 zhaozh 执行测试，用户随后定下此规则。**代理遇 xiongjt 不可用时，应报告并等待用户决策，不得自行切换到守护账号。**
 
 ### 边界定义
 

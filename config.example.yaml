@@ -1,104 +1,77 @@
 # Library Seat Reservation Bot — 多目标座位 + 时段满约 (v2)
 #
-# 用法: cp config.example.yaml config.yaml  → 编辑账号/座位/时段 → python -m seatbot init-db → python -m seatbot run
+# 用法: cp config.example.yaml config.yaml → 填入真实账号/座位 →
+#       python -m seatbot init-db → python -m seatbot run
+#
+# ⚠️ 本文件是模板,全部凭证均为占位符。不要把真实密码写进本文件或提交 git。
 #
 # 核心概念 (v2):
-#   ★ target_seats: N 个想保护的目标座位 (用户要坐的那一个 + 周围相邻几个)
-#   ★ accounts: M 个守护账号,每个可绑定 0..N 个 target_seats
-#   ★ bound_seats: 该账号负责的座位集合 (空 = wildcard)
-#   ★ 1 账号 ≤ 2h/次 × N 段/天 (N 受 one_account_max_concurrent_segments_per_day 限制)
-#
-# 容量 (典型: 2 座 × 3 时段 × 2 天):
-#   悲观 (1 账号 1 段/天) → 每天 6 账号 × 2 天 = 12 账号
-#   乐观 (1 账号 3 段/天,跨座位拼接) → 每天 2 账号 × 2 天 = 4 账号
-#   实际值取决于学习通后端 — 14:00 后用 scripts/verify_cross_booking.py 实测
+#   ★ target_seats: N 个想保护的目标座位
+#   ★ accounts: M 个守护账号, 推荐用 seat_slots 精确指定 (座位, 时段) 组合
+#   ★ 单段 ≤ max_reserve_hours (超长 range 会被 planner 拒绝, 不自动拆段)
 
 library:
-  room_id: 11692
+  room_id: 11692                          # 超星房间 ID (抓包获得)
   room_name: "2号楼图书馆-3F-3楼备考自习室"
-  time_unit_minutes: 30
   open_time: "08:00"
   close_time: "22:00"
-  max_reserve_hours: 2.0
-  # 移动端 deptIdEnc（从手机 App URL 抓包得到，与 PC web 端不同）
-  # 用于 getusedtimes 接口查询全天座位占用（含他人预约）
-  fid_enc: "24680a1d287b60c7"
+  max_reserve_hours: 2.0                  # 超星硬约束: 单次预约 ≤ 2h
 
-# 目标座位 — Web 面板 (/targets) 是主入口,这里是 seed
-# 你的座位:用户自己坐 104, 还想要把 105 也保护上
+# 目标座位 — Web 面板 (/targets) 是主入口, 这里只是 seed
 target_seats:
   - seat_num: "104"
-    label: "主座 (用户)"
+    label: "主座 (示例)"
   - seat_num: "105"
-    label: "相邻备用"
+    label: "相邻备用 (示例)"
 
-# 守护账号 (M 个) — 每个绑定 0..N 个目标座位
+# 守护账号 (M 个)
 #
-# 2026-07-09 实测入库的 3 个可用账号 (另外 2 个刘恒/朱宇 登录被拒):
+# ★ 推荐写法 (2026-08-24 起): seat_slots 精确矩阵 —
+#     每个账号对每个座位守哪些时段一目了然, planner 按 (seat, slot) 精确展开。
+#     下例即 "3 账号 × 2 座位 × 3 时段" 守护矩阵, 每天恰好 6 段。
 #
-# slots 语义:
-#   full     : 当日 08:00-22:00 每 2h 一段, 共 7 段
-#   ["..."] : 选定的连续/不连续时段, 自动拆为 ≤ 2h 子段
+#   seat_slots:
+#     "104": ["09:00-11:00"]        # 该账号在 104 守 09-11
+#     "105": ["15:00-17:00"]        # 该账号在 105 守 15-17
 #
-# bound_seats 语义:
-#   [列表] : 该账号为这些座位都在 slots 各做一段
-#   []      : wildcard, 对所有 enabled 的 target_seats 生效
-#
-# one_account_max_concurrent_segments_per_day 语义:
-#   1   : 悲观 — 每账号每天最多 1 段 (确保超过限制被后端拒)
-#   3+  : 乐观 — 单账号跨座位拼接 (今天 14:00 后请实测)
-#
-# 注意: 用户本人 (xiongjt) 已预约明天 19:30-21:30 / 104 座位, 请勿让脚本重复预约
+# ⚠️ 不推荐: 扁平 slots + bound_seats 会做笛卡尔积 (每座位都约全部时段),
+#    实测一天会生成 16-22 段, 违反 "6 段精确" 目标 (AGENTS.md 2026-08-24)。
+#    slots: "full" / ["HH:MM-HH:MM"] 仅作为兜底语义保留。
 accounts:
-  - id: xiongjt                     # 用户本人的真实账号
-    phone: "178XXXX3792"
-    password: "[已清除]"
-    slots: ["08:30-10:30", "15:00-17:00"]   # 不需要 19:30-21:30 (用户已自约)
-    bound_seats: ["104", "105"]
-    one_account_max_concurrent_segments_per_day: 3
+  - id: guard_a                           # 账号别名 (唯一)
+    phone: "138xxxxxxxx"                  # ← 真实手机号
+    password: "your-password-here"        # ← 真实密码
+    seat_slots:
+      "104": ["09:00-11:00"]
+      "105": ["15:00-17:00"]
 
-  - id: wangh
-    phone: "151XXXX0087"
-    password: "[已清除]"
-    slots: ["08:30-10:30", "15:00-17:00", "19:30-21:30"]
-    bound_seats: ["104", "105"]
-    one_account_max_concurrent_segments_per_day: 3
+  - id: guard_b
+    phone: "139xxxxxxxx"
+    password: "your-password-here"
+    seat_slots:
+      "104": ["15:00-17:00"]
+      "105": ["19:00-21:00"]
 
-  - id: zhaozh
-    phone: "131XXXX5958"
-    password: "[已清除]"
-    slots: ["10:30-12:30", "19:30-21:30"]
-    bound_seats: ["104", "105"]
-    one_account_max_concurrent_segments_per_day: 3
+  - id: guard_c
+    phone: "137xxxxxxxx"
+    password: "your-password-here"
+    seat_slots:
+      "104": ["19:00-21:00"]
+      "105": ["09:00-11:00"]
 
-  # 不可用(暂留作 seed, 不会被 Scheduler 尝试登录):
-  # - id: liuh
-  #   phone: "15912043080"
-  #   password: "[已清除]"
-  #   slots: ["08:30-10:30"]
-  #   bound_seats: ["104", "105"]
-  #
-  # - id: zhuyu
-  #   phone: "18213762197"
-  #   password: "[已清除]"
-  #   slots: ["15:00-17:00"]
-  #   bound_seats: ["105"]
-
-# ★ 用户硬预约段 (亲述, 已通过超星 Web 提交过, scheduler 不要再预约这些段)
-# 例: 熊金涛 今晚 19:30-21:30 / 104 (用户亲述)
-user_reserved:
-  - account_id: xiongjt
-    seat_num: "104"
-    day: "2026-07-09"
-    start_time: "19:30"
-    end_time: "21:30"
-    note: "用户亲述已预约, scheduler 跳过"
+# ★ 用户硬预约段 (你本人在超星 App 手动约过的段, scheduler 生成任务时跳过,
+#   避免重复预约/覆盖)。日期是具体某一天, 过期后可删除。
+user_reserved: []
+  # - account_id: guard_a
+  #   seat_num: "104"
+  #   day: "2026-08-26"
+  #   start_time: "19:30"
+  #   end_time: "21:30"
+  #   note: "本人已手动预约, scheduler 跳过"
 
 runtime:
-  stagger_seconds: [0, 3]
-  relogin_on_401: true
-  random_ua: true
-  one_account_max_concurrent_segments_per_day_default: 3   # 默认乐观; 实测后调整
+  stagger_seconds: [0, 3]                 # 各账号每分钟 tick 的错峰秒数
+  direct_submit_enabled: true             # 跨天预约直连通道开关 (关=未来日期任务直接 FAILED, 不误约当天)
   log_dir: ./logs
   db_path: ./seatbot.db
   web_host: 0.0.0.0

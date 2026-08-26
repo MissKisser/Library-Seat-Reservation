@@ -54,12 +54,11 @@
             <td class="num font-mono text-xs">{{ t.reserve_id or '—' }}</td>
             <td class="text-xs text-danger">{{ t.last_error or '' }}</td>
             <td class="actions">
-              {% if t.reserve_id and t.status.value in ('active', 'signed') %}
-              {% if t.status.value == 'active' %}
+              {% if t.reserve_id and t.status.value == 'active' %}
               <button class="btn btn-ghost btn-sm" @click="confirmAction({title:'立即签到？',desc:'task {{ t.id }}',confirmText:'签到'}).then(ok=>{if(ok)post('/tasks/{{ t.id }}/sign')})">签到</button>
               {% endif %}
-              <button class="btn btn-ghost btn-sm" @click="confirmAction({title:'立即签退？',desc:'task {{ t.id }}',confirmText:'签退'}).then(ok=>{if(ok)post('/tasks/{{ t.id }}/leave')})">签退</button>
-              {% endif %}
+              {# 手动签退按钮已移除: 原实现误调 /leave(暂离) 而非 signback(签退),
+                 自动签退由 scheduler 在时段结束 +60s 执行 (2026-08-26 审查 #16) #}
               {% if t.reserve_id %}
               <button class="btn btn-ghost btn-sm text-danger" @click="confirmAction({title:'取消任务？',desc:'task {{ t.id }}',confirmText:'取消',danger:true}).then(ok=>{if(ok)post('/tasks/{{ t.id }}/cancel')})">取消</button>
               {% endif %}

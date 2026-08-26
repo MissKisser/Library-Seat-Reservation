@@ -72,7 +72,6 @@ async def seed_guard_accounts(store: StateStore) -> None:
         await store.upsert_account(Account(
             id=acc_id, phone=f"1380000000{i}", password="p",
             slots=[], bound_seats=list(seat_slots.keys()),
-            one_account_max_concurrent_segments_per_day=2,
             seat_slots=seat_slots,
         ))
     await store.add_target_seat("104")

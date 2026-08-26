@@ -61,9 +61,6 @@
         {{ checkbox_grid_field('bound_seats', '绑定座位（不勾选 = 通用 wildcard，覆盖所有目标座位）',
             _opts, checked_keys=(account.bound_seats if account else [])) }}
 
-        {{ number_field('one_account_max_concurrent_segments_per_day', '每日最大并发段数',
-            account.one_account_max_concurrent_segments_per_day if account else 1, min=1, max=6, hint='单账号每天最多同时持有的预约段数') }}
-
         <div class="flex items-center gap-2 mt-2">
           <button class="btn btn-primary" type="submit">保存账号</button>
           <a class="btn btn-ghost" href="/accounts">取消</a>

@@ -13,9 +13,8 @@ from seatbot.models import Account, SeatTarget, Task, TaskStatus
 
 
 # v2 schema:
-#  - accounts:        + bound_seats_json, max_segments_per_day
+#  - accounts:        + bound_seats_json
 #  - target_seats:    NEW (multi-seat registry)
-#  - account_seat_bindings: NEW (account ↔ seat M:N)
 #  - tasks:           + seat_num
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -25,7 +24,6 @@ CREATE TABLE IF NOT EXISTS accounts (
   slots_json  TEXT NOT NULL,
   seat_slots_json TEXT NOT NULL DEFAULT '{}',
   bound_seats_json  TEXT NOT NULL DEFAULT '[]',
-  max_segments_per_day INTEGER NOT NULL DEFAULT 1,
   status      TEXT NOT NULL DEFAULT 'active',
   bootstrap_day TEXT,
   created_at  INTEGER NOT NULL,
@@ -38,14 +36,6 @@ CREATE TABLE IF NOT EXISTS target_seats (
   enabled     INTEGER NOT NULL DEFAULT 1,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS account_seat_bindings (
-  account_id  TEXT NOT NULL,
-  seat_num    TEXT NOT NULL,
-  priority    INTEGER NOT NULL DEFAULT 0,
-  created_at  INTEGER NOT NULL,
-  PRIMARY KEY (account_id, seat_num)
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -149,8 +139,7 @@ class StateStore:
     async def _migrate_v1_to_v2(self) -> None:
         """v1 → v2 schema migrations.
 
-        1. accounts table may lack `bound_seats_json` and `max_segments_per_day`:
-           recreate table, copying existing rows.
+        1. accounts table may lack `bound_seats_json`: add the column.
         2. tasks table may lack `seat_num`:
            add column; backfill from legacy_target_seat_num where missing.
         3. seed target_seats with the legacy seat if provided.
@@ -162,10 +151,6 @@ class StateStore:
         if "bound_seats_json" not in acc_cols:
             await self.db.execute(
                 "ALTER TABLE accounts ADD COLUMN bound_seats_json TEXT NOT NULL DEFAULT '[]'"
-            )
-        if "max_segments_per_day" not in acc_cols:
-            await self.db.execute(
-                "ALTER TABLE accounts ADD COLUMN max_segments_per_day INTEGER NOT NULL DEFAULT 1"
             )
         # 如果 accounts 表是 v1 的 "裸" 表 (没有 enabled 等),让它继续用
         # v1 的精简字段 — 已通过 SCHEMA 重置 + DEFAULT 兼容。
@@ -295,44 +280,31 @@ class StateStore:
             await self.db.execute(
                 """INSERT INTO accounts
                    (id, phone, password, slots_json, seat_slots_json, bound_seats_json,
-                    max_segments_per_day, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                    status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
                 (
                     acc.id, acc.phone, acc.password, slots_json,
                     json.dumps(acc.seat_slots or {}),
                     bound_json,
-                    acc.one_account_max_concurrent_segments_per_day, now, now,
+                    now, now,
                 ),
             )
         else:
             await self.db.execute(
                 """UPDATE accounts SET phone=?, password=?, slots_json=?,
-                       seat_slots_json=?, bound_seats_json=?,
-                       max_segments_per_day=?, updated_at=?
+                       seat_slots_json=?, bound_seats_json=?, updated_at=?
                    WHERE id=?""",
                 (
                     acc.phone, acc.password, slots_json,
                     json.dumps(acc.seat_slots or {}),
-                    bound_json,
-                    acc.one_account_max_concurrent_segments_per_day, now, acc.id,
+                    bound_json, now, acc.id,
                 ),
-            )
-        # 重置绑定表 — bindings 是 derived from accounts.bound_seats_json
-        await self.db.execute(
-            "DELETE FROM account_seat_bindings WHERE account_id=?", (acc.id,)
-        )
-        for pri, seat in enumerate(acc.bound_seats):
-            await self.db.execute(
-                """INSERT OR REPLACE INTO account_seat_bindings
-                   (account_id, seat_num, priority, created_at)
-                   VALUES (?, ?, ?, ?)""",
-                (acc.id, seat, pri, now),
             )
         await self.db.commit()
 
     async def get_account(self, acc_id: str) -> Account | None:
         cur = await self.db.execute(
-            "SELECT id, phone, password, slots_json, seat_slots_json, bound_seats_json, max_segments_per_day "
+            "SELECT id, phone, password, slots_json, seat_slots_json, bound_seats_json "
             "FROM accounts WHERE id=?",
             (acc_id,),
         )
@@ -358,7 +330,6 @@ class StateStore:
         return Account(
             id=row[0], phone=row[1], password=row[2],
             slots=slots, bound_seats=bound_list,
-            one_account_max_concurrent_segments_per_day=row[6] or 1,
             seat_slots=seat_slots,
         )
 
@@ -392,7 +363,6 @@ class StateStore:
                 password=cfg_acc.password,
                 slots=slots,
                 bound_seats=bound,
-                one_account_max_concurrent_segments_per_day=cfg_acc.one_account_max_concurrent_segments_per_day,
                 seat_slots=seat_slots,
             )
             await self.upsert_account(acc)
@@ -400,9 +370,6 @@ class StateStore:
 
     async def delete_account(self, acc_id: str) -> None:
         await self.db.execute("DELETE FROM accounts WHERE id=?", (acc_id,))
-        await self.db.execute(
-            "DELETE FROM account_seat_bindings WHERE account_id=?", (acc_id,)
-        )
         await self.db.commit()
 
     async def set_bootstrap_day(self, acc_id: str, day: date) -> None:
@@ -436,10 +403,6 @@ class StateStore:
         await self.db.execute(
             "DELETE FROM target_seats WHERE seat_num=?", (seat_num.zfill(3),)
         )
-        # 也删除该座位上遗留的 bindings
-        await self.db.execute(
-            "DELETE FROM account_seat_bindings WHERE seat_num=?", (seat_num.zfill(3),)
-        )
         await self.db.commit()
 
     async def list_target_seats(self) -> list[SeatTarget]:
@@ -455,16 +418,6 @@ class StateStore:
             )
             for r in rows
         ]
-
-    # ---------- account ↔ seat bindings ----------
-    async def get_bindings_for_account(self, account_id: str) -> list[str]:
-        cur = await self.db.execute(
-            "SELECT seat_num FROM account_seat_bindings WHERE account_id=? "
-            "ORDER BY priority, seat_num",
-            (account_id,),
-        )
-        rows = await cur.fetchall()
-        return [r[0] for r in rows]
 
     # ---------- tasks ----------
     async def add_task(self, t: Task) -> int:
@@ -490,16 +443,26 @@ class StateStore:
         status: TaskStatus,
         *,
         reserve_id: int | None = None,
-        last_error: str | None = None,
+        last_error: str | None = None,   # "" = 显式清空(成功路径); None = 保持不变
     ) -> None:
         now = int(_time.time() * 1000)
-        await self.db.execute(
-            """UPDATE tasks
-               SET status=?, reserve_id=COALESCE(?, reserve_id),
-                   last_error=COALESCE(?, last_error), updated_at=?
-               WHERE id=?""",
-            (status.value, reserve_id, last_error, now, task_id),
-        )
+        if last_error == "":
+            # ★ 成功路径清残留: 任务转 ACTIVE/SIGNED/COMPLETE 时不应再挂历史错误文案
+            await self.db.execute(
+                """UPDATE tasks
+                   SET status=?, reserve_id=COALESCE(?, reserve_id),
+                       last_error=NULL, updated_at=?
+                   WHERE id=?""",
+                (status.value, reserve_id, now, task_id),
+            )
+        else:
+            await self.db.execute(
+                """UPDATE tasks
+                   SET status=?, reserve_id=COALESCE(?, reserve_id),
+                       last_error=COALESCE(?, last_error), updated_at=?
+                   WHERE id=?""",
+                (status.value, reserve_id, last_error, now, task_id),
+            )
         await self.db.commit()
 
     async def get_task(self, task_id: int) -> Task | None:
@@ -537,22 +500,6 @@ class StateStore:
         rows = await cur.fetchall()
         return [_row_to_task(r) for r in rows]
 
-    async def find_active_task(self, account_id: str) -> Task | None:
-        """该账号当前"在途"的任务 (active/signed/submitting/leaving)。
-
-        ★ 不限定 day: 14:00 批量提交后明日任务也会是 ACTIVE。
-          调用方若只关心今天, 应改用 list_tasks(day=...) 自行过滤
-          (v0.6 tick_account 已改为按日遍历, 不再使用本方法)。
-        """
-        cur = await self.db.execute(
-            "SELECT id, account_id, seat_num, day, start_time, end_time, status, reserve_id, last_error "
-            "FROM tasks WHERE account_id=? AND status IN ('active','signed','submitting','leaving') "
-            "ORDER BY day DESC, start_time DESC LIMIT 1",
-            (account_id,),
-        )
-        row = await cur.fetchone()
-        return _row_to_task(row) if row else None
-
     async def find_next_task_after(
         self, day: date, after_time: "time", *, statuses: tuple[str, ...] = ("pending", "ready", "failed")
     ) -> Task | None:
@@ -573,19 +520,6 @@ class StateStore:
         row = await cur.fetchone()
         return _row_to_task(row) if row else None
 
-    async def count_tasks_for_account_day(
-        self, account_id: str, day: date,
-        statuses: tuple[str, ...] = ("pending", "ready", "active", "signed", "submitting", "leaving"),
-    ) -> int:
-        """统计某账号在指定 day 上当前占用的预约段数 (用于 N=1 悲观模式的强制校验)。"""
-        placeholders = ",".join("?" for _ in statuses)
-        cur = await self.db.execute(
-            f"SELECT COUNT(*) FROM tasks "
-            f"WHERE account_id=? AND day=? AND status IN ({placeholders})",
-            (account_id, day.isoformat(), *statuses),
-        )
-        row = await cur.fetchone()
-        return int(row[0]) if row else 0
     async def has_active_task_for_account_day_start(
         self, account_id: str, day: date, start_time: time,
         seat_num: str,

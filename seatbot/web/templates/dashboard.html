@@ -23,7 +23,7 @@
     {% if not rows %}
       {{ banner('warn', '尚未设置目标座位。<a class="text-accent" href="/targets">去添加 →</a>') }}
     {% elif _gap.n %}
-      {{ banner('error', '检测到 <b>' ~ _gap.n ~ '</b> 个时段空缺，护城河有缺口。<a class="text-danger" href="/coverage">查看报告 →</a>') }}
+      {{ banner('error', '检测到 <b>' ~ _gap.n ~ '</b> 个时段空缺，护城河有缺口。') }}
     {% elif occ_err %}
       {{ banner('warn', '无法获取超星他人占用数据：' ~ occ_err) }}
     {% else %}

@@ -11,16 +11,9 @@ class LibraryConfig(BaseModel):
     room_id: int
     room_name: str
     # v2: removed `target_seat_num` — moved to DB table `target_seats` managed via Web
-    time_unit_minutes: int = 30
     open_time: str = "08:00"
     close_time: str = "22:00"
     max_reserve_hours: float = 2.0
-    # ★ 移动端 deptIdEnc，用于 getusedtimes 接口查询他人占用时段。
-    # 与 PC web 端的 fidEnc 不同，必须用移动端版本，否则返回空数组。
-    # 获取方式见 docs/superpowers/specs/2026-07-09-chaoxing-api-reference.md §11。
-    # 快捷方法：手机打开学习通→座位页→Chrome DevTools inspect WebView，
-    #   在任意请求的 URL 中找 deptIdEnc=XXXXXXXX 参数即是。
-    fid_enc: str = ""
 
 
 # slots is either the literal "full" or a list of "HH:MM-HH:MM" ranges
@@ -72,8 +65,6 @@ class AccountConfig(BaseModel):
     # 该账号对 104 守 09-11,对 105 守 15-17。
     # 与 slots 互斥:同时设置时 planner 用 seat_slots 忽略 slots。
     seat_slots: dict[str, SlotSpec] | None = None
-    # ★ v2: 该账号每天最多同时持有的预约段数 (1=悲观, 3=乐观)
-    one_account_max_concurrent_segments_per_day: int = 1
 
     @field_validator("slots")
     @classmethod
@@ -94,24 +85,17 @@ class AccountConfig(BaseModel):
         for s in v:
             s2 = s.strip()
             if not s2.isdigit() or not (1 <= len(s2) <= 4):
-                raise ValueError(f"bound seat_num must be 1-4 digit, got {s!r}")
+                raise ValueError(f"bound seat_num must be 1-4 digit number, got {s!r}")
             out.append(s2.zfill(3))
         return out
-
-    @field_validator("one_account_max_concurrent_segments_per_day")
-    @classmethod
-    def _max_segments(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError("must be ≥ 1")
-        return v
 
 
 class RuntimeConfig(BaseModel):
     stagger_seconds: list[int] = Field(default_factory=lambda: [0, 3])
-    relogin_on_401: bool = True
-    random_ua: bool = True
-    # ★ v2: 全局默认 (账号级可覆盖)
-    one_account_max_concurrent_segments_per_day_default: int = 1
+    # ★ 跨天预约通道开关 (2026-08-26 §8 回滚开关; B1=页面内改写放行):
+    #   true  = 未来日期任务走 submit_via_page_rewrite (真实页面提交, 网络层改写 day/时段)
+    #   false = 未来日期任务直接 FAILED, 绝不回退浏览器通道 (会错约到当天)
+    direct_submit_enabled: bool = True
     log_dir: str = "./logs"
     db_path: str = "./seatbot.db"
     web_host: str = "0.0.0.0"

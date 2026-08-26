@@ -17,9 +17,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("run", help="启动 Web + 调度器")
     sub.add_parser("init-db", help="初始化 SQLite + 同步 target_seats")
-    once = sub.add_parser("once", help="单次执行 (调试)")
+    once = sub.add_parser("once", help="单次执行 (调试: bootstrap + tick 该账号)")
     once.add_argument("--account", required=True)
-    once.add_argument("--action", choices=["all", "submit", "sign", "leave", "cancel"], default="all")
 
     login = sub.add_parser("login", help="单独登录测试")
     login.add_argument("--account", required=True)

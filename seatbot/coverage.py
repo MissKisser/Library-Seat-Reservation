@@ -1,13 +1,10 @@
 """Coverage reports.
 
-v2 additions: per-seat coverage alongside the legacy per-account coverage.
-
-Public entry points:
-  - `compute_coverage(accounts, day, open, close)` — legacy: rows = 30-min cells,
-    `accounts` list per cell. Used by Dashboard-by-account view.
-  - `compute_seat_coverage(accounts, target_seats, day, open, close)` — new:
-    rows = target_seats; each row has 30-min cells with the primary account_id
-    (lowest-priority binding) on that seat at that half-hour.
+Public entry point:
+  - `compute_seat_coverage(accounts, target_seats, day, open, close)` —
+    rows = target_seats; each row has 30-min cells with the guard account ids
+    covering that seat at that half-hour. seat_slots 账号只按其精确矩阵涂格,
+    扁平 slots 账号按 bound_seats / wildcard 涂格 (与 planner 同一优先级规则)。
 """
 from __future__ import annotations
 
@@ -129,27 +126,14 @@ def _make_blank_coverage(day: date, open_time: time | str, close_time: time | st
     return Coverage(day=day, open_time=open_time, close_time=close_time, cells=cells)
 
 
-def compute_coverage(
-    accounts: Iterable[Account],
-    day: date,
-    open_time: time | str = time(8, 0),
-    close_time: time | str = time(22, 0),
-) -> Coverage:
-    """Legacy per-account coverage (rows = 30-min cells across the open-close window)."""
-    cov = _make_blank_coverage(day, open_time, close_time)
-    open_time = cov.open_time
-    for acc in accounts:
-        try:
-            ranges = expand_account_slots(acc.slots, max_hours=24.0)
-        except Exception:
-            continue
-        for s, e in ranges:
-            s_idx = _cell_index(s, open_time)
-            e_idx = _cell_index(e, open_time)
-            for i in range(s_idx, e_idx):
-                if 0 <= i < len(cov.cells) and acc.id not in cov.cells[i].accounts:
-                    cov.cells[i].accounts.append(acc.id)
-    return cov
+def _paint_ranges(cov: Coverage, ranges: list[tuple[time, time]], acc_id: str) -> None:
+    """把 (start, end) 区间涂到 cov.cells 上 (同账号同格不重复)。"""
+    for s, e in ranges:
+        s_idx = _cell_index(s, cov.open_time)
+        e_idx = _cell_index(e, cov.open_time)
+        for i in range(s_idx, e_idx):
+            if 0 <= i < len(cov.cells) and acc_id not in cov.cells[i].accounts:
+                cov.cells[i].accounts.append(acc_id)
 
 
 def compute_seat_coverage(
@@ -163,9 +147,12 @@ def compute_seat_coverage(
 ) -> list[SeatCoverage]:
     """Per-seat coverage for v2 multi-seat mode.
 
-    For each target seat, compute which 30-min cells are covered by a guard
-    account bound to that seat (or by a guard account with empty bindings —
-    such accounts are treated as wildcards and cover all seats).
+    账号分两种模式 (与 planner 同一优先级规则):
+
+    - seat_slots 模式 (推荐, AGENTS.md 2026-08-24): 账号只覆盖
+      seat_slots 里明确指定的 (seat, slot) 组合; bound_seats 被忽略。
+    - 扁平 slots 模式 (兜底): 绑定该座位的账号 (bound_seats) 或
+      无绑定 wildcard 账号, 用其 slots 覆盖。
 
     `user_reserved`: 可选的 [(seat_num, start_time, end_time), ...] 列表,
     cell.accounts 之外另存于 cell.user_reserved (供 gantt 渲染蓝色)。
@@ -188,24 +175,34 @@ def compute_seat_coverage(
     for sn, s, e in (others_occupied or []):
         oo_by_seat.setdefault(sn, []).append((s, e))
 
+    # 按模式分组: seat_slots 账号走精确矩阵, 其余走 bound/wildcard 扁平逻辑
+    ss_accs = [a for a in accounts if a.seat_slots]
+    flat_accs = [a for a in accounts if not a.seat_slots]
+
     for seat in seats:
         cov = _make_blank_coverage(day, open_time, close_time)
         seat_num = seat.seat_num
-        # 把该座位上 bindings 排序后的账号列表(空 bindings 的视为 wildcard,后置)
-        bound_accs = [a for a in accounts if seat_num in a.bound_seats]
-        wild_accs = [a for a in accounts if not a.bound_seats]
-        ordered = bound_accs + wild_accs
-        for acc in ordered:
+
+        # 模式 1: seat_slots 精确矩阵 — 只涂 seat_slots[seat_num] 指定的时段
+        for acc in ss_accs:
+            spec = acc.seat_slots.get(seat_num)
+            if not spec:
+                continue
+            try:
+                ranges = expand_account_slots(spec, max_hours=24.0)
+            except Exception:
+                continue
+            _paint_ranges(cov, ranges, acc.id)
+
+        # 模式 2: 扁平 slots — 绑定该座位的账号优先, 空绑定的 wildcard 后置
+        bound_accs = [a for a in flat_accs if seat_num in a.bound_seats]
+        wild_accs = [a for a in flat_accs if not a.bound_seats]
+        for acc in bound_accs + wild_accs:
             try:
                 ranges = expand_account_slots(acc.slots, max_hours=24.0)
             except Exception:
                 continue
-            for s, e in ranges:
-                s_idx = _cell_index(s, cov.open_time)
-                e_idx = _cell_index(e, cov.open_time)
-                for i in range(s_idx, e_idx):
-                    if 0 <= i < len(cov.cells) and acc.id not in cov.cells[i].accounts:
-                        cov.cells[i].accounts.append(acc.id)
+            _paint_ranges(cov, ranges, acc.id)
         # 叠加 user_reserved → 标记哪些 cell 是用户亲述已预约
         for s, e in ur_by_seat.get(seat_num, []):
             s_idx = _cell_index(s, cov.open_time)
