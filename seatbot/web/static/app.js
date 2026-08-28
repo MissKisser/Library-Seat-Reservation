@@ -241,10 +241,16 @@
     };
   };
 
-  /* ===== 座位图：轮询渲染 ===== */
-  window.seatMap = function (roomId) {
+  /* ===== 座位平面图: 只读渲染 ===== */
+  /* layout 为 config.library.seats_layout (行数组, null=过道);
+   * 未配置时按座位编号排序单行兜底。 */
+  window.seatFloor = function (roomId, layout) {
     return {
-      roomId, sections: [], error: null, loading: true, fetching: false,
+      roomId,
+      layout,
+      sections: [],                 // [{seat, byNum: {座位号: seatObj}}]
+      error: null, loading: true, fetching: false,
+
       init() {
         this.load();
         this.timer = setInterval(() => this.load(), 30000);
@@ -260,9 +266,12 @@
           if (j.error) { this.error = j.error; this.sections = []; }
           else if (j.by_target) {
             this.error = null;
-            this.sections = Object.entries(j.by_target).map(([seat, seats]) => ({
-              seat, seats: seats || [],
-            }));
+            this.sections = Object.entries(j.by_target).map(([seat, seats]) => {
+              const byNum = {};
+              (seats || []).forEach(s => { byNum[s.seat_num] = s; });
+              return { seat, byNum, rows: null };
+            });
+            this.sections.forEach(sec => { sec.rows = this.rowsFor(sec); });
           } else {
             this.error = '无数据';
             this.sections = [];
@@ -273,6 +282,30 @@
           this.loading = false;
           this.fetching = false;
         }
+      },
+
+      rowsFor(sec) {
+        if (this.layout && this.layout.length) {
+          return this.layout.map(row => row.map(
+            n => (n === null ? null : (sec.byNum[n] || { seat_num: n, missing: true }))
+          ));
+        }
+        const nums = Object.keys(sec.byNum).sort();
+        return [nums.map(n => sec.byNum[n])];
+      },
+      seatClasses(s) {
+        if (!s || s.missing) return 'bg-app-muted/60 border-edge-subtle text-ink-muted';
+        if (s.error) return 'bg-danger-soft border-danger/30 text-danger';
+        if (s.is_target) return 'bg-target-soft border-2 border-target text-target font-bold';
+        if (s.occupied === true) return 'bg-danger/70 border-danger/70 text-white';
+        return 'bg-app-muted border-edge-subtle text-ink-secondary';
+      },
+      seatTitle(s) {
+        if (!s) return '过道';
+        if (s.missing) return s.seat_num + '（不在查询范围）';
+        if (s.error) return s.seat_num + ' · ' + s.error;
+        if (s.occupied === true) return s.seat_num + ' · 被 ' + (s.occupier_uid || '?') + ' 占用';
+        return s.seat_num + ' · 空闲';
       },
     };
   };
