@@ -12,11 +12,11 @@
   // 尽早应用主题，避免闪烁（在 <head> 内联或 defer 前执行）
   const saved = (() => { try { return localStorage.getItem(THEME_KEY); } catch (e) { return null; } })();
   if (saved === 'light' || saved === 'dark') applyTheme(saved);
-  // 否则保持 HTML 标签的默认 data-theme="dark"
+  // 未存偏好时保持 HTML 标签的默认 data-theme="light"
 
   window.themeInit = function () {
     return {
-      isDark: root.getAttribute('data-theme') !== 'light',
+      isDark: root.getAttribute('data-theme') === 'dark',
       toggle() {
         this.isDark = !this.isDark;
         applyTheme(this.isDark ? 'dark' : 'light');

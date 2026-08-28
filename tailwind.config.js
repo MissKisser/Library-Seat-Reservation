@@ -26,6 +26,8 @@ module.exports = {
           hover: 'rgb(var(--accent-hover-rgb) / <alpha-value>)',
           soft: 'var(--accent-soft)',
         },
+        progress: { DEFAULT: 'rgb(var(--progress-rgb) / <alpha-value>)', soft: 'var(--progress-soft)' },
+        target:  { DEFAULT: 'rgb(var(--target-rgb) / <alpha-value>)',  soft: 'var(--target-soft)' },
         success: { DEFAULT: 'rgb(var(--success-rgb) / <alpha-value>)', soft: 'var(--success-soft)' },
         warn:    { DEFAULT: 'rgb(var(--warn-rgb) / <alpha-value>)',    soft: 'var(--warn-soft)' },
         danger:  { DEFAULT: 'rgb(var(--danger-rgb) / <alpha-value>)',  soft: 'var(--danger-soft)' },
