@@ -3,11 +3,13 @@ from datetime import date, time
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from fastapi.templating import Jinja2Templates
 
 from seatbot.models import Account, Task, TaskStatus
+from seatbot.web.app import TEMPLATES_DIR
 from seatbot.web.routes import router
 
-DAY = date(2026, 8, 28)
+DAY = date(2026, 8, 29)
 
 
 def _task(id_, acc, seat, start, end, status, day=DAY):
@@ -45,6 +47,28 @@ class FakeStore:
     async def log_action(self, *args, **kwargs):
         self.actions = args
 
+    async def list_accounts(self):
+        return [Account(id="a1", phone="", password="", slots=[])]
+
+    async def list_target_seats(self):
+        from seatbot.models import SeatTarget
+        return [SeatTarget(seat_num="104")]
+
+    async def list_logs(self, account_id=None, level=None, limit=200):
+        return []
+
+    async def list_user_reserved(self, day=None):
+        return []
+
+
+class _StubCfg:
+    class library:
+        room_id = 0
+        open_time = "08:00"
+        close_time = "22:00"
+        max_reserve_hours = 2.0
+        seats_layout = None
+
 
 class FakeClient:
     def cookies(self):
@@ -62,10 +86,25 @@ class FakeSched:
 def _make_client(store, sched=None):
     app = FastAPI()
     app.include_router(router)
-    app.state.cfg = None
+    app.state.cfg = _StubCfg
     app.state.store = store
     app.state.sched = sched
+    app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     return TestClient(app)
+
+
+def test_tasks_page_embeds_initial_tasks_as_object():
+    """看板首屏数据必须是 JSON 对象字面量; 双重编码(字符串)会让组件拿不到 tasks。"""
+    store = FakeStore([
+        _task(1, "a1", "104", "09:00", "11:00", TaskStatus.ACTIVE),
+    ])
+    client = _make_client(store)
+    r = client.get("/tasks")
+    assert r.status_code == 200
+    html = r.text
+    assert 'tasksBoard({"day"' in html
+    assert '\\"day\\"' not in html
+    assert '"status": "active"' in html
 
 
 def test_api_tasks_returns_serialized_day_tasks():
