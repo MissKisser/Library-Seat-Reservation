@@ -874,17 +874,8 @@ async def task_leave(request: Request, task_id: int):
 
 
 # =========================================================================
-# Seats (整馆可视化)
+# Status
 # =========================================================================
-@router.get("/seats", response_class=HTMLResponse)
-async def seats_view(request: Request):
-    ctx = await _ctx(request, active_page="seats")
-    ctx["seats_layout"] = request.app.state.cfg.library.seats_layout
-    return _templates(request).TemplateResponse(
-        request, "seats.html", ctx,
-    )
-
-
 @router.get("/api/status")
 async def api_status(request: Request):
     sched = request.app.state.sched
@@ -908,66 +899,6 @@ async def api_status(request: Request):
             "account_id": last.account_id, "message": last.message,
         } if last else None),
     })
-
-
-@router.get("/api/seats/{room_id}")
-async def api_seats(room_id: int, request: Request):
-    sched = request.app.state.sched
-    store = request.app.state.store
-    cfg = request.app.state.cfg
-    accounts = await store.list_accounts()
-    seats = await store.list_target_seats()
-    target_seats_nums = [s.seat_num for s in seats]
-    acc = _pick_read_account(accounts)
-    if not acc:
-        return JSONResponse({"seats": [], "targets": target_seats_nums, "error": "no accounts"})
-
-    client = sched._client_for(acc)
-    if not client.cookies():
-        last_err: str | None = None
-        for attempt in range(3):
-            try:
-                await client.login(acc.phone, acc.password)
-                last_err = None
-                break
-            except Exception as e:
-                last_err = str(e)
-                await asyncio.sleep(5 + attempt * 5)
-        if last_err is not None:
-            return JSONResponse({
-                "seats": [], "targets": target_seats_nums,
-                "error": f"login failed after 3 attempts: {last_err}",
-            })
-
-    # Probe around each target seat
-    out: dict[str, list[dict]] = {}
-    for target in target_seats_nums:
-        tn = int(target)
-        per_seat: list[dict] = []
-        for d in range(-2, 3):
-            n = tn + d
-            seat_num = f"{n:03d}"
-            try:
-                res = await client.get_active_reservation(room_id, seat_num)
-            except Exception as e:
-                per_seat.append(
-                    {"seat_num": seat_num, "occupied": None,
-                     "error": str(e), "is_target": (n == tn)})
-                continue
-            if res:
-                per_seat.append({
-                    "seat_num": seat_num, "occupied": True,
-                    "occupier_uid": res.get("uid"),
-                    "end_ts": res.get("endTime"),
-                    "is_target": (n == tn),
-                })
-            else:
-                per_seat.append({
-                    "seat_num": seat_num, "occupied": False,
-                    "is_target": (n == tn),
-                })
-        out[target] = per_seat
-    return JSONResponse({"targets": target_seats_nums, "room_id": room_id, "by_target": out})
 
 
 # =========================================================================

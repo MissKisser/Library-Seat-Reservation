@@ -14,19 +14,6 @@ class LibraryConfig(BaseModel):
     open_time: str = "08:00"
     close_time: str = "22:00"
     max_reserve_hours: float = 2.0
-    # 座位平面布局：外层每项一行，行内为座位号或 None(过道占位)；缺省按编号单行兜底
-    seats_layout: list[list[str | None]] | None = None
-
-    @field_validator("seats_layout")
-    @classmethod
-    def _normalize_seats_layout(cls, v):
-        """座位号统一 zfill(3)，None 表示过道。"""
-        if v is None:
-            return None
-        return [
-            [(s.strip().zfill(3) if isinstance(s, str) else None) for s in row]
-            for row in v
-        ]
 
 
 # slots is either the literal "full" or a list of "HH:MM-HH:MM" ranges
