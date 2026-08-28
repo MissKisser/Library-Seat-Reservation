@@ -79,37 +79,52 @@
 @layer components {
   /* ===== 按钮 ===== */
   .btn {
-    @apply inline-flex items-center justify-center gap-1.5 h-9 px-4 text-sm font-medium
-           rounded-md border border-transparent transition-colors duration-150
+    @apply inline-flex items-center justify-center gap-1.5 h-9 px-4 text-sm font-semibold
+           rounded-[9px] border border-transparent transition-colors duration-150
            focus:outline-none focus:ring-2 focus:ring-accent/40 focus:ring-offset-0
            disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]
            cursor-pointer select-none;
   }
-  .btn-sm { @apply h-7 px-2.5 text-xs; }
+  .btn-sm { @apply h-7 px-3 text-[11px] font-semibold rounded-lg; }
   .btn-icon { @apply h-9 w-9 p-0; }
-  .btn-primary { @apply bg-accent text-white hover:bg-accent-hover; }
-  .btn-secondary { @apply bg-app-muted text-ink border-edge-strong hover:bg-app-elevated; }
-  .btn-danger { @apply bg-danger text-white hover:brightness-110; }
+  .btn-primary { @apply bg-accent text-white hover:bg-accent-hover; box-shadow: 0 1px 2px rgb(var(--accent-rgb) / .4); }
+  .btn-secondary { @apply bg-app-surface text-ink border-edge-subtle hover:bg-app-muted; }
+  .btn-danger { @apply bg-danger-soft text-danger border-danger/25 hover:brightness-95; }
   .btn-subtle { @apply bg-accent-soft text-accent hover:brightness-110; }
   .btn-ghost { @apply bg-transparent text-ink-secondary hover:bg-app-muted; }
 
   /* ===== 卡片 ===== */
   .card {
-    @apply bg-app-surface border border-edge-subtle rounded-lg overflow-hidden;
+    @apply bg-app-surface border border-edge-subtle rounded-[14px] overflow-hidden;
+    box-shadow: var(--shadow-card);
   }
-  .card-header { @apply flex items-center justify-between px-4 py-3 border-b border-edge-subtle; }
-  .card-title { @apply text-sm font-semibold text-ink; }
-  .card-body { @apply p-4; }
+  .card-header { @apply flex items-center justify-between gap-3 px-[18px] pt-[14px] pb-0; }
+  .card-title { @apply text-[13px] font-bold text-ink; }
+  .card-body { @apply p-[16px_18px_18px]; }
   .card-footer { @apply px-4 py-3 border-t border-edge-subtle bg-app-muted/30; }
+
+  /* ===== Chip（药丸状态标签）===== */
+  .chip {
+    @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full
+           text-[11px] font-semibold whitespace-nowrap;
+  }
+  .chip-accent  { @apply bg-accent-soft text-accent; }
+  .chip-success { @apply bg-success-soft text-success; }
+  .chip-progress{ @apply bg-progress-soft text-progress; }
+  .chip-warn    { @apply bg-warn-soft text-warn; }
+  .chip-danger  { @apply bg-danger-soft text-danger; }
+  .chip-muted   { @apply bg-app-muted text-ink-secondary; }
+  .chip-target  { @apply bg-target-soft text-target; }
 
   /* ===== 指标卡 ===== */
   .stat-card {
-    @apply bg-app-surface border border-edge-subtle rounded-lg p-4 flex flex-col gap-1;
+    @apply bg-app-surface border border-edge-subtle rounded-[14px] p-4 flex flex-col gap-1;
+    box-shadow: var(--shadow-card);
   }
-  .stat-label { @apply text-xs uppercase tracking-wide text-ink-muted; }
-  .stat-value { @apply text-2xl font-semibold text-ink tabular; }
-  .stat-value.accent { @apply text-accent; }
-  .stat-hint { @apply text-xs text-ink-muted; }
+  .stat-label { @apply text-[11px] text-ink-secondary; }
+  .stat-value { @apply text-xl font-extrabold text-ink tabular; }
+  .stat-value.accent { @apply text-danger; }
+  .stat-hint { @apply text-[11px] text-ink-muted; }
 
   /* ===== 表单原子 ===== */
   .form-field { @apply flex flex-col gap-1.5; }
@@ -145,6 +160,12 @@
   .badge-danger .dot { @apply bg-danger; }
   .badge-muted   { @apply bg-app-muted text-ink-secondary border-edge-subtle; }
   .badge-muted .dot { @apply bg-ink-muted; }
+  .badge-accent  { @apply bg-accent-soft text-accent border-accent/30; }
+  .badge-accent .dot { @apply bg-accent; }
+  .badge-progress{ @apply bg-progress-soft text-progress border-progress/30; }
+  .badge-progress .dot { @apply bg-progress; }
+  .badge-target  { @apply bg-target-soft text-target border-target/30; }
+  .badge-target .dot { @apply bg-target; }
   .badge-faded   { @apply bg-success-soft/50 text-ink-muted border-edge-subtle; }
   .badge-faded .dot { @apply bg-success/50; }
 
@@ -206,26 +227,34 @@
   }
   /* 叠加层放前面，状态色放后面以覆盖（避免“他人占用”条纹盖住已预约） */
   .cell-user-reserved {
-    @apply bg-info/60;
+    @apply bg-target-soft;
     background-image: none;
   }
   .cell-others-occupied {
-    @apply bg-app-muted;
-    background-image: repeating-linear-gradient(135deg,
-      transparent, transparent 3px,
-      var(--text-muted) 3px, var(--text-muted) 5px);
-    opacity: 0.7;
+    background-image: repeating-linear-gradient(45deg,
+      rgb(var(--danger-rgb) / 0.12) 0 5px,
+      transparent 5px 10px);
+    background-color: transparent;
+    opacity: 1;
   }
   .cell-gap         { @apply bg-transparent border-2 border-danger/60; }
   .cell-empty       { @apply bg-transparent; }
-  .cell-active      { @apply bg-info/40; }
-  .cell-signed      { @apply bg-success/70; }
-  .cell-submitting  { @apply bg-info/70; }
-  .cell-leaving     { @apply bg-warn/70; }
+  .cell-active      { @apply bg-accent-soft border border-accent/35; }
+  .cell-signed      { @apply bg-success-soft border border-success/35; }
+  .cell-submitting  { @apply bg-progress-soft border border-progress/35; }
+  .cell-leaving     { @apply bg-warn-soft border border-warn/35; }
   .cell-pending     { @apply bg-transparent border border-dashed border-ink-muted/50; }
-  .cell-failed      { @apply bg-danger/70; }
-  .cell-complete    { @apply bg-success/30; }
-  .cell-actionable { @apply cursor-pointer hover:brightness-110; }
+  .cell-failed      { @apply bg-danger-soft border border-danger/40; }
+  .cell-complete    { @apply bg-app-muted; }
+  .cell-actionable { @apply cursor-pointer; }
+  .cell-actionable:hover { @apply outline outline-2 outline-accent/50 outline-offset-1; }
+
+  /* 覆盖图单元格信息卡（fixed 定位，JS 给 left/top） */
+  .cell-card {
+    @apply fixed z-[60] w-[280px] bg-app-surface border border-edge-subtle
+           rounded-[14px] p-3.5;
+    box-shadow: var(--shadow-float);
+  }
   .gantt-legend { @apply flex flex-wrap gap-x-4 gap-y-1.5 mt-3 text-xs text-ink-secondary; }
   .gantt-legend span { @apply inline-flex items-center gap-1.5; }
   .gantt-legend .cell, .gantt-legend .swatch {
@@ -246,7 +275,8 @@
   .toast-container { @apply fixed bottom-4 right-4 z-50 flex flex-col gap-2 items-end; }
   .toast {
     @apply flex items-start gap-2.5 min-w-[280px] max-w-[360px] px-3.5 py-2.5
-           rounded-md bg-app-elevated border border-edge-subtle shadow-lg;
+           rounded-xl bg-app-surface border border-edge-subtle;
+    box-shadow: var(--shadow-float);
   }
   .toast .toast-bar { @apply self-stretch w-0.5 rounded-full -my-2.5; }
   .toast-success .toast-bar { @apply bg-success; }
@@ -259,8 +289,9 @@
   /* ===== Modal（确认弹层）===== */
   .modal-backdrop { @apply fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4; }
   .modal {
-    @apply w-full max-w-sm bg-app-elevated border border-edge-subtle
-           rounded-lg shadow-lg p-5 flex flex-col gap-4;
+    @apply w-full max-w-sm bg-app-surface border border-edge-subtle
+           rounded-[14px] p-5 flex flex-col gap-4;
+    box-shadow: var(--shadow-float);
   }
   .modal-title { @apply text-base font-semibold text-ink; }
   .modal-desc { @apply text-sm text-ink-secondary; }
