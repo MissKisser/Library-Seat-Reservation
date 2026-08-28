@@ -1,6 +1,11 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: ["seatbot/web/templates/**/*.html"],
+  safelist: [
+    'cell-card',
+    'chip', 'chip-accent', 'chip-success', 'chip-progress',
+    'chip-warn', 'chip-danger', 'chip-muted', 'chip-target',
+  ],
   darkMode: ['class', '[data-theme="dark"]'],
   theme: {
     extend: {
