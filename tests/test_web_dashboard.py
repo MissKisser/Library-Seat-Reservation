@@ -148,8 +148,12 @@ async def _test_annotate_unpainted_cells_stay_empty():
 
 
 def test_dashboard_data_returns_both_days(client):
+    # 任务日动态取真实"明天"，避免跨天后 today/tomorrow 视图与硬编码日期错位
+    from seatbot.utils.timeutil import today_cst
+    from datetime import timedelta
+    tomorrow = today_cst() + timedelta(days=1)
     store = FakeStore(tasks=[
-        _task(4, "a1", "104", "09:00", "11:00", TaskStatus.ACTIVE, day=NEXT_DAY),
+        _task(4, "a1", "104", "09:00", "11:00", TaskStatus.ACTIVE, day=tomorrow),
     ])
     client = _make_client(store)
     resp = client.get("/api/dashboard-data")
