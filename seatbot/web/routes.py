@@ -582,11 +582,30 @@ async def accounts_list(request: Request):
     )
 
 
+async def _matrix_ctx(request: Request, store, account: Account | None) -> dict:
+    """账号表单矩阵编辑器所需的上下文（座位清单 + 全账号时段用于覆盖预览）。"""
+    accounts = await store.list_accounts()
+    target_seats = await store.list_target_seats()
+    ctx = await _ctx(request, account=account, error=None, active_page="accounts")
+    ctx["matrix_seats"] = [s.seat_num for s in target_seats]
+    ctx["matrix_initial"] = (account.seat_slots if account and account.seat_slots else {})
+    ctx["matrix_others"] = [
+        {"id": a.id, "seatSlots": a.seat_slots or {}}
+        for a in accounts if a.id != (account.id if account else None)
+    ]
+    lib = request.app.state.cfg.library
+    ctx["matrix_open"] = lib.open_time
+    ctx["matrix_close"] = lib.close_time
+    ctx["matrix_max_hours"] = lib.max_reserve_hours
+    return ctx
+
+
 @router.get("/accounts/new", response_class=HTMLResponse)
 async def accounts_new(request: Request):
+    store = request.app.state.store
     return _templates(request).TemplateResponse(
         request, "accounts_form.html",
-        await _ctx(request, account=None, error=None, active_page="accounts"),
+        await _matrix_ctx(request, store, None),
     )
 
 
@@ -651,7 +670,7 @@ async def accounts_edit(request: Request, acc_id: str):
         raise HTTPException(404)
     return _templates(request).TemplateResponse(
         request, "accounts_form.html",
-        await _ctx(request, account=acc, error=None, active_page="accounts"),
+        await _matrix_ctx(request, store, acc),
     )
 
 
