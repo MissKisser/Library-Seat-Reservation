@@ -4,6 +4,25 @@
 {% block content %}
 <div class="flex flex-col gap-5" x-data='coverageGrid({{ initial|tojson }})'>
 
+  {# 全屏首屏加载动画: 进度由真实数据拉取驱动, 100% 后揭幕 #}
+  <div class="boot-overlay" :class="boot.active ? '' : 'boot-hide'">
+    <div class="boot-halo boot-halo-a"></div>
+    <div class="boot-halo boot-halo-b"></div>
+    <div class="boot-box">
+      <div class="boot-brand"><span class="boot-logo">📚</span><span>SeatBot</span></div>
+      <div class="boot-slots">
+        <div class="boot-slot" :class="boot.display >= 30 ? 'lit' : ''">09–11</div>
+        <div class="boot-slot" :class="boot.display >= 62 ? 'lit' : ''">15–17</div>
+        <div class="boot-slot" :class="boot.display >= 94 ? 'lit' : ''">19–21</div>
+      </div>
+      <div class="boot-track">
+        <div class="boot-fill" :style="'width:' + boot.display + '%'"></div>
+      </div>
+      <div class="boot-num" x-text="Math.floor(boot.display) + '%'">0%</div>
+      <div class="boot-stage" x-text="boot.stage">正在唤醒守护系统…</div>
+    </div>
+  </div>
+
   {# 指标卡 4 张 #}
   <div class="stat-grid">
     <div class="stat-card">

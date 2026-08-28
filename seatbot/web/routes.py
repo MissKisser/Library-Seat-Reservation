@@ -345,8 +345,22 @@ async def dashboard(request: Request):
     store = request.app.state.store
     accounts = await store.list_accounts()
     target_seats = await store.list_target_seats()
-    # 首屏 JSON 与 /api/dashboard-data 同源，前端组件拿到即可数据驱动渲染。
-    initial = await _build_dashboard_data(request)
+    # 首屏骨架立返: 不在此处等超星占用查询 (冷启动登录可达数十秒),
+    # 覆盖数据由前端 boot 动画期间经 /api/dashboard-data 异步拉取补齐。
+    today = today_cst()
+    tomorrow = today + timedelta(days=1)
+
+    def _empty_shell(day: date) -> dict:
+        return {"view_day": day.isoformat(), "rows": [], "gap_count": 0, "occ_err": None}
+
+    initial = {
+        "today": _empty_shell(today),
+        "tomorrow": _empty_shell(tomorrow),
+        "now_hhmm": now_cst().strftime("%H:%M"),
+        "recent_logs": [],
+        "target_seat_count": len(target_seats),
+        "account_count": len(accounts),
+    }
     return _templates(request).TemplateResponse(
         request, "dashboard.html",
         {

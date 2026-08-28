@@ -346,11 +346,47 @@
       busy: false,
       timer: null,
       card: null,
+      boot: { active: true, display: 0, target: 8, stage: '正在唤醒守护系统…' },
 
       init() {
         this.timer = setInterval(() => this.tick(), 1000);
+        this._initBoot();
+        this.refresh();
       },
-      destroy() { clearInterval(this.timer); },
+      destroy() {
+        clearInterval(this.timer);
+        clearInterval(this._bootTimer);
+        clearTimeout(this._bootGuard);
+      },
+
+      /* 首屏加载动画: 缓动数字向 target 爬升, 首次数据到达后放行到 100% 揭幕 */
+      _initBoot() {
+        this._bootTimer = setInterval(() => {
+          const b = this.boot;
+          if (b.display < b.target) {
+            b.display = Math.min(b.target, b.display + (b.target - b.display) * 0.07 + 0.25);
+            if (b.display >= 99.6 && b.target >= 100) this._finishBoot();
+          }
+        }, 60);
+        setTimeout(() => {
+          if (this.boot.target < 88) {
+            this.boot.target = 88;
+            this.boot.stage = '正在拉取今日与次日占用数据…';
+          }
+        }, 200);
+        this._bootGuard = setTimeout(() => {
+          if (this.boot.target < 100) {
+            this.boot.target = 100;
+            this.boot.stage = '网络较慢，数据稍后自动补齐';
+          }
+        }, 15000);
+      },
+      _finishBoot() {
+        clearInterval(this._bootTimer);
+        this.boot.display = 100;
+        this.boot.stage = '就绪';
+        setTimeout(() => { this.boot.active = false; }, 320);
+      },
       tick() {
         if (this.busy) return;
         this.countdown = Math.max(0, this.countdown - 1);
@@ -399,11 +435,13 @@
           this.tomorrow = j.tomorrow || this.tomorrow;
           this.recentLogs = j.recent_logs || [];
           this.now = j.now_hhmm || this.now;
+          if (this.boot.target < 100) this.boot.stage = '核对护城河覆盖…';
         } catch (e) {
           console.warn('dashboard refresh failed:', e);
         } finally {
           this.countdown = 30;
           this.busy = false;
+          if (this.boot.target < 100) this.boot.target = 100;
         }
       },
     };
