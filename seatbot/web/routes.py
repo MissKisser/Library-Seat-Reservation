@@ -342,56 +342,17 @@ async def _annotate_rows(rows, store, day: date) -> list[dict]:
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    cfg = request.app.state.cfg
     store = request.app.state.store
     accounts = await store.list_accounts()
     target_seats = await store.list_target_seats()
-
-    today = today_cst()
-    tomorrow = today + timedelta(days=1)
-    bundle_today = await _collect_day_bundle(
-        request, store, cfg, accounts, target_seats, today,
-    )
-    bundle_tomorrow = await _collect_day_bundle(
-        request, store, cfg, accounts, target_seats, tomorrow,
-    )
-
-    recent_logs = await store.list_logs(limit=10)
-    # rows_json 供 dashboard.html 内嵌到 Alpine x-data, time 对象需预处理。
-    # 字段名与 /api/dashboard-data 保持一致,让前端组件拿到首屏就能 applyToDom。
-    bundle_json = json.dumps(
-        {
-            "today": {
-                "view_day": today.isoformat(),
-                "rows": _rows_to_json(bundle_today["rows"]),
-                "gap_count": bundle_today["gap_count"],
-                "occ_err": bundle_today["occ_err"],
-            },
-            "tomorrow": {
-                "view_day": tomorrow.isoformat(),
-                "rows": _rows_to_json(bundle_tomorrow["rows"]),
-                "gap_count": bundle_tomorrow["gap_count"],
-                "occ_err": bundle_tomorrow["occ_err"],
-            },
-        },
-        ensure_ascii=False,
-    )
+    # 首屏 JSON 与 /api/dashboard-data 同源，前端组件拿到即可数据驱动渲染。
+    initial = await _build_dashboard_data(request)
     return _templates(request).TemplateResponse(
         request, "dashboard.html",
         {
             "request": request,
-            "cfg": cfg,
-            "rows_today": bundle_today["rows"],
-            "rows_tomorrow": bundle_tomorrow["rows"],
-            "gap_count_today": bundle_today["gap_count"],
-            "gap_count_tomorrow": bundle_tomorrow["gap_count"],
-            "occ_err": bundle_today["occ_err"],
-            "occ_err_tomorrow": bundle_tomorrow["occ_err"],
-            "bundle_json": bundle_json,
-            "today": today.isoformat(),
-            "tomorrow": tomorrow.isoformat(),
-            "now_hhmm": now_cst().strftime("%H:%M"),
-            "recent_logs": recent_logs,
+            "cfg": request.app.state.cfg,
+            "initial": initial,
             "active_page": "dashboard",
             "accounts": accounts,
             "target_seats": target_seats,
