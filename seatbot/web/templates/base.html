@@ -9,10 +9,10 @@
   {% block head_extra %}{% endblock %}
   {# app.js 必须先于 alpinejs 加载 (两者都用 defer,按文档序执行)。
      Alpine 3 CDN bundle 在脚本执行时立即扫描 x-data 指令;
-     若 alpinejs 先执行,会找到 x-data="seatMap(11692)" 这类表达式,
-     但此时 window.seatMap 还没注册 (app.js 还没跑),表达式求值失败,
+     若 alpinejs 先执行,会找到 x-data="coverageGrid({...})" 这类表达式,
+     但此时 window.coverageGrid 还没注册 (app.js 还没跑),表达式求值失败,
      控制台会刷一堆 "X is not defined" 警告,且组件 data stack 为空,
-     导致 <template x-for> 永远不渲染 (e.g. 座位图加载不出来)。 #}
+     导致 <template x-for> 永远不渲染 (e.g. 覆盖图加载不出来)。 #}
   <script defer src="/static/app.js"></script>
   <script defer src="/static/alpinejs.min.js"></script>
 </head>

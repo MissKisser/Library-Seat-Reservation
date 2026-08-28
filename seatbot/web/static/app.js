@@ -514,6 +514,11 @@
     };
   };
 
+  /* ===== 日志页：前端级别即时过滤 ===== */
+  window.logsFilter = function (initialLevel = '') {
+    return { level: initialLevel };
+  };
+
   /* ===== 移动端侧栏开关 ===== */
   window.mobileNav = function () {
     return { open: false, toggle() { this.open = !this.open; } };

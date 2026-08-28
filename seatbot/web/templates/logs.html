@@ -3,34 +3,18 @@
 {% block title %}日志{% endblock %}
 
 {% block content %}
-<div class="flex flex-col gap-5">
+<div class="flex flex-col gap-5" x-data="logsFilter('{{ filter_level or '' }}')">
   <div class="page-header">
-    <div><h1 class="page-title">日志</h1><p class="page-sub">调度器与预约执行记录</p></div>
+    <div><h1 class="page-title">日志</h1><p class="page-sub">调度器与预约执行记录（级别过滤为前端即时过滤）</p></div>
+    <div class="flex items-center gap-2">
+      {% set _levels = [('', '全部'), ('INFO', 'INFO'), ('WARN', 'WARN'), ('ERROR', 'ERROR')] %}
+      {% for lv, label in _levels %}
+      <button type="button" class="chip"
+              :class="level === '{{ lv }}' ? 'chip-accent' : 'chip-muted'"
+              @click="level = '{{ lv }}'">{{ label }}</button>
+      {% endfor %}
+    </div>
   </div>
-
-  {# 筛选 #}
-  <div class="card"><div class="card-body">
-    <form method="get" class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
-      <div class="form-field">
-        <label for="account_id">账号</label>
-        <select id="account_id" name="account_id" class="select">
-          <option value="">全部</option>
-          {% for a in accounts %}<option value="{{ a.id }}" {% if filter_account == a.id %}selected{% endif %}>{{ a.id }}</option>{% endfor %}
-        </select>
-      </div>
-      <div class="form-field">
-        <label for="level">级别</label>
-        <select id="level" name="level" class="select">
-          <option value="">全部</option>
-          {% for lv in ['INFO','WARN','ERROR'] %}<option value="{{ lv }}" {% if filter_level == lv %}selected{% endif %}>{{ lv }}</option>{% endfor %}
-        </select>
-      </div>
-      <div class="flex gap-2">
-        <button class="btn btn-primary btn-sm" type="submit">筛选</button>
-        <a class="btn btn-ghost btn-sm" href="/logs">重置</a>
-      </div>
-    </form>
-  </div></div>
 
   {# 列表 #}
   <div class="card">
@@ -39,7 +23,7 @@
         <thead><tr><th>时间</th><th>级别</th><th>账号</th><th>消息</th></tr></thead>
         <tbody>
           {% for log in logs %}
-          <tr>
+          <tr data-level="{{ log.level }}" x-show="level === '' || level === '{{ log.level }}'">
             <td class="num font-mono text-xs whitespace-nowrap">{{ log.ts | epoch_ms }}</td>
             <td>
               <span class="badge badge-{% if log.level == 'ERROR' %}danger{% elif log.level == 'WARN' %}warn{% else %}info{% endif %}">
