@@ -391,6 +391,43 @@
       },
     };
   };
+  /* ===== 任务看板: 按状态分列 ===== */
+  const BOARD_COLUMNS = [
+    { key: 'todo', title: '待执行', statuses: ['pending', 'ready'], tone: 'chip-muted' },
+    { key: 'running', title: '进行中', statuses: ['submitting', 'active', 'signed', 'leaving'], tone: 'chip-progress' },
+    { key: 'failed', title: '失败', statuses: ['failed'], tone: 'chip-danger' },
+    { key: 'done', title: '已完成', statuses: ['complete'], tone: 'chip-success' },
+  ];
+
+  window.tasksBoard = function (initial) {
+    return {
+      day: initial.day,
+      tasks: initial.tasks || [],
+      columns: BOARD_COLUMNS,
+      loading: false,
+
+      ofCol(col) {
+        return this.tasks
+          .filter(t => col.statuses.includes(t.status))
+          .sort((a, b) => a.start.localeCompare(b.start) || a.seat_num.localeCompare(b.seat_num));
+      },
+      count(col) { return this.ofCol(col).length; },
+      toneOf(t) {
+        const col = this.columns.find(c => c.statuses.includes(t.status));
+        return col ? col.tone : 'chip-muted';
+      },
+      async refresh() {
+        this.loading = true;
+        try {
+          const r = await fetch('/api/tasks?day=' + this.day, { cache: 'no-store' });
+          if (r.ok) { const j = await r.json(); this.tasks = j.tasks || []; }
+        } catch (e) {
+          console.warn('tasks refresh failed:', e);
+        } finally { this.loading = false; }
+      },
+    };
+  };
+
   /* ===== 移动端侧栏开关 ===== */
   window.mobileNav = function () {
     return { open: false, toggle() { this.open = !this.open; } };

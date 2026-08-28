@@ -1,80 +1,55 @@
 {% extends "base.html" %}
-{% from "_macros/badge.html" import badge %}
-{% from "_macros/empty.html" import empty %}
 {% block title %}任务{% endblock %}
 
 {% block content %}
-<div class="flex flex-col gap-5">
+<div class="flex flex-col gap-5" x-data='tasksBoard({{ tasks_initial|tojson }})'>
   <div class="page-header">
-    <div><h1 class="page-title">任务</h1><p class="page-sub">守护账号生成的预约任务</p></div>
-  </div>
-
-  {# 筛选 #}
-  <div class="card"><div class="card-body">
-    <form method="get" class="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
-      <div class="form-field">
-        <label for="account_id">账号</label>
-        <select id="account_id" name="account_id" class="select">
-          <option value="">全部</option>
-          {% for a in accounts %}<option value="{{ a.id }}" {% if filter_account == a.id %}selected{% endif %}>{{ a.id }}</option>{% endfor %}
-        </select>
-      </div>
-      <div class="form-field">
-        <label for="seat_num">座位</label>
-        <select id="seat_num" name="seat_num" class="select">
-          <option value="">全部</option>
-          {% for s in target_seats %}<option value="{{ s.seat_num }}" {% if filter_seat == s.seat_num %}selected{% endif %}>{{ s.seat_num }}</option>{% endfor %}
-        </select>
-      </div>
-      <div class="form-field">
-        <label for="day">日期</label>
-        <input id="day" name="day" type="text" pattern="\d{4}-\d{2}-\d{2}" value="{{ filter_day or '' }}" placeholder="YYYY-MM-DD" class="input" />
-      </div>
-      <div class="flex gap-2">
-        <button class="btn btn-primary btn-sm" type="submit">筛选</button>
-        <a class="btn btn-ghost btn-sm" href="/tasks">重置</a>
-      </div>
-    </form>
-  </div></div>
-
-  {# 列表 #}
-  <div class="card">
-    <div class="overflow-x-auto">
-      <table class="table">
-        <thead><tr><th>ID</th><th>账号</th><th>座位</th><th>日期</th><th>时段</th><th>状态</th><th class="num">reserve_id</th><th>错误</th><th class="actions">操作</th></tr></thead>
-        <tbody>
-          {% for t in tasks %}
-          <tr>
-            <td class="num">{{ t.id }}</td>
-            <td><code>{{ t.account_id }}</code></td>
-            <td class="font-mono">{{ t.seat_num }}</td>
-            <td class="num">{{ t.day }}</td>
-            <td class="num font-mono text-xs">{{ t.start_time }}-{{ t.end_time }}</td>
-            <td>{{ badge(t.status.value) }}</td>
-            <td class="num font-mono text-xs">{{ t.reserve_id or '—' }}</td>
-            <td class="text-xs text-danger">{{ t.last_error or '' }}</td>
-            <td class="actions">
-              {% if t.reserve_id and t.status.value == 'active' %}
-              <button class="btn btn-ghost btn-sm" @click="confirmAction({title:'立即签到？',desc:'task {{ t.id }}',confirmText:'签到'}).then(ok=>{if(ok)post('/tasks/{{ t.id }}/sign')})">签到</button>
-              {% endif %}
-              {# 手动签退按钮已移除: 原实现误调 /leave(暂离) 而非 signback(签退),
-                 自动签退由 scheduler 在时段结束 +60s 执行 (2026-08-26 审查 #16) #}
-              {# 仅进行中的预约可取消; complete 的取消必然失败 #}
-              {% if t.reserve_id and t.status.value in ('active', 'signed') %}
-              <button class="btn btn-ghost btn-sm text-danger" @click="confirmAction({title:'取消任务？',desc:'task {{ t.id }}',confirmText:'取消',danger:true}).then(ok=>{if(ok)post('/tasks/{{ t.id }}/cancel')})">取消</button>
-              {% endif %}
-            </td>
-          </tr>
-          {% else %}
-          <tr><td colspan="9">{{ empty(title='暂无任务', hint='运行 python -m seatbot run 生成任务') }}</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <div>
+      <h1 class="page-title">任务看板</h1>
+      <p class="page-sub">按状态分列 · 失败卡可直接重试</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <a class="btn btn-secondary btn-sm" href="/tasks?day={{ prev_day }}">← 前一天</a>
+      <span class="chip chip-accent font-mono" x-text="day"></span>
+      <a class="btn btn-secondary btn-sm" href="/tasks?day={{ next_day }}">后一天 →</a>
+      <button class="btn btn-secondary btn-sm" type="button" @click="refresh()" :disabled="loading"
+              x-text="loading ? '刷新中…' : '刷新'"></button>
     </div>
   </div>
-</div>
 
-<script>
-function post(url){const f=document.createElement('form');f.method='post';f.action=url;document.body.appendChild(f);f.submit();}
-</script>
+  <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-start">
+    <template x-for="col in columns" :key="col.key">
+      <div class="flex flex-col gap-2">
+        <div class="flex items-center px-1">
+          <span class="chip" :class="col.tone" x-text="col.title + ' · ' + count(col)"></span>
+        </div>
+        <template x-for="t in ofCol(col)" :key="t.id">
+          <div class="card p-3" :class="t.status === 'failed' ? 'border-danger/40' : ''">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-xs font-bold font-mono" x-text="t.seat_num + ' · ' + t.start + '–' + t.end"></span>
+              <span class="chip" :class="toneOf(t)" x-text="t.status"></span>
+            </div>
+            <div class="text-xs text-ink-secondary" x-text="'账号 ' + t.account_id"></div>
+            <template x-if="t.status === 'failed'">
+              <div>
+                <div class="text-xs text-danger mt-1 break-all" x-text="t.last_error || '未知原因'"></div>
+                <form method="post" action="/tasks/quick-reserve" class="mt-2">
+                  <input type="hidden" name="account_id" :value="t.account_id">
+                  <input type="hidden" name="seat_num" :value="t.seat_num">
+                  <input type="hidden" name="start" :value="t.start">
+                  <input type="hidden" name="end" :value="t.end">
+                  <button class="btn btn-danger btn-sm w-full justify-center" type="submit">重试</button>
+                </form>
+              </div>
+            </template>
+          </div>
+        </template>
+        <div x-show="count(col) === 0"
+             class="text-xs text-ink-muted text-center py-6 border border-dashed border-edge-subtle rounded-xl">
+          无
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
 {% endblock %}
