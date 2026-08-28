@@ -732,31 +732,24 @@ async def accounts_test_login(request: Request, acc_id: str):
 @router.get("/tasks", response_class=HTMLResponse)
 async def tasks_list(
     request: Request,
-    account_id: str | None = None,
     day: str | None = None,
-    seat_num: str | None = None,
 ):
     store = request.app.state.store
-    if day:
-        try:
-            d = date.fromisoformat(day)
-        except ValueError:
-            from urllib.parse import quote
-            return RedirectResponse(
-                f"/tasks?error={quote('日期格式无效，应为 YYYY-MM-DD')}", status_code=303)
-    else:
-        d = today_cst()
-    tasks = await store.list_tasks(
-        account_id=account_id, day=d, seat_num=seat_num,
-    )
-    accounts = await store.list_accounts()
-    target_seats = await store.list_target_seats()
+    try:
+        d = date.fromisoformat(day) if day else today_cst()
+    except ValueError:
+        raise HTTPException(400, "day must be YYYY-MM-DD")
+    tasks = await store.list_tasks(day=d)
+    payload = {
+        "day": d.isoformat(),
+        "tasks": [_serialize_task(t) for t in tasks],
+    }
+    ctx = await _ctx(request, active_page="tasks")
+    ctx["tasks_initial"] = json.dumps(payload, ensure_ascii=False)
+    ctx["prev_day"] = (d - timedelta(days=1)).isoformat()
+    ctx["next_day"] = (d + timedelta(days=1)).isoformat()
     return _templates(request).TemplateResponse(
-        request, "tasks_list.html",
-        await _ctx(request, tasks=tasks,
-                    filter_account=account_id, filter_day=d.isoformat(),
-                    filter_seat=seat_num,
-                    active_page="tasks"),
+        request, "tasks_list.html", ctx,
     )
 
 
