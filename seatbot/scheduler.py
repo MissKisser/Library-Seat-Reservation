@@ -83,7 +83,7 @@ class Scheduler:
             existing = await self.store.list_tasks(account_id=acc.id, day=day, seat_num=seat_num)
             if existing:
                 self._bootstrap_done_for.add(key)
-                await self._info(f"already has {len(existing)} tasks for {day} seat={seat_num}", acc.id)
+                await self._info(f"已存在 {len(existing)} 条任务，{day} 座位={seat_num}，跳过重复生成", acc.id)
                 continue
             prev = await self.store.get_bootstrap_day(acc.id)
             if prev == day:
@@ -102,7 +102,7 @@ class Scheduler:
             try:
                 tasks = planner.expand_for_day(day)
             except Exception as e:
-                await self._error(f"planner failed: {e}", acc.id)
+                await self._error(f"排程计划生成失败: {e}", acc.id)
                 return
             for t in tasks:
                 if t.seat_num != seat_num:
@@ -111,7 +111,7 @@ class Scheduler:
                 if any(_overlap(t.start_time, t.end_time, rs, re_)
                        for rs, re_ in reserved_slots):
                     await self._info(
-                        f"skip user_reserved seat={seat_num} {t.start_time.strftime('%H:%M')}-{t.end_time.strftime('%H:%M')}",
+                        f"跳过用户硬预约时段 座位={seat_num} {t.start_time.strftime('%H:%M')}-{t.end_time.strftime('%H:%M')}",
                         acc.id,
                     )
                     continue
@@ -122,13 +122,13 @@ class Scheduler:
                     acc.id, day, start_t, seat_num,
                 ):
                     await self._info(
-                        f"skip dup task seat={seat_num} {start_t.strftime('%H:%M')} (E4 guard)",
+                        f"跳过重复任务 座位={seat_num} {start_t.strftime('%H:%M')}（E4 防护）",
                         acc.id,
                     )
                     continue
                 await self.store.add_task(t)
             self._bootstrap_done_for.add(key)
-            await self._info(f"bootstrap for {day} seat={seat_num}", acc.id)
+            await self._info(f"已为 {day} 座位={seat_num} 生成任务", acc.id)
         # 更新 bootstrap_day 一次 (一个账号每天只一次)
         await self.store.set_bootstrap_day(acc.id, day)
 
@@ -213,7 +213,7 @@ class Scheduler:
         acc = await self.store.get_account(t.account_id)
         if not acc:
             return
-        await self._info(f"relay: leaving {t.chunk_key()}", acc.id)
+        await self._info(f"接力签退: {t.chunk_key()}", acc.id)
         await self.store.update_task_status(t.id, TaskStatus.LEAVING)
         # leave 当前段
         await self._run_leave(acc, t)
@@ -223,12 +223,12 @@ class Scheduler:
             statuses=("pending", "ready", "failed"),
         )
         if nxt is None:
-            await self._info("relay: no next task (不 submit,等 14:00 bootstrap)", acc.id)
+            await self._info("接力: 无下一段任务（不提交，等 14:00 批量预约）", acc.id)
             return
         await self._info(
-            f"relay: leave 完成,下一段 task={nxt.id} ({nxt.account_id} {nxt.seat_num} {nxt.day} "
-            f"{nxt.start_time.strftime('%H:%M')}-{nxt.end_time.strftime('%H:%M')}) 状态={nxt.status.value} "
-            f"reserve_id={nxt.reserve_id or 'None'} (不 submit,等 14:00 bootstrap)",
+            f"接力: 签退完成，下一段 任务={nxt.id}（{nxt.account_id} {nxt.seat_num} {nxt.day} "
+            f"{nxt.start_time.strftime('%H:%M')}-{nxt.end_time.strftime('%H:%M')}）状态={nxt.status.value} "
+            f"预约号={nxt.reserve_id or '无'}（不提交，等 14:00 批量预约）",
             acc.id,
         )
 
@@ -249,9 +249,9 @@ class Scheduler:
         if not client.cookies():
             try:
                 await client.login(acc.phone, acc.password)
-                await self._info(f"login ok ({len(client.cookies())} cookies)", acc.id)
+                await self._info(f"登录成功（{len(client.cookies())} cookies）", acc.id)
             except ChaoxingError as e:
-                await self._warn(f"login prefetch failed ({e}); trying in-browser login", acc.id)
+                await self._warn(f"预登录失败（{e}），改用页面内登录重试", acc.id)
 
         try:
             if t.day > today_cst():
@@ -260,13 +260,13 @@ class Scheduler:
                 # (14:00 实测 0/6) — 改由真实页面发提交, 网络层仅改写字段。
                 if not self.cfg.runtime.direct_submit_enabled:
                     await self._error(
-                        f"direct submit disabled by config; refuse to book "
-                        f"future day {t.day} via today-page (would mis-book today)",
+                        f"配置已禁用直连提交；拒绝用今日页面预约未"
+                        f"来日期 {t.day}（会错约到今天）",
                         acc.id,
                     )
                     await self.store.update_task_status(
                         t.id, TaskStatus.FAILED,
-                        last_error="direct submit disabled; future-day task refused",
+                        last_error="已禁用直连提交；未来日期任务已拒绝",
                     )
                     return
                 r = await client.submit_via_page_rewrite(
@@ -289,7 +289,7 @@ class Scheduler:
                     end_time=t.end_time.strftime("%H:%M"),
                 )
         except Exception as e:
-            await self._error(f"submit exception: {e}", acc.id)
+            await self._error(f"提交异常: {e}", acc.id)
             await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error=str(e))
             return
 
@@ -303,18 +303,18 @@ class Scheduler:
 
         if not r.get("success"):
             msg = r.get("msg") or "submit failed"
-            await self._error(f"submit rejected: {msg} (seat={t.seat_num})", acc.id)
+            await self._error(f"提交被拒: {msg}（座位={t.seat_num}）", acc.id)
             await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error=msg)
             return
 
         reserve_id = r.get("reserve_id")
         if not reserve_id:
-            await self._error("submit ok but no reserve_id", acc.id)
-            await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error="no reserve_id")
+            await self._error("提交成功但未返回预约号", acc.id)
+            await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error="未返回预约号")
             return
 
         await self.store.update_task_status(t.id, TaskStatus.ACTIVE, reserve_id=reserve_id, last_error="")
-        await self._info(f"reserved #{reserve_id} seat={t.seat_num} {t.chunk_key()}", acc.id)
+        await self._info(f"预约成功 #{reserve_id} 座位={t.seat_num} {t.chunk_key()}", acc.id)
 
         # ★ 事后核验 (仅跨天): 不信提交回执, 用服务端占用状态复核。
         # 核验不一致时保留 ACTIVE (预约号是服务端发的, 大概率真实存在,
@@ -328,17 +328,17 @@ class Scheduler:
                 covered = any(us < e and ue > s for us, ue in used)
                 if covered:
                     await self._info(
-                        f"occupancy verified: {t.day} seat={t.seat_num} {s}-{e} #{reserve_id}",
+                        f"占用核验一致: {t.day} 座位={t.seat_num} {s}-{e} 预约号#{reserve_id}",
                         acc.id,
                     )
                 else:
                     await self._error(
-                        f"occupancy check EMPTY for #{reserve_id} {t.day} seat={t.seat_num} "
-                        f"{s}-{e} (used={used}) — keep ACTIVE, 人工复核",
+                        f"占用核验为空: 预约号#{reserve_id} {t.day} 座位={t.seat_num} "
+                        f"{s}-{e}（服务端 used={used}）——保持进行中，请人工复核",
                         acc.id,
                     )
             except Exception as e:
-                await self._warn(f"occupancy check failed: {e}", acc.id)
+                await self._warn(f"占用核验异常: {e}", acc.id)
 
     async def _act_with_relogin(
         self, client: ChaoxingClient, acc: Account, fn, reserve_id: int, label: str,
@@ -352,7 +352,7 @@ class Scheduler:
         sr = await fn(reserve_id)
         msg = str(sr.get("msg") or "")
         if not sr.get("success") and "未登录" in msg:
-            await self._warn(f"{label}: session expired (未登录) → reset & relogin retry", acc.id)
+            await self._warn(f"{label}: 会话过期（未登录）→ 重置会话并重登重试", acc.id)
             client.reset_session()
             await client.login(acc.phone, acc.password)
             sr = await fn(reserve_id)
@@ -361,20 +361,20 @@ class Scheduler:
     async def _run_sign(self, acc: Account, t: Task) -> None:
         """签到 (幂等: 成功或签到窗口已过 → SIGNED, 终止每分钟重试)。"""
         if not t.reserve_id:
-            await self._warn(f"sign skipped: no reserve_id seat={t.seat_num} {t.chunk_key()}", acc.id)
+            await self._warn(f"跳过签到: 无预约号 座位={t.seat_num} {t.chunk_key()}", acc.id)
             return
         client = self._client_for(acc)
         # ★ lazy login — jar 为空才登录 (陈旧 cookie 由 _act_with_relogin 自愈)
         if not client.cookies():
             try:
                 await client.login(acc.phone, acc.password)
-                await self._info(f"sign login ok ({len(client.cookies())} cookies)", acc.id)
+                await self._info(f"签到登录成功（{len(client.cookies())} cookies）", acc.id)
             except ChaoxingError as e:
-                await self._warn(f"sign login prefetch failed ({e})", acc.id)
+                await self._warn(f"签到预登录失败（{e}）", acc.id)
         try:
             sr = await self._act_with_relogin(client, acc, client.sign, t.reserve_id, "sign")
         except Exception as e:
-            await self._error(f"sign error: {e}", acc.id)
+            await self._error(f"签到异常: {e}", acc.id)
             return
         await self.store.log_action(
             acc.id, "sign", str(t.reserve_id), str(sr)[:500],
@@ -382,16 +382,16 @@ class Scheduler:
         )
         if sr.get("success"):
             await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
-            await self._info(f"signed #{t.reserve_id} seat={t.seat_num} → SIGNED", acc.id)
+            await self._info(f"签到成功 预约号#{t.reserve_id} 座位={t.seat_num}", acc.id)
             return
         msg = str(sr.get("msg") or "")
         if "不在签到时间" in msg:
             # 已签过, 或签到窗口 (start+signDuration≈20min) 已过 — 预约要么已生效
             # 要么已失效, 继续重试只会每分钟打一次无效 API。置 SIGNED 终止。
             await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
-            await self._warn(f"sign window closed ({msg}); mark SIGNED, stop retrying", acc.id)
+            await self._warn(f"签到窗口已关闭（{msg}）；标记已签到，停止重试", acc.id)
             return
-        await self._error(f"sign failed: {msg} (keep ACTIVE, retry next tick)", acc.id)
+        await self._error(f"签到失败: {msg}（保持进行中，下个周期重试）", acc.id)
 
     async def _run_leave(self, acc: Account, t: Task) -> None:
         """签退 (不 submit/sign)。失败保留在途状态, 由下次 tick 重试。
@@ -400,10 +400,10 @@ class Scheduler:
         真正的签退端点是 /signback (退座)。优先 signback, 失败回退 leave。
         """
         if not t.reserve_id:
-            await self._warn(f"leave skipped: no reserve_id seat={t.seat_num} {t.chunk_key()}", acc.id)
+            await self._warn(f"跳过签退: 无预约号 座位={t.seat_num} {t.chunk_key()}", acc.id)
             # ★ 从未预约成功的任务不应伪装 COMPLETE (虚假完成态会误导审计)
             await self.store.update_task_status(
-                t.id, TaskStatus.FAILED, last_error="leave: no reserve_id",
+                t.id, TaskStatus.FAILED, last_error="签退: 无预约号",
             )
             return
         client = self._client_for(acc)
@@ -411,20 +411,20 @@ class Scheduler:
         if not client.cookies():
             try:
                 await client.login(acc.phone, acc.password)
-                await self._info(f"leave login ok ({len(client.cookies())} cookies)", acc.id)
+                await self._info(f"签退登录成功（{len(client.cookies())} cookies）", acc.id)
             except ChaoxingError as e:
-                await self._warn(f"leave login prefetch failed ({e})", acc.id)
+                await self._warn(f"签退预登录失败（{e}）", acc.id)
         try:
             sr = await self._act_with_relogin(client, acc, client.signback, t.reserve_id, "signback")
         except Exception as e:
-            await self._error(f"signback error: {e}", acc.id)
+            await self._error(f"签退(signback)异常: {e}", acc.id)
             sr = {}
         if not sr.get("success"):
-            await self._warn(f"signback not ok ({sr.get('msg')}); fallback leave", acc.id)
+            await self._warn(f"签退未成功（{sr.get('msg')}），回退暂离通道", acc.id)
             try:
                 sr = await self._act_with_relogin(client, acc, client.leave, t.reserve_id, "leave")
             except Exception as e:
-                await self._error(f"leave error: {e}", acc.id)
+                await self._error(f"暂离异常: {e}", acc.id)
                 await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
                 return
         await self.store.log_action(
@@ -441,10 +441,10 @@ class Scheduler:
             k in msg for k in ("已签退", "已结束", "已取消", "不存在", "剩余时长小于暂离时长")
         )
         if idempotent:
-            await self._info(f"leave idempotent end ({msg}) → COMPLETE", acc.id)
+            await self._info(f"签退幂等收尾（{msg}）→ 已完成", acc.id)
             await self.store.update_task_status(t.id, TaskStatus.COMPLETE, last_error="")
             return
-        await self._error(f"leave failed: {msg} (keep in-flight, retry next tick)", acc.id)
+        await self._error(f"签退失败: {msg}（保持进行中，下个周期重试）", acc.id)
         # ★ leave 失败时 **不要** 标 COMPLETE — 留给下次 tick 重试
         await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
 
@@ -560,22 +560,22 @@ class Scheduler:
                     else:
                         failed += 1
                         await self._warn(
-                            f"afternoon_bootstrap: submit 不成功, task={t.id} "
-                            f"acc={acc.id} seat={t.seat_num} {t.day} {t.start_time}-{t.end_time}",
+                            f"下午批量: 提交未成功 任务={t.id} "
+                            f"账号={acc.id} 座位={t.seat_num} {t.day} {t.start_time}-{t.end_time}",
                             acc.id,
                         )
                 except Exception as e:
                     failed += 1
                     await self._error(
-                        f"afternoon_bootstrap: _run_submit 抛异常 {type(e).__name__}: {e} "
-                        f"task={t.id} acc={acc.id} seat={t.seat_num} {t.day} {t.start_time}-{t.end_time}",
+                        f"下午批量: 提交抛出异常 {type(e).__name__}: {e} "
+                        f"任务={t.id} 账号={acc.id} 座位={t.seat_num} {t.day} {t.start_time}-{t.end_time}",
                         acc.id,
                     )
                     # 任务保持 PENDING, 让明天的 _afternoon_bootstrap 重试
                 # 单账号内 task 间错开 2 秒,避免连续 submit 触发风控
                 await asyncio.sleep(2)
         await self._info(
-            f"afternoon_bootstrap 完成: submitted={submitted}, failed={failed}, day={tomorrow}",
+            f"下午批量预约完成: 成功={submitted} 失败={failed} 日期={tomorrow}",
             "scheduler",
         )
     async def shutdown(self) -> None:
