@@ -865,9 +865,10 @@ async def task_leave(request: Request, task_id: int):
 # =========================================================================
 @router.get("/seats", response_class=HTMLResponse)
 async def seats_view(request: Request):
+    ctx = await _ctx(request, active_page="seats")
+    ctx["seats_layout"] = request.app.state.cfg.library.seats_layout
     return _templates(request).TemplateResponse(
-        request, "seats.html",
-        await _ctx(request, active_page="seats"),
+        request, "seats.html", ctx,
     )
 
 

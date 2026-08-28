@@ -4,17 +4,18 @@
 {% block content %}
 <div class="flex flex-col gap-5">
   <div class="page-header">
-    <div><h1 class="page-title">座位图</h1><p class="page-sub">目标座位 ±2 的实时占用（30s 刷新）</p></div>
+    <div><h1 class="page-title">座位图</h1><p class="page-sub">目标座位 ±2 的实时占用（30s 刷新，只读）</p></div>
   </div>
 
-  <div class="card" x-data="seatMap({{ cfg.library.room_id }})">
+  <div class="card" x-data="seatFloor({{ cfg.library.room_id }}, {{ seats_layout|default(none)|tojson }})">
     <div class="card-body">
       {# 图例 #}
       <div class="flex flex-wrap gap-4 mb-4 text-xs text-ink-secondary">
         <span class="flex items-center gap-1.5"><span class="w-3.5 h-3.5 rounded-sm bg-app-muted border border-edge-subtle"></span>空闲</span>
         <span class="flex items-center gap-1.5"><span class="w-3.5 h-3.5 rounded-sm bg-danger/70"></span>已占用</span>
-        <span class="flex items-center gap-1.5"><span class="w-3.5 h-3.5 rounded-sm bg-warn border-2 border-warn"></span>目标座位</span>
-        <span class="flex items-center gap-1.5"><span class="w-3.5 h-3.5 rounded-sm bg-danger/40"></span>获取失败</span>
+        <span class="flex items-center gap-1.5"><span class="w-3.5 h-3.5 rounded-sm bg-target-soft border-2 border-target"></span>目标座位</span>
+        <span class="flex items-center gap-1.5"><span class="w-3.5 h-3.5 rounded-sm bg-danger-soft border border-danger/30"></span>获取失败</span>
+        <span class="flex items-center gap-1.5"><span class="w-3.5 h-3.5 rounded-sm border border-dashed border-edge-strong"></span>过道</span>
       </div>
 
       {# 错误 banner #}
@@ -27,23 +28,30 @@
         <div class="text-sm text-ink-muted py-8 text-center">加载中…</div>
       </template>
 
-      {# 座位分组 #}
+      {# 分目标座位的平面渲染 #}
       <div class="flex flex-col gap-6">
         <template x-for="sec in sections" :key="sec.seat">
           <div>
-            <div class="text-sm font-medium text-ink mb-2">目标座位 <span class="font-mono text-accent" x-text="sec.seat"></span> 附近</div>
-            <div class="grid grid-cols-5 gap-1.5 max-w-md">
-              <template x-for="s in sec.seats" :key="s.seat_num">
-                <div class="h-12 rounded flex flex-col items-center justify-center text-xs border"
-                     :class="s.error
-                       ? 'bg-danger/40 text-danger'
-                       : (s.is_target
-                           ? 'bg-warn border-2 border-warn text-white font-bold'
-                           : (s.occupied === true
-                               ? 'bg-danger/70 text-white'
-                               : 'bg-app-muted border-edge-subtle text-ink-secondary'))" :title="s.occupied === true ? ('被 ' + (s.occupier_uid||'?') + ' 占用') : (s.error ? s.error : '空闲')">
-                  <span class="font-mono" x-text="s.seat_num"></span>
-                  <span x-show="s.is_target" class="text-[10px]">★</span>
+            <div class="text-sm font-medium text-ink mb-2">
+              目标座位 <span class="font-mono text-target" x-text="sec.seat"></span> 附近
+            </div>
+            <div class="bg-app-muted/30 border border-edge-subtle rounded-xl px-4 py-5 inline-block min-w-full">
+              <template x-for="(row, ri) in sec.rows" :key="ri">
+                <div>
+                  <div class="flex gap-2 justify-start my-1.5">
+                    <template x-for="(s, si) in row" :key="si">
+                      <template x-if="s === null">
+                        <div class="w-14 h-12 flex items-center justify-center text-[9px] text-ink-muted/60 tracking-widest border border-dashed border-edge-strong rounded-lg">过道</div>
+                      </template>
+                      <template x-if="s !== null">
+                        <div class="w-14 h-12 rounded-lg border flex flex-col items-center justify-center"
+                             :class="seatClasses(s)" :title="seatTitle(s)">
+                          <span class="font-mono text-[11px]" x-text="s.seat_num"></span>
+                          <span class="text-[10px]" x-show="s.is_target">★</span>
+                        </div>
+                      </template>
+                    </template>
+                  </div>
                 </div>
               </template>
             </div>
