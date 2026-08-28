@@ -3,7 +3,7 @@
 > 让某个**目标座位** (`target_seat_num`) 在 08:00-22:00 全天显示"已有人预约", 阻止他人抢走。
 > 多守护账号 + 错时段重叠覆盖 = 全天护城河。
 
-详见 [设计文档](docs/superpowers/specs/2026-07-08-library-seat-reservation-design.md) 与 [实施计划](docs/superpowers/plans/2026-07-08-library-seat-reservation.md)。
+设计与实施细节见本地 `docs/` 目录（依文档规范不入库，总览见 [docs/README.md](docs/README.md)）。
 
 ## 快速开始
 
