@@ -16,11 +16,6 @@ library:
   open_time: "08:00"
   close_time: "22:00"
   max_reserve_hours: 2.0                  # 超星硬约束: 单次预约 ≤ 2h
-  # 可选：座位平面布局（座位图页按真实排布渲染；null=过道）。不配置则按编号单行兜底。
-  # seats_layout:
-  #   - ["101", "102", "103", "104", "105", "106", "107"]
-  #   - [null, null, null, null, null, null, null]
-  #   - ["108", "109", "110"]
 
 # 目标座位 — Web 面板 (/targets) 是主入口, 这里只是 seed
 target_seats:

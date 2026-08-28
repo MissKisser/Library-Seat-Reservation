@@ -67,7 +67,6 @@ class _StubCfg:
         open_time = "08:00"
         close_time = "22:00"
         max_reserve_hours = 2.0
-        seats_layout = None
 
 
 class FakeClient:
