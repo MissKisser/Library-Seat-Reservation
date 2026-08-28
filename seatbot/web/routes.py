@@ -846,7 +846,7 @@ async def task_cancel(request: Request, task_id: int):
     if r.get("success"):
         await store.update_task_status(task_id, TaskStatus.COMPLETE)
     else:
-        await store.update_task_status(task_id, t.status, last_error=f"cancel: {r.get('msg')}")
+        await store.update_task_status(task_id, t.status, last_error=f"取消失败: {r.get('msg')}")
     return RedirectResponse("/tasks?cancelled=1", status_code=303)
 
 
@@ -869,7 +869,7 @@ async def task_leave(request: Request, task_id: int):
     if r.get("success"):
         await store.update_task_status(task_id, TaskStatus.COMPLETE)
     else:
-        await store.update_task_status(task_id, t.status, last_error=f"signback: {r.get('msg')}")
+        await store.update_task_status(task_id, t.status, last_error=f"签退失败: {r.get('msg')}")
     return RedirectResponse("/?left=1", status_code=303)
 
 
