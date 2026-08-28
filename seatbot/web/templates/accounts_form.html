@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros/form.html" import text_field, select_field, textarea_field, number_field, checkbox_grid_field, button_group %}
+{% from "_macros/form.html" import text_field %}
 {% block title %}{% if account %}编辑账号 · {{ account.id }}{% else %}新建守护账号{% endif %}{% endblock %}
 
 {% block content %}
@@ -33,8 +33,17 @@
 
   <div class="card">
     <div class="card-body">
-      <form method="post" action="{% if account %}/accounts/{{ account.id }}{% else %}/accounts{% endif %}" class="flex flex-col gap-4"
-            x-data="slotsToggle({% if account and account.slots != 'full' %}'custom'{% else %}'full'{% endif %})">
+      <form method="post" action="{% if account %}/accounts/{{ account.id }}{% else %}/accounts{% endif %}"
+            class="flex flex-col gap-4"
+            x-data="matrixEditor({
+              seats: {{ matrix_seats|default([])|tojson }},
+              initial: {{ matrix_initial|default({})|tojson }},
+              others: {{ matrix_others|default([])|tojson }},
+              open: {{ matrix_open|default('08:00')|tojson }},
+              close: {{ matrix_close|default('22:00')|tojson }},
+              maxHours: {{ matrix_max_hours|default(2) }}
+            })"
+            @submit="if (!sync()) { $event.preventDefault(); showToast({type:'error', title:'请先修正校验错误'}); }">
         {% if not account %}
           {{ text_field('id', '账号 ID', '', placeholder='如 xiongjt', required=True, pattern='[A-Za-z0-9_-]+', hint='保存后不可修改，仅字母/数字/下划线/连字符') }}
         {% endif %}
@@ -45,30 +54,65 @@
         {{ text_field('password', '密码', '', type='password', required=True) }}
         {% endif %}
 
-        {# 时段模式：Alpine 控制 custom textarea 显隐 #}
-        <div class="form-field">
-          <label for="slots">时段模式</label>
-          <select id="slots" name="slots" class="select" x-model="mode">
-            <option value="full" {% if account and account.slots == 'full' %}selected{% endif %}>全天 08:00-22:00</option>
-            <option value="custom" {% if account and account.slots != 'full' %}selected{% endif %}>自定义</option>
-          </select>
-        </div>
-        <div x-show="isCustom()" x-cloak style="display:none">
-          {{ textarea_field('slots_custom', '自定义时段（JSON 数组）',
-              (account.slots | tojson) if account and account.slots != 'full' else '["09:00-11:00", "13:00-15:00"]',
-              hint='格式：["HH:MM-HH:MM", ...]') }}
-        </div>
+        {# 后端既有字段：由矩阵编辑器在提交时写入 #}
+        <input type="hidden" name="slots" id="f-slots" value="{% if account and account.slots != 'full' %}custom{% else %}full{% endif %}">
+        <input type="hidden" name="slots_custom" id="f-slots-custom" value="">
+        <span id="f-bound-seats">
+          {% for s in (account.bound_seats if account else []) %}
+          <input type="hidden" name="bound_seats" value="{{ s }}">
+          {% endfor %}
+        </span>
+        <input type="hidden" name="seat_slots" id="f-seat-slots"
+               value="{{ (account.seat_slots | tojson) if account and account.seat_slots else '{}' }}">
 
-        {# 绑定座位 checkbox-grid #}
-        {% set _opts = [] %}
-        {% for s in target_seats %}{% set _ = _opts.append([s.seat_num, s.seat_num ~ (' · ' ~ s.label if s.label else '')]) %}{% endfor %}
-        {{ checkbox_grid_field('bound_seats', '绑定座位（不勾选 = 通用 wildcard，覆盖所有目标座位）',
-            _opts, checked_keys=(account.bound_seats if account else [])) }}
-
-        {# per-seat slots 精确矩阵 — planner 优先级最高, 会覆盖上方时段+绑定 #}
-        {{ textarea_field('seat_slots', 'seat_slots（按座位精确矩阵，优先于上方时段）',
-            (account.seat_slots | tojson) if account and account.seat_slots else '{}',
-            hint='JSON 对象，如 {"104": ["09:00-11:00"], "105": ["15:00-17:00"]}；{} = 不使用；单段 ≤ 单段上限') }}
+        {# 矩阵编辑器 #}
+        <div class="border border-edge-subtle rounded-xl overflow-hidden">
+          <div class="flex items-center justify-between px-4 pt-3.5">
+            <span class="text-[13px] font-bold text-ink">时段分配（每个绑定座位一行）</span>
+            <span class="chip" :class="hasErrors ? 'chip-danger' : 'chip-success'"
+                  x-text="hasErrors ? '存在校验错误' : '校验通过'"></span>
+          </div>
+          <div class="flex flex-col gap-2 p-4">
+            <template x-for="row in rows" :key="row.seat">
+              <div class="border border-edge-subtle rounded-xl p-3 bg-app-muted/40">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-mono text-sm font-bold w-10" x-text="row.seat"></span>
+                  <template x-for="(slot, i) in row.slots" :key="i">
+                    <span class="chip chip-accent">
+                      <select x-model="slot.s" class="bg-transparent text-[11px] font-semibold outline-none">
+                        <template x-for="t in ticks" :key="'s' + i + t">
+                          <option :value="t" x-text="t" :selected="t === slot.s"></option>
+                        </template>
+                      </select>
+                      –
+                      <select x-model="slot.e" class="bg-transparent text-[11px] font-semibold outline-none">
+                        <template x-for="t in ticks" :key="'e' + i + t">
+                          <option :value="t" x-text="t" :selected="t === slot.e"></option>
+                        </template>
+                      </select>
+                      <button type="button" class="ml-1 text-danger font-bold" @click="removeSlot(row, i)" aria-label="删除时段">✕</button>
+                    </span>
+                  </template>
+                  <button type="button" class="chip chip-muted" @click="addSlot(row)">+ 添加时段</button>
+                </div>
+                <div class="text-xs text-danger mt-1" x-show="validateRow(row).length"
+                     x-text="validateRow(row).join('；')"></div>
+                <div class="flex items-center gap-1 mt-2"
+                     title="全局覆盖预览：靛蓝=本账号，浅蓝=其他账号，浅灰=缺口">
+                  <template x-for="(b, bi) in coverage(row.seat)" :key="bi">
+                    <span class="h-2 flex-1 rounded-sm"
+                          :class="b === 'mine' ? 'bg-accent' : (b === 'other' ? 'bg-progress/40' : 'bg-app-muted border border-edge-subtle')"></span>
+                  </template>
+                  <span class="text-[10px] text-ink-muted ml-2 whitespace-nowrap"
+                        x-text="gapsCount(row.seat) ? (gapsCount(row.seat) + ' 格缺口') : '该座位已无缺口'"></span>
+                </div>
+              </div>
+            </template>
+            <div class="text-xs text-ink-muted" x-show="rows.every(r => !r.slots.length)">
+              未分配任何时段 = 该账号以通用全天模式参与所有目标座位。
+            </div>
+          </div>
+        </div>
 
         <div class="flex items-center gap-2 mt-2">
           <button class="btn btn-primary" type="submit">保存账号</button>

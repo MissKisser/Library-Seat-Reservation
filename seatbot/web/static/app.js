@@ -233,11 +233,97 @@
     };
   };
 
-  /* ===== 账号表单：full/custom 切换 ===== */
-  window.slotsToggle = function (initial = 'full') {
+  /* ===== 账号表单：座位×时段矩阵编辑器 ===== */
+  /* opts = {seats, initial: {seat: ["HH:MM-HH:MM"]}, others: [{id, seatSlots}],
+   *         open: "HH:MM", close: "HH:MM", maxHours: number}
+   * 提交前 sync() 把矩阵序列化回后端既有字段 slots/slots_custom/bound_seats/seat_slots,
+   * 后端解析逻辑零改动。 */
+  window.matrixEditor = function (opts) {
+    const toMin = s => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
+    const toHM = v => String(Math.floor(v / 60)).padStart(2, '0') + ':' + String(v % 60).padStart(2, '0');
+    const ticks = [];
+    for (let t = toMin(opts.open); t <= toMin(opts.close); t += 30) ticks.push(toHM(t));
+
     return {
-      mode: initial,
-      isCustom() { return this.mode === 'custom'; },
+      seats: opts.seats,
+      rows: opts.seats.map(seat => ({
+        seat,
+        slots: ((opts.initial && opts.initial[seat]) || []).map(r => {
+          const [s, e] = r.split('-');
+          return { s, e };
+        }),
+      })),
+      others: opts.others || [],
+      maxHours: opts.maxHours,
+      ticks,
+
+      validateRow(row) {
+        const msgs = [];
+        const maxMin = this.maxHours * 60;
+        const spans = row.slots.map(x => ({ s: toMin(x.s), e: toMin(x.e) }));
+        spans.forEach((x, i) => {
+          if (x.e <= x.s) msgs.push('结束需晚于开始');
+          if (x.e - x.s > maxMin) msgs.push('单段超 ' + this.maxHours + 'h 上限');
+          spans.forEach((y, j) => {
+            if (j > i && x.s < y.e && y.s < x.e) msgs.push('时段重叠');
+          });
+        });
+        return msgs;
+      },
+      get hasErrors() { return this.rows.some(r => this.validateRow(r).length); },
+      addSlot(row) {
+        row.slots.push({ s: opts.open, e: toHM(Math.min(toMin(opts.open) + 120, toMin(opts.close))) });
+      },
+      removeSlot(row, i) { row.slots.splice(i, 1); },
+
+      /* 该座位在全部账号合计后的 30min 覆盖位图: mine/other/gap */
+      coverage(seat) {
+        const open = toMin(opts.open), close = toMin(opts.close), step = 30;
+        const mineSlots = (this.rows.find(r => r.seat === seat) || { slots: [] }).slots;
+        const bits = [];
+        for (let t = open; t < close; t += step) {
+          let mine = false;
+          mineSlots.forEach(x => { if (toMin(x.s) <= t && t + step <= toMin(x.e)) mine = true; });
+          let other = false;
+          if (!mine) {
+            this.others.forEach(o => (o.seatSlots[seat] || []).forEach(r => {
+              const dash = r.indexOf('-');
+              const s = r.slice(0, dash), e = r.slice(dash + 1);
+              if (toMin(s) <= t && t + step <= toMin(e)) other = true;
+            }));
+          }
+          bits.push(mine ? 'mine' : (other ? 'other' : 'gap'));
+        }
+        return bits;
+      },
+      gapsCount(seat) { return this.coverage(seat).filter(b => b === 'gap').length; },
+
+      /* 把矩阵写回隐藏字段; 返回 false 表示有校验错误,调用方应阻止提交 */
+      sync() {
+        const seatSlots = {};
+        const bound = [];
+        const union = [];
+        this.rows.forEach(r => {
+          if (!r.slots.length) return;
+          bound.push(r.seat);
+          seatSlots[r.seat] = r.slots.map(x => x.s + '-' + x.e);
+          r.slots.forEach(x => {
+            const key = x.s + '-' + x.e;
+            if (!union.includes(key)) union.push(key);
+          });
+        });
+        document.getElementById('f-seat-slots').value = JSON.stringify(seatSlots);
+        document.getElementById('f-slots').value = bound.length ? 'custom' : 'full';
+        document.getElementById('f-slots-custom').value = JSON.stringify(union);
+        const bs = document.getElementById('f-bound-seats');
+        bs.replaceChildren();
+        bound.forEach(s => {
+          const inp = document.createElement('input');
+          inp.type = 'hidden'; inp.name = 'bound_seats'; inp.value = s;
+          bs.appendChild(inp);
+        });
+        return !this.hasErrors;
+      },
     };
   };
 
