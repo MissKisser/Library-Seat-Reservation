@@ -7,7 +7,7 @@
     <div><h1 class="page-title">座位图</h1><p class="page-sub">目标座位 ±2 的实时占用（30s 刷新，只读）</p></div>
   </div>
 
-  <div class="card" x-data="seatFloor({{ cfg.library.room_id }}, {{ seats_layout|default(none)|tojson }})">
+  <div class="card" x-data='seatFloor({{ cfg.library.room_id }}, {{ seats_layout|default(none)|tojson }})'>
     <div class="card-body">
       {# 图例 #}
       <div class="flex flex-wrap gap-4 mb-4 text-xs text-ink-secondary">
@@ -40,16 +40,19 @@
                 <div>
                   <div class="flex gap-2 justify-start my-1.5">
                     <template x-for="(s, si) in row" :key="si">
-                      <template x-if="s === null">
-                        <div class="w-14 h-12 flex items-center justify-center text-[9px] text-ink-muted/60 tracking-widest border border-dashed border-edge-strong rounded-lg">过道</div>
-                      </template>
-                      <template x-if="s !== null">
-                        <div class="w-14 h-12 rounded-lg border flex flex-col items-center justify-center"
-                             :class="seatClasses(s)" :title="seatTitle(s)">
-                          <span class="font-mono text-[11px]" x-text="s.seat_num"></span>
-                          <span class="text-[10px]" x-show="s.is_target">★</span>
-                        </div>
-                      </template>
+                      <div class="w-14 h-12 flex items-center justify-center rounded-lg"
+                           :class="s === null
+                             ? 'border border-dashed border-edge-strong text-[9px] text-ink-muted/60 tracking-widest'
+                             : seatClasses(s)"
+                           :title="seatTitle(s)">
+                        <template x-if="s === null"><span>过道</span></template>
+                        <template x-if="s !== null">
+                          <span class="flex flex-col items-center">
+                            <span class="font-mono text-[11px]" x-text="s.seat_num"></span>
+                            <span class="text-[10px]" x-show="s.is_target">★</span>
+                          </span>
+                        </template>
+                      </div>
                     </template>
                   </div>
                 </div>

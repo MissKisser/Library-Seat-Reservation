@@ -35,14 +35,14 @@
     <div class="card-body">
       <form method="post" action="{% if account %}/accounts/{{ account.id }}{% else %}/accounts{% endif %}"
             class="flex flex-col gap-4"
-            x-data="matrixEditor({
+            x-data='matrixEditor({
               seats: {{ matrix_seats|default([])|tojson }},
               initial: {{ matrix_initial|default({})|tojson }},
               others: {{ matrix_others|default([])|tojson }},
-              open: {{ matrix_open|default('08:00')|tojson }},
-              close: {{ matrix_close|default('22:00')|tojson }},
+              open: {{ matrix_open|default("08:00")|tojson }},
+              close: {{ matrix_close|default("22:00")|tojson }},
               maxHours: {{ matrix_max_hours|default(2) }}
-            })"
+            })'
             @submit="if (!sync()) { $event.preventDefault(); showToast({type:'error', title:'请先修正校验错误'}); }">
         {% if not account %}
           {{ text_field('id', '账号 ID', '', placeholder='如 xiongjt', required=True, pattern='[A-Za-z0-9_-]+', hint='保存后不可修改，仅字母/数字/下划线/连字符') }}

@@ -30,8 +30,8 @@ node_modules/
 
 # 文档规范: 除 docs/README.md 外文档不入库
 docs/*
-!docs/README.md
 
 # 本地误输出残留
 qc
 query
+config.test.yaml
