@@ -40,7 +40,7 @@
         <tbody>
           {% for log in logs %}
           <tr>
-            <td class="num font-mono text-xs whitespace-nowrap">{{ log.ts }}</td>
+            <td class="num font-mono text-xs whitespace-nowrap">{{ log.ts | epoch_ms }}</td>
             <td>
               <span class="badge badge-{% if log.level == 'ERROR' %}danger{% elif log.level == 'WARN' %}warn{% else %}info{% endif %}">
                 <span class="dot"></span>{{ log.level }}

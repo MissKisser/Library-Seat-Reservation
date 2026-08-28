@@ -244,13 +244,16 @@
   /* ===== 座位图：轮询渲染 ===== */
   window.seatMap = function (roomId) {
     return {
-      roomId, sections: [], error: null, loading: true,
+      roomId, sections: [], error: null, loading: true, fetching: false,
       init() {
         this.load();
         this.timer = setInterval(() => this.load(), 30000);
       },
       destroy() { clearInterval(this.timer); },
       async load() {
+        /* 上一轮未完成 (登录重试最长 ~30s) 时跳过本轮, 防止请求堆积 */
+        if (this.fetching) return;
+        this.fetching = true;
         try {
           const r = await fetch(`/api/seats/${this.roomId}`, { cache: 'no-store' });
           const j = await r.json().catch(() => ({}));
@@ -268,6 +271,7 @@
           this.error = '获取座位失败';
         } finally {
           this.loading = false;
+          this.fetching = false;
         }
       },
     };
@@ -288,7 +292,6 @@
     }[c]));
   }
   function popoverHtml(c, hit, seatNum) {
-    /* 复制 templates/_macros/popover.html 的 cell_popover 结构 (POST forms) */
     const taskId = hit.task_id;
     const status = hit.status;
     const accId = hit.id || '';
@@ -296,6 +299,10 @@
     if (status === 'active') {
       return `
         <form method="post" action="/tasks/${taskId}/sign"><button type="submit">立即签到</button></form>
+        <form method="post" action="/tasks/${taskId}/leave"><button type="submit">立即签退</button></form>`;
+    }
+    if (status === 'signed') {
+      return `
         <form method="post" action="/tasks/${taskId}/leave"><button type="submit">立即签退</button></form>`;
     }
     if (status === 'failed') {
@@ -316,23 +323,24 @@
     if (!rows || !rows.length) {
       return `<tr><td colspan="99" class="text-center text-ink-muted p-4">暂无目标座位</td></tr>`;
     }
-    const headCells = rows[0].cells.map(c =>
-      `<th>${escapeHtml(c.start)}</th>`).join('');
     const bodyRows = rows.map(r => {
       const cells = r.cells.map(c => {
         const hit = c.accounts_info && c.accounts_info[0] || null;
         const status = hit ? hit.status : 'empty';
-        const actionable = hit && ['active','submitting','failed','leaving'].includes(status);
+        const isSuccess = hit && ['active','signed','submitting','leaving','complete'].includes(status);
+        const actionable = hit && ['active','signed','submitting','failed','leaving'].includes(status);
+        const showOthers = c.others_occupied && !isSuccess;
+        const showUserBg = c.user_reserved && !isSuccess;
         const classes = ['cell-' + status];
         if (actionable) classes.push('cell-actionable');
-        if (c.user_reserved) classes.push('cell-user-reserved');
-        if (c.others_occupied) classes.push('cell-others-occupied');
+        if (showUserBg) classes.push('cell-user-reserved');
+        if (showOthers) classes.push('cell-others-occupied');
         const titleParts = [`${r.seat_num} · ${c.start}-${c.end}`];
         if (c.user_reserved) titleParts.push('👤 用户硬预约');
-        if (c.others_occupied) titleParts.push('🔒 他人已占');
+        if (showOthers) titleParts.push('🔒 他人已占');
         if (hit) titleParts.push(`${hit.id || ''} · ${status}`);
         let inner = '';
-        if (hit && ['active','submitting','leaving','failed'].includes(status) && hit.task_id) {
+        if (hit && ['active','signed','submitting','leaving','failed'].includes(status) && hit.task_id) {
           inner = `<div class="relative inline-flex w-full h-full" x-data="{ open: false }" @click.outside="open=false">
             <button class="w-full h-full" @click="open=!open" aria-label="操作"></button>
             <div class="popover" x-show="open" x-cloak style="display:none">${popoverHtml(c, hit, r.seat_num)}</div>
@@ -347,7 +355,7 @@
         (r.label ? `<span class="text-xs text-ink-muted ml-1">${escapeHtml(r.label)}</span>` : '');
       return `<tr><th class="row-label">${labelHtml}</th>${cells}</tr>`;
     }).join('');
-    return `<tr><th class="row-label">座位 \\ 时段</th>${headCells}</tr>${bodyRows}`;
+    return bodyRows;
   }
   function bannerHtml(occErr, gapCount, rowCount) {
     if (!rowCount) return '<div class="banner banner-warn">尚未设置目标座位。<a class="text-accent" href="/targets">去添加 →</a></div>';
@@ -368,22 +376,21 @@
       </div>`;
     }).join('');
   }
-  function statHtml(value, hint, accent) {
+  function statHtml(label, value, hint, accent) {
     const valCls = accent ? 'stat-value accent' : 'stat-value';
     return `<div class="stat-card">
-      <div class="stat-label"></div>
+      <div class="stat-label">${escapeHtml(String(label || ''))}</div>
       <div class="${valCls}">${escapeHtml(String(value))}</div>
       ${hint ? `<div class="stat-hint">${escapeHtml(String(hint))}</div>` : ''}
     </div>`;
   }
 
-  window.dashboardRefresh = function (initialRows) {
+  window.dashboardRefresh = function (initial) {
     return {
       countdown: 30,
       busy: false,
-      rows: initialRows,
-      occErr: null,
-      gapCount: 0,
+      today: initial.today || { rows: [], gap_count: 0, occ_err: null },
+      tomorrow: initial.tomorrow || { rows: [], gap_count: 0, occ_err: null },
       recentLogs: [],
       targetSeatCount: 0,
       accountCount: 0,
@@ -406,10 +413,9 @@
           const r = await fetch('/api/dashboard-data', { cache: 'no-store' });
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const j = await r.json();
-          this.rows = j.rows || [];
+          this.today = j.today || this.today;
+          this.tomorrow = j.tomorrow || this.tomorrow;
           this.recentLogs = j.recent_logs || [];
-          this.occErr = j.occ_err || null;
-          this.gapCount = j.gap_count || 0;
           this.targetSeatCount = j.target_seat_count || 0;
           this.accountCount = j.account_count || 0;
           this.applyToDom();
@@ -420,37 +426,47 @@
           this.busy = false;
         }
       },
+      renderGanttInto(rootId, rows) {
+        const root = document.getElementById(rootId);
+        if (!root) return;
+        const ganttBody = root.querySelector('tbody');
+        const ganttHead = root.querySelector('thead');
+        if (!ganttBody) return;
+        if (ganttHead && rows.length) {
+          const head = `<tr><th class="row-label">座位 \\ 时段</th>${
+            rows[0].cells.map(c => `<th>${escapeHtml(c.start)}</th>`).join('')
+          }</tr>`;
+          ganttHead.innerHTML = head;
+          ganttBody.innerHTML = ganttRowsHtml(rows);
+        } else {
+          ganttBody.innerHTML = `<tr><td colspan="99" class="text-center text-ink-muted p-4">暂无目标座位</td></tr>`;
+        }
+      },
       applyToDom() {
-        const gantt = document.getElementById('dashboard-gantt');
-        if (!gantt) return;
-        const ganttBody = gantt.querySelector('tbody');
-        const ganttHead = gantt.querySelector('thead');
         const banner = document.getElementById('dashboard-banner');
         const logsBox = document.getElementById('dashboard-recent-logs');
         const statsBox = document.getElementById('dashboard-stats');
-        if (ganttHead && ganttBody && this.rows.length) {
-          const head = `<tr><th class="row-label">座位 \\ 时段</th>${
-            this.rows[0].cells.map(c => `<th>${escapeHtml(c.start)}</th>`).join('')
-          }</tr>`;
-          ganttHead.innerHTML = head;
-          ganttBody.innerHTML = ganttRowsHtml(this.rows);
-        } else if (ganttBody) {
-          ganttBody.innerHTML = `<tr><td colspan="99" class="text-center text-ink-muted p-4">暂无目标座位</td></tr>`;
-        }
+        this.renderGanttInto('dashboard-gantt-today', this.today.rows);
+        this.renderGanttInto('dashboard-gantt-tomorrow', this.tomorrow.rows);
         if (banner) {
-          banner.innerHTML = bannerHtml(this.occErr, this.gapCount, this.rows.length);
+          banner.innerHTML = bannerHtml(this.today.occ_err, this.today.gap_count, this.today.rows.length);
+        }
+        const tmrNote = document.getElementById('dashboard-occ-err-tomorrow');
+        if (tmrNote) {
+          tmrNote.textContent = this.tomorrow.occ_err ? `他人占用获取失败：${this.tomorrow.occ_err}` : '';
+          tmrNote.style.display = this.tomorrow.occ_err ? '' : 'none';
         }
         if (logsBox) {
           logsBox.innerHTML = recentLogsHtml(this.recentLogs);
         }
         if (statsBox) {
           // 4 张 stat 卡:目标座位 / 守护账号 / 今日覆盖 (rows.length 座, gap_count 个空缺) / 当前时间
-          statsBox.innerHTML = statHtml(this.targetSeatCount, null, false) +
-            statHtml(this.accountCount, null, false) +
-            statHtml(this.rows.length + ' 座',
-              this.gapCount ? this.gapCount + ' 个空缺' : '全覆盖',
-              this.gapCount > 0) +
-            statHtml(new Date().toTimeString().slice(0, 5), null, false);
+          statsBox.innerHTML = statHtml('目标座位', this.targetSeatCount, null, false) +
+            statHtml('守护账号', this.accountCount, null, false) +
+            statHtml('今日覆盖', this.today.rows.length + ' 座',
+              this.today.gap_count ? this.today.gap_count + ' 个空缺' : '全覆盖',
+              this.today.gap_count > 0) +
+            statHtml('当前时间', new Date().toTimeString().slice(0, 5), null, false);
         }
       },
       formatCountdown() {

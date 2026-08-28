@@ -34,13 +34,14 @@
             <div class="text-sm font-medium text-ink mb-2">目标座位 <span class="font-mono text-accent" x-text="sec.seat"></span> 附近</div>
             <div class="grid grid-cols-5 gap-1.5 max-w-md">
               <template x-for="s in sec.seats" :key="s.seat_num">
-                <div :class="{
-                  'h-12 rounded flex flex-col items-center justify-center text-xs border': true,
-                  'bg-app-muted border-edge-subtle text-ink-secondary': s.occupied === false && !s.is_target,
-                  'bg-danger/70 text-white': s.occupied === true && !s.is_target,
-                  'bg-warn border-2 border-warn text-white font-bold': s.is_target,
-                  'bg-danger/40 text-danger': s.error
-                }" :title="s.occupied === true ? ('被 ' + (s.occupier_uid||'?') + ' 占用') : (s.error ? s.error : '空闲')">
+                <div class="h-12 rounded flex flex-col items-center justify-center text-xs border"
+                     :class="s.error
+                       ? 'bg-danger/40 text-danger'
+                       : (s.is_target
+                           ? 'bg-warn border-2 border-warn text-white font-bold'
+                           : (s.occupied === true
+                               ? 'bg-danger/70 text-white'
+                               : 'bg-app-muted border-edge-subtle text-ink-secondary'))" :title="s.occupied === true ? ('被 ' + (s.occupier_uid||'?') + ' 占用') : (s.error ? s.error : '空闲')">
                   <span class="font-mono" x-text="s.seat_num"></span>
                   <span x-show="s.is_target" class="text-[10px]">★</span>
                 </div>
