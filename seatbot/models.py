@@ -55,6 +55,8 @@ class Task:
     status: TaskStatus = TaskStatus.PENDING
     reserve_id: int | None = None
     last_error: str | None = None
+    created_at: int = 0                   # epoch 秒，仅作展示
+    updated_at: int = 0                   # epoch 秒，最近一次状态变更
 
     def chunk_key(self) -> str:
         return (

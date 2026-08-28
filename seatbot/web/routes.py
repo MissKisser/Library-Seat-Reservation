@@ -328,6 +328,7 @@ async def _annotate_rows(rows, store, day: date) -> list[dict]:
                     info["day"] = match_task.day.isoformat()
                     info["start_time"] = match_task.start_time.isoformat(timespec="minutes")
                     info["end_time"] = match_task.end_time.isoformat(timespec="minutes")
+                    info["updated_at"] = match_task.updated_at
                 accs_info.append(info)
             cells.append({
                 "start": c.start, "end": c.end,
@@ -449,6 +450,37 @@ async def _build_dashboard_data(request: Request) -> dict:
 async def api_dashboard_data(request: Request):
     """Dashboard 局部刷新用的 JSON 视图 (每 30s 拉一次, 含今天+明天两块)。"""
     return JSONResponse(await _build_dashboard_data(request))
+
+
+def _serialize_task(t: Task) -> dict:
+    """Task → 任务看板/前端消费的 JSON 形状 (时间统一 HH:MM)。"""
+    return {
+        "id": t.id,
+        "account_id": t.account_id,
+        "seat_num": t.seat_num,
+        "day": t.day.isoformat(),
+        "start": t.start_time.isoformat(timespec="minutes"),
+        "end": t.end_time.isoformat(timespec="minutes"),
+        "status": t.status.value,
+        "reserve_id": t.reserve_id,
+        "last_error": t.last_error,
+        "updated_at": t.updated_at,
+    }
+
+
+@router.get("/api/tasks")
+async def api_tasks(request: Request, day: str | None = None):
+    """任务看板 JSON 视图，仅读本地 DB，不发起超星请求。"""
+    store = request.app.state.store
+    try:
+        d = date.fromisoformat(day) if day else today_cst()
+    except ValueError:
+        raise HTTPException(400, "day must be YYYY-MM-DD")
+    tasks = await store.list_tasks(day=d)
+    return JSONResponse({
+        "day": d.isoformat(),
+        "tasks": [_serialize_task(t) for t in tasks],
+    })
 
 
 # =========================================================================
@@ -842,6 +874,29 @@ async def task_cancel(request: Request, task_id: int):
     else:
         await store.update_task_status(task_id, t.status, last_error=f"cancel: {r.get('msg')}")
     return RedirectResponse("/tasks?cancelled=1", status_code=303)
+
+
+@router.post("/tasks/{task_id}/leave")
+async def task_leave(request: Request, task_id: int):
+    """手动签退当前时段（内部走 signback 真签退通道，非暂离）。"""
+    sched = request.app.state.sched
+    store = request.app.state.store
+    t = await store.get_task(task_id)
+    if not t or not t.reserve_id:
+        raise HTTPException(400, "no active reservation")
+    acc = await store.get_account(t.account_id)
+    if not acc:
+        raise HTTPException(404)
+    client = sched._client_for(acc)
+    if not client.cookies():
+        await client.login(acc.phone, acc.password)
+    r = await client.signback(t.reserve_id)
+    await store.log_action(acc.id, "signback", str(t.reserve_id), str(r)[:500], bool(r.get("success")), str(r.get("msg")))
+    if r.get("success"):
+        await store.update_task_status(task_id, TaskStatus.COMPLETE)
+    else:
+        await store.update_task_status(task_id, t.status, last_error=f"signback: {r.get('msg')}")
+    return RedirectResponse("/?left=1", status_code=303)
 
 
 # =========================================================================
