@@ -764,7 +764,8 @@ async def tasks_list(
         "tasks": [_serialize_task(t) for t in tasks],
     }
     ctx = await _ctx(request, active_page="tasks")
-    ctx["tasks_initial"] = json.dumps(payload, ensure_ascii=False)
+    # 传 dict 由模板 |tojson 一次性编码; 传已 dumps 的字符串会被二次编码致前端解析成字符串
+    ctx["tasks_initial"] = payload
     ctx["prev_day"] = (d - timedelta(days=1)).isoformat()
     ctx["next_day"] = (d + timedelta(days=1)).isoformat()
     return _templates(request).TemplateResponse(
