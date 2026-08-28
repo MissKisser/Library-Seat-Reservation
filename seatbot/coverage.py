@@ -96,9 +96,9 @@ class SeatCoverage:
 
 
 def _cell_index(t: time, open_time: time) -> int:
-    base = datetime.combine(date.today(), open_time)
-    cur = datetime.combine(date.today(), t)
-    return max(0, int((cur - base).total_seconds() // (CELL_MINUTES * 60)))
+    base_min = open_time.hour * 60 + open_time.minute
+    cur_min = t.hour * 60 + t.minute
+    return max(0, (cur_min - base_min) // CELL_MINUTES)
 
 
 def _make_blank_coverage(day: date, open_time: time | str, close_time: time | str) -> Coverage:

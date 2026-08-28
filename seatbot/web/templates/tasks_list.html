@@ -59,7 +59,8 @@
               {% endif %}
               {# 手动签退按钮已移除: 原实现误调 /leave(暂离) 而非 signback(签退),
                  自动签退由 scheduler 在时段结束 +60s 执行 (2026-08-26 审查 #16) #}
-              {% if t.reserve_id %}
+              {# 仅进行中的预约可取消; complete 的取消必然失败 #}
+              {% if t.reserve_id and t.status.value in ('active', 'signed') %}
               <button class="btn btn-ghost btn-sm text-danger" @click="confirmAction({title:'取消任务？',desc:'task {{ t.id }}',confirmText:'取消',danger:true}).then(ok=>{if(ok)post('/tasks/{{ t.id }}/cancel')})">取消</button>
               {% endif %}
             </td>

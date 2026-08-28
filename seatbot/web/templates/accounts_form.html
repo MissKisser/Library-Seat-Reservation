@@ -39,7 +39,11 @@
           {{ text_field('id', '账号 ID', '', placeholder='如 xiongjt', required=True, pattern='[A-Za-z0-9_-]+', hint='保存后不可修改，仅字母/数字/下划线/连字符') }}
         {% endif %}
         {{ text_field('phone', '手机号', account.phone if account else '', placeholder='13800000000', required=True) }}
-        {{ text_field('password', '密码', account.password if account else '', type='password', required=True) }}
+        {% if account %}
+        {{ text_field('password', '密码', '', type='password', hint='编辑时留空 = 保持原密码不变') }}
+        {% else %}
+        {{ text_field('password', '密码', '', type='password', required=True) }}
+        {% endif %}
 
         {# 时段模式：Alpine 控制 custom textarea 显隐 #}
         <div class="form-field">
@@ -60,6 +64,11 @@
         {% for s in target_seats %}{% set _ = _opts.append([s.seat_num, s.seat_num ~ (' · ' ~ s.label if s.label else '')]) %}{% endfor %}
         {{ checkbox_grid_field('bound_seats', '绑定座位（不勾选 = 通用 wildcard，覆盖所有目标座位）',
             _opts, checked_keys=(account.bound_seats if account else [])) }}
+
+        {# per-seat slots 精确矩阵 — planner 优先级最高, 会覆盖上方时段+绑定 #}
+        {{ textarea_field('seat_slots', 'seat_slots（按座位精确矩阵，优先于上方时段）',
+            (account.seat_slots | tojson) if account and account.seat_slots else '{}',
+            hint='JSON 对象，如 {"104": ["09:00-11:00"], "105": ["15:00-17:00"]}；{} = 不使用；单段 ≤ 单段上限') }}
 
         <div class="flex items-center gap-2 mt-2">
           <button class="btn btn-primary" type="submit">保存账号</button>

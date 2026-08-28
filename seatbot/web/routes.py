@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date, datetime as _dt
+from datetime import date, datetime as _dt, timedelta
 from datetime import time as _time
 
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -20,6 +20,56 @@ from seatbot.utils.timeutil import now_cst, parse_hhmm, parse_range, today_cst
 
 
 router = APIRouter()
+
+# AGENTS.md 约定的默认测试账号: 只读查询 (getusedtimes / reserve info)
+# 优先使用它, 避免无谓动用其他守护账号的会话。
+PREFERRED_READ_ACCOUNT = "xiongjt"
+
+
+def _pick_read_account(accounts: list[Account]) -> Account | None:
+    """优先选默认只读账号, 否则回退到第一个有凭据的账号。"""
+    return (
+        next((a for a in accounts
+              if a.id == PREFERRED_READ_ACCOUNT and a.phone and a.password), None)
+        or next((a for a in accounts if a.phone and a.password), None)
+    )
+
+
+def _parse_seat_slots(raw: str, max_hours: float) -> dict[str, list[str]] | None:
+    """解析并校验表单提交的 seat_slots JSON。
+
+    合法: {"104": ["09:00-11:00"], ...} — key 为 1-4 位数字, value 为
+    字符串数组且单段 ≤ max_hours (与 _validate_custom_slots 同一规则)。
+    空 / 非法为空对象时返回 None (回退扁平 slots 模式); 校验失败抛 ValueError。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"seat_slots JSON 错误: {e}") from e
+    if not isinstance(data, dict) or not data:
+        return None
+    out: dict[str, list[str]] = {}
+    for seat, slots in data.items():
+        sn = str(seat).strip()
+        if not sn.isdigit() or not (1 <= len(sn) <= 4):
+            raise ValueError(f"seat_slots 座位号非法: {seat!r}")
+        if not isinstance(slots, list) or not all(isinstance(x, str) for x in slots):
+            raise ValueError(f"seat_slots[{sn}] 必须是字符串数组")
+        for r in slots:
+            try:
+                s, e = parse_range(r)
+            except ValueError as exc:
+                raise ValueError(f"seat_slots[{sn}] 时段格式错误: {exc}") from exc
+            dur_h = (_dt.combine(date.today(), e) - _dt.combine(date.today(), s)).total_seconds() / 3600
+            if dur_h > max_hours:
+                raise ValueError(
+                    f"seat_slots[{sn}] 时段 {r} 长 {dur_h}h 超过单段上限 {max_hours}h"
+                )
+        out[sn.zfill(3)] = slots
+    return out
 
 
 async def _validate_custom_slots(request: Request, slots_value, template, ctx_account):
@@ -100,7 +150,7 @@ async def _fetch_others_occupied(
     except Exception:
         accounts = []
 
-    acc = next((a for a in accounts if a.phone and a.password), None)
+    acc = _pick_read_account(accounts)
     if acc is None:
         return [], "无可用账号"
 
@@ -116,7 +166,7 @@ async def _fetch_others_occupied(
             return [], f"silent login failed: {type(e).__name__}: {e}"
 
     day_str = day.isoformat()
-    out: list[tuple[str, time, time]] = []
+    out: list[tuple[str, _time, _time]] = []
     last_err: str | None = None
     # 并行拉所有座位的 usedtimes (互不依赖)
     cfg = request.app.state.cfg
@@ -134,76 +184,150 @@ async def _fetch_others_occupied(
     return out, last_err
 
 
-# =========================================================================
-# Dashboard — coverage Gantt, 行 = 目标座位
-# =========================================================================
-@router.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    cfg = request.app.state.cfg
-    store = request.app.state.store
-    today = today_cst()
-    accounts = await store.list_accounts()
-    target_seats = await store.list_target_seats()
-    # ★ 把 user_reserved 索引成 (seat_num, start, end) 三元组
-    ur_rows = await store.list_user_reserved(day=today)
-    user_reserved: list[tuple[str, _time, _time]] = []
-    for u in ur_rows:
+def _filter_self_occupied(
+    others: list[tuple[str, _time, _time]],
+    own_intervals: list[tuple[str, _time, _time]],
+) -> list[tuple[str, _time, _time]]:
+    """剔除已被本系统成功预约占据的时段，避免误标为「他人占用」。
+
+    getusedtimes 返回的是全量占用（含本系统账号的预约），
+    若某 30min 格已有 ACTIVE/SIGNED/LEAVING/COMPLETE 任务，则该占用
+    来自本系统，不应再标记为 others_occupied。
+    用区间重叠判断而非严格相等，兼容聚合返回。
+    """
+    if not others or not own_intervals:
+        return others
+    def _overlap(a_s, a_e, b_s, b_e) -> bool:
+        return not (a_e <= b_s or a_s >= b_e)
+    out: list[tuple[str, _time, _time]] = []
+    for sn, s, e in others:
+        blocked = False
+        for osn, os_, oe in own_intervals:
+            if sn == osn and _overlap(s, e, os_, oe):
+                blocked = True
+                break
+        if not blocked:
+            out.append((sn, s, e))
+    return out
+
+
+async def _collect_user_reserved(store, day: date) -> list[tuple[str, _time, _time]]:
+    """把 user_reserved 表行转成 compute_seat_coverage 需要的三元组。"""
+    rows = await store.list_user_reserved(day=day)
+    out: list[tuple[str, _time, _time]] = []
+    for u in rows:
         try:
             sh, sm = map(int, u["start_time"].split(":"))
             eh, em = map(int, u["end_time"].split(":"))
-            user_reserved.append((u["seat_num"], _time(sh, sm), _time(eh, em)))
+            out.append((u["seat_num"], _time(sh, sm), _time(eh, em)))
         except Exception:
-            pass
+            continue
+    return out
 
-    # ★ 调用 /getusedtimes (mobile fidEnc) 拿到他人占用的时段
+
+async def _collect_own_intervals(store, day: date) -> list[tuple[str, _time, _time]]:
+    """收集当日已成功预约的 (seat_num, start, end)。"""
+    own: list[tuple[str, time, time]] = []
+    for t in await store.list_tasks(day=day):
+        if t.status in (
+            TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.LEAVING, TaskStatus.COMPLETE
+        ):
+            own.append((t.seat_num, t.start_time, t.end_time))
+    return own
+
+
+# =========================================================================
+# Dashboard — coverage Gantt, 今天 / 明天 两块同屏
+# =========================================================================
+async def _collect_day_bundle(
+    request: Request, store, cfg,
+    accounts: list[Account], target_seats: list[SeatTarget],
+    view_day: date,
+) -> dict:
+    """构建单日覆盖图所需的全部数据。
+
+    返回 {
+      'rows':      compute+_annotate 产物 (seat 对象 + time 对象, 供 Jinja),
+      'gap_count': 未涂色且无叠加标记的格子数,
+      'occ_err':   他人占用查询失败原因 (None 表示成功),
+    }
+    """
+    user_reserved = await _collect_user_reserved(store, view_day)
     others_occupied, occ_err = await _fetch_others_occupied(
-        request, store, today, [s.seat_num for s in target_seats],
+        request, store, view_day, [s.seat_num for s in target_seats],
     )
+    own_intervals = await _collect_own_intervals(store, view_day)
+    # user_reserved 的占用也是“自己人”，同样不应标为他人
+    own_intervals = own_intervals + [(sn, s, e) for sn, s, e in user_reserved]
+    others_occupied = _filter_self_occupied(others_occupied, own_intervals)
 
     rows = compute_seat_coverage(
-        accounts, target_seats, today,
+        accounts, target_seats, view_day,
         open_time=cfg.library.open_time,
         close_time=cfg.library.close_time,
         user_reserved=user_reserved,
         others_occupied=others_occupied,
     )
+    annotated = await _annotate_rows(rows, store, view_day)
+    gap_count = sum(
+        1 for sc in rows for c in sc.coverage.cells
+        if not c.accounts and not c.user_reserved and not c.others_occupied
+    )
+    return {"rows": annotated, "gap_count": gap_count, "occ_err": occ_err}
 
-    # 标注每个 (seat, cell) 的 task 实际状态
-    annotated_rows = []
+
+def _rows_to_json(annotated_rows: list[dict]) -> list[dict]:
+    """把 _annotate_rows 产物压成 JSON 可序列化形状 (time → 'HH:MM')。"""
+    return [
+        {"seat_num": r["seat"].seat_num, "label": r["seat"].label,
+         "cells": [
+             {"start": c["start"].strftime("%H:%M"),
+              "end": c["end"].strftime("%H:%M"),
+              "accounts_info": c["accounts_info"],
+              "user_reserved": c["user_reserved"],
+              "others_occupied": c["others_occupied"]}
+             for c in r["cells"]
+         ]}
+        for r in annotated_rows
+    ]
+
+
+async def _annotate_rows(rows, store, day: date) -> list[dict]:
+    """把当日 tasks 的真实状态标注到覆盖图格子上。
+
+    任务是 planner 产出的 1-2h 块，格子是 30min，因此按区间重叠匹配
+    (t.start < c.end and t.end > c.start)，而非起止完全相等。
+    当日任务只查一次，按 (account_id, seat_num) 索引后内存匹配。
+    """
+    ACTIVE_STATUSES = (
+        TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.SUBMITTING,
+        TaskStatus.LEAVING, TaskStatus.FAILED, TaskStatus.COMPLETE,
+    )
+    DETAIL_STATUSES = ("active", "signed", "submitting", "failed", "leaving", "complete")
+    tasks_by_acc_seat: dict[tuple[str, str], list[Task]] = {}
+    for t in await store.list_tasks(day=day):
+        if t.status in ACTIVE_STATUSES:
+            tasks_by_acc_seat.setdefault((t.account_id, t.seat_num), []).append(t)
+
+    out: list[dict] = []
     for sc in rows:
-        cells = []
+        cells: list[dict] = []
         for c in sc.coverage.cells:
             accs_info: list[dict] = []
             for aid in c.accounts:
-                tasks = await store.list_tasks(account_id=aid, day=today)
                 match_status = "pending"
-                match_task_id = None
-                match_day = None
-                match_start = None
-                match_end = None
-                for t in tasks:
-                    if (t.seat_num == sc.seat.seat_num
-                            and t.start_time == c.start
-                            and t.end_time == c.end
-                            and t.status in (
-                                TaskStatus.ACTIVE,
-                                TaskStatus.SUBMITTING,
-                                TaskStatus.LEAVING,
-                                TaskStatus.FAILED,
-                                TaskStatus.COMPLETE,
-                            )):
+                match_task: Task | None = None
+                for t in tasks_by_acc_seat.get((aid, sc.seat.seat_num), []):
+                    if t.start_time < c.end and t.end_time > c.start:
                         match_status = t.status.value
-                        match_task_id = t.id
-                        match_day = t.day.isoformat()
-                        match_start = t.start_time
-                        match_end = t.end_time
+                        match_task = t
                         break
                 info: dict = {"id": aid, "status": match_status}
-                if match_status in ("active", "submitting", "failed", "leaving", "complete") and match_task_id:
-                    info["task_id"] = match_task_id
-                    info["day"] = match_day
-                    info["start_time"] = match_start.isoformat(timespec="minutes") if match_start else ""
-                    info["end_time"] = match_end.isoformat(timespec="minutes") if match_end else ""
+                if match_status in DETAIL_STATUSES and match_task is not None:
+                    info["task_id"] = match_task.id
+                    info["day"] = match_task.day.isoformat()
+                    info["start_time"] = match_task.start_time.isoformat(timespec="minutes")
+                    info["end_time"] = match_task.end_time.isoformat(timespec="minutes")
                 accs_info.append(info)
             cells.append({
                 "start": c.start, "end": c.end,
@@ -211,21 +335,44 @@ async def dashboard(request: Request):
                 "user_reserved": c.user_reserved,
                 "others_occupied": c.others_occupied,
             })
-        annotated_rows.append({"seat": sc.seat, "cells": cells})
+        out.append({"seat": sc.seat, "cells": cells})
+    return out
+
+
+@router.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    cfg = request.app.state.cfg
+    store = request.app.state.store
+    accounts = await store.list_accounts()
+    target_seats = await store.list_target_seats()
+
+    today = today_cst()
+    tomorrow = today + timedelta(days=1)
+    bundle_today = await _collect_day_bundle(
+        request, store, cfg, accounts, target_seats, today,
+    )
+    bundle_tomorrow = await _collect_day_bundle(
+        request, store, cfg, accounts, target_seats, tomorrow,
+    )
 
     recent_logs = await store.list_logs(limit=10)
-    # JSON 字符串用于 dashboard.html 内嵌到 Alpine x-data, time 对象需预处理。
-    # 字段名与 /api/dashboard-data 保持一致 (seat_num / cells[].start 字符串),
-    # 让前端组件拿到首屏就立刻能 applyToDom,无需特殊处理。
-    rows_json = json.dumps(
-        [{"seat_num": r["seat"].seat_num,
-          "label": r["seat"].label,
-          "cells": [{"start": c["start"].strftime("%H:%M"),
-                     "end": c["end"].strftime("%H:%M"),
-                     "accounts_info": c["accounts_info"],
-                     "user_reserved": c["user_reserved"],
-                     "others_occupied": c["others_occupied"]} for c in r["cells"]]}
-         for r in annotated_rows],
+    # rows_json 供 dashboard.html 内嵌到 Alpine x-data, time 对象需预处理。
+    # 字段名与 /api/dashboard-data 保持一致,让前端组件拿到首屏就能 applyToDom。
+    bundle_json = json.dumps(
+        {
+            "today": {
+                "view_day": today.isoformat(),
+                "rows": _rows_to_json(bundle_today["rows"]),
+                "gap_count": bundle_today["gap_count"],
+                "occ_err": bundle_today["occ_err"],
+            },
+            "tomorrow": {
+                "view_day": tomorrow.isoformat(),
+                "rows": _rows_to_json(bundle_tomorrow["rows"]),
+                "gap_count": bundle_tomorrow["gap_count"],
+                "occ_err": bundle_tomorrow["occ_err"],
+            },
+        },
         ensure_ascii=False,
     )
     return _templates(request).TemplateResponse(
@@ -233,12 +380,17 @@ async def dashboard(request: Request):
         {
             "request": request,
             "cfg": cfg,
-            "rows": annotated_rows,
-            "rows_json": rows_json,
+            "rows_today": bundle_today["rows"],
+            "rows_tomorrow": bundle_tomorrow["rows"],
+            "gap_count_today": bundle_today["gap_count"],
+            "gap_count_tomorrow": bundle_tomorrow["gap_count"],
+            "occ_err": bundle_today["occ_err"],
+            "occ_err_tomorrow": bundle_tomorrow["occ_err"],
+            "bundle_json": bundle_json,
             "today": today.isoformat(),
+            "tomorrow": tomorrow.isoformat(),
             "now_hhmm": now_cst().strftime("%H:%M"),
             "recent_logs": recent_logs,
-            "occ_err": occ_err,
             "active_page": "dashboard",
             "accounts": accounts,
             "target_seats": target_seats,
@@ -252,97 +404,42 @@ async def dashboard(request: Request):
 async def _build_dashboard_data(request: Request) -> dict:
     """Collect everything dashboard.html renders, as JSON-ready dict.
 
-    与 dashboard() 视图共用 helper, 避免双份逻辑漂移。
-    耗时点 (others_occupied) 30s 才触发一次,可接受。
+    与 dashboard() 共用 _collect_day_bundle 链路，避免双份逻辑漂移。
+    今天 / 明天 两块数据一并返回; 耗时点 (others_occupied) 30s 才触发一次。
     """
     cfg = request.app.state.cfg
     store = request.app.state.store
-    today = today_cst()
     accounts = await store.list_accounts()
     target_seats = await store.list_target_seats()
 
-    ur_rows = await store.list_user_reserved(day=today)
-    user_reserved: list[tuple[str, _time, _time]] = []
-    for u in ur_rows:
-        try:
-            sh, sm = map(int, u["start_time"].split(":"))
-            eh, em = map(int, u["end_time"].split(":"))
-            user_reserved.append((u["seat_num"], _time(sh, sm), _time(eh, em)))
-        except Exception:
-            pass
-    others_occupied, occ_err = await _fetch_others_occupied(
-        request, store, today, [s.seat_num for s in target_seats],
+    today = today_cst()
+    tomorrow = today + timedelta(days=1)
+    bundle_today = await _collect_day_bundle(
+        request, store, cfg, accounts, target_seats, today,
     )
-
-    rows = compute_seat_coverage(
-        accounts, target_seats, today,
-        open_time=cfg.library.open_time,
-        close_time=cfg.library.close_time,
-        user_reserved=user_reserved,
-        others_occupied=others_occupied,
+    bundle_tomorrow = await _collect_day_bundle(
+        request, store, cfg, accounts, target_seats, tomorrow,
     )
-
-    annotated_rows = []
-    for sc in rows:
-        cells = []
-        for c in sc.coverage.cells:
-            accs_info: list[dict] = []
-            for aid in c.accounts:
-                tasks = await store.list_tasks(account_id=aid, day=today)
-                match_status = "pending"
-                match_task_id = None
-                match_day = None
-                match_start = None
-                match_end = None
-                for t in tasks:
-                    if (t.seat_num == sc.seat.seat_num
-                            and t.start_time == c.start
-                            and t.end_time == c.end
-                            and t.status in (
-                                TaskStatus.ACTIVE,
-                                TaskStatus.SUBMITTING,
-                                TaskStatus.LEAVING,
-                                TaskStatus.FAILED,
-                                TaskStatus.COMPLETE,
-                            )):
-                        match_status = t.status.value
-                        match_task_id = t.id
-                        match_day = t.day.isoformat()
-                        match_start = t.start_time
-                        match_end = t.end_time
-                        break
-                info: dict = {"id": aid, "status": match_status}
-                if match_status in ("active", "submitting", "failed", "leaving", "complete") and match_task_id:
-                    info["task_id"] = match_task_id
-                    info["day"] = match_day
-                    info["start_time"] = match_start.isoformat(timespec="minutes") if match_start else ""
-                    info["end_time"] = match_end.isoformat(timespec="minutes") if match_end else ""
-                accs_info.append(info)
-            cells.append({
-                "start": c.start.isoformat(timespec="minutes"),
-                "end": c.end.isoformat(timespec="minutes"),
-                "accounts_info": accs_info,
-                "user_reserved": c.user_reserved,
-                "others_occupied": c.others_occupied,
-            })
-        annotated_rows.append({"seat_num": sc.seat.seat_num,
-                                "label": sc.seat.label,
-                                "cells": cells})
 
     recent_logs = await store.list_logs(limit=8)
     return {
-        "today": today.isoformat(),
+        "today": {
+            "view_day": today.isoformat(),
+            "rows": _rows_to_json(bundle_today["rows"]),
+            "gap_count": bundle_today["gap_count"],
+            "occ_err": bundle_today["occ_err"],
+        },
+        "tomorrow": {
+            "view_day": tomorrow.isoformat(),
+            "rows": _rows_to_json(bundle_tomorrow["rows"]),
+            "gap_count": bundle_tomorrow["gap_count"],
+            "occ_err": bundle_tomorrow["occ_err"],
+        },
         "now_hhmm": now_cst().strftime("%H:%M"),
-        "occ_err": occ_err,
-        "rows": annotated_rows,
         "recent_logs": [{
             "ts": l.ts, "level": l.level,
             "account_id": l.account_id, "message": l.message,
         } for l in recent_logs],
-        "gap_count": sum(
-            1 for sc in rows for c in sc.coverage.cells
-            if not c.accounts and not c.user_reserved and not c.others_occupied
-        ),
         "target_seat_count": len(target_seats),
         "account_count": len(accounts),
     }
@@ -350,7 +447,7 @@ async def _build_dashboard_data(request: Request) -> dict:
 
 @router.get("/api/dashboard-data")
 async def api_dashboard_data(request: Request):
-    """Dashboard 局部刷新用的 JSON 视图 (每 30s 拉一次)。"""
+    """Dashboard 局部刷新用的 JSON 视图 (每 30s 拉一次, 含今天+明天两块)。"""
     return JSONResponse(await _build_dashboard_data(request))
 
 
@@ -366,7 +463,12 @@ async def targets_list(request: Request):
     # 提前组装 "每个账号用了哪些 seats" 的反向索引
     used_by: dict[str, list[str]] = {s.seat_num: [] for s in seats}
     for a in accounts:
-        for sn in a.bound_seats:
+        # bound_seats (扁平模式) 与 seat_slots keys (精确矩阵模式) 都算"被占用"
+        seen: set[str] = set()
+        for sn in list(a.bound_seats) + list((a.seat_slots or {}).keys()):
+            if sn in seen:
+                continue
+            seen.add(sn)
             used_by.setdefault(sn, []).append(a.id)
     return _templates(request).TemplateResponse(
         request, "targets_list.html",
@@ -442,6 +544,24 @@ async def user_reserved_create(
                         active_page="user-reserved"),
             status_code=400,
         )
+    if not await store.get_account(account_id):
+        rows = await store.list_user_reserved()
+        return _templates(request).TemplateResponse(
+            request, "user_reserved_list.html",
+            await _ctx(request, reserved=rows,
+                        error=f"账号不存在: {account_id}",
+                        active_page="user-reserved"),
+            status_code=400,
+        )
+    if d < today_cst():
+        rows = await store.list_user_reserved()
+        return _templates(request).TemplateResponse(
+            request, "user_reserved_list.html",
+            await _ctx(request, reserved=rows,
+                        error="日期不能早于今天",
+                        active_page="user-reserved"),
+            status_code=400,
+        )
     await store.add_user_reserved(
         account_id=account_id,
         seat_num=sn.zfill(3),
@@ -471,7 +591,6 @@ async def accounts_list(request: Request):
 
 @router.get("/accounts/new", response_class=HTMLResponse)
 async def accounts_new(request: Request):
-    target_seats = await request.app.state.store.list_target_seats()
     return _templates(request).TemplateResponse(
         request, "accounts_form.html",
         await _ctx(request, account=None, error=None, active_page="accounts"),
@@ -487,6 +606,7 @@ async def accounts_create(
     slots: str = Form("full"),
     slots_custom: str = Form(""),
     bound_seats: list[str] = Form(default=[]),
+    seat_slots: str = Form("{}"),
 ):
     store = request.app.state.store
     slots_value: str | list[str] = slots
@@ -504,10 +624,20 @@ async def accounts_create(
         err_resp = await _validate_custom_slots(request, slots_value, "accounts_form.html", None)
         if err_resp is not None:
             return err_resp
+    try:
+        seat_slots_val = _parse_seat_slots(
+            seat_slots, request.app.state.cfg.library.max_reserve_hours)
+    except ValueError as e:
+        return _templates(request).TemplateResponse(
+            request, "accounts_form.html",
+            await _ctx(request, account=None, error=str(e), active_page="accounts"),
+            status_code=400,
+        )
     acc = Account(
         id=id, phone=phone, password=password,
         slots=slots_value,
         bound_seats=list(bound_seats),
+        seat_slots=seat_slots_val,
     )
     try:
         await store.upsert_account(acc)
@@ -536,10 +666,11 @@ async def accounts_edit(request: Request, acc_id: str):
 async def accounts_update(
     request: Request, acc_id: str,
     phone: str = Form(...),
-    password: str = Form(...),
+    password: str = Form(""),
     slots: str = Form("full"),
     slots_custom: str = Form(""),
     bound_seats: list[str] = Form(default=[]),
+    seat_slots: str = Form("{}"),
 ):
     store = request.app.state.store
     existing = await store.get_account(acc_id)
@@ -560,10 +691,21 @@ async def accounts_update(
         err_resp = await _validate_custom_slots(request, slots_value, "accounts_form.html", existing)
         if err_resp is not None:
             return err_resp
+    try:
+        seat_slots_val = _parse_seat_slots(
+            seat_slots, request.app.state.cfg.library.max_reserve_hours)
+    except ValueError as e:
+        return _templates(request).TemplateResponse(
+            request, "accounts_form.html",
+            await _ctx(request, account=existing, error=str(e), active_page="accounts"),
+            status_code=400,
+        )
     existing.phone = phone
-    existing.password = password
+    if password.strip():
+        existing.password = password
     existing.slots = slots_value
     existing.bound_seats = list(bound_seats)
+    existing.seat_slots = seat_slots_val
     await store.upsert_account(existing)
     return RedirectResponse("/accounts?updated=1", status_code=303)
 
@@ -601,8 +743,16 @@ async def tasks_list(
     day: str | None = None,
     seat_num: str | None = None,
 ):
-    d = date.fromisoformat(day) if day else today_cst()
     store = request.app.state.store
+    if day:
+        try:
+            d = date.fromisoformat(day)
+        except ValueError:
+            from urllib.parse import quote
+            return RedirectResponse(
+                f"/tasks?error={quote('日期格式无效，应为 YYYY-MM-DD')}", status_code=303)
+    else:
+        d = today_cst()
     tasks = await store.list_tasks(
         account_id=account_id, day=d, seat_num=seat_num,
     )
@@ -738,7 +888,7 @@ async def api_seats(room_id: int, request: Request):
     accounts = await store.list_accounts()
     seats = await store.list_target_seats()
     target_seats_nums = [s.seat_num for s in seats]
-    acc = accounts[0] if accounts else None
+    acc = _pick_read_account(accounts)
     if not acc:
         return JSONResponse({"seats": [], "targets": target_seats_nums, "error": "no accounts"})
 
@@ -770,7 +920,9 @@ async def api_seats(room_id: int, request: Request):
             try:
                 res = await client.get_active_reservation(room_id, seat_num)
             except Exception as e:
-                per_seat.append({"seat_num": seat_num, "occupied": None, "error": str(e)})
+                per_seat.append(
+                    {"seat_num": seat_num, "occupied": None,
+                     "error": str(e), "is_target": (n == tn)})
                 continue
             if res:
                 per_seat.append({

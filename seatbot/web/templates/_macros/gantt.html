@@ -25,10 +25,15 @@
         {% for c in row.cells %}
           {% set hit = (c.accounts_info[0] if c.accounts_info else None) %}
           {% set _status = (hit.status if hit else 'empty') %}
+          {% set _is_success = (hit is not none and hit.status in ('active','signed','submitting','leaving','complete')) %}
           {% set _actionable = (hit is not none and hit.status in ('active','signed','submitting','failed','leaving')) %}
           {% set _user_reserved = (c.user_reserved if c.user_reserved is defined else False) %}
-          {% set _others_occupied = (c.others_occupied if c.others_occupied is defined else False) %}
-          <td class="cell cell-{{ _status }}{% if _actionable %} cell-actionable{% endif %}{% if _user_reserved %} cell-user-reserved{% endif %}{% if _others_occupied %} cell-others-occupied{% endif %}"
+          {# 他人占用仅在无成功预约时展示，避免 getusedtimes 把本系统占用误标为他人 #}
+          {% set _others_raw = (c.others_occupied if c.others_occupied is defined else False) %}
+          {% set _others_occupied = (_others_raw and not _is_success) %}
+          {# 用户硬预约也被成功预约覆盖时不叠加底色，只保留提示 #}
+          {% set _show_user_bg = (_user_reserved and not _is_success) %}
+          <td class="cell cell-{{ _status }}{% if _actionable %} cell-actionable{% endif %}{% if _show_user_bg %} cell-user-reserved{% endif %}{% if _others_occupied %} cell-others-occupied{% endif %}"
               title="{% if by == 'seat' %}{{ row.seat.seat_num }}{% else %}{{ row.id }}{% endif %} · {{ c.start.strftime('%H:%M') }}-{{ c.end.strftime('%H:%M') }}{% if _user_reserved %} · 👤 用户硬预约{% endif %}{% if _others_occupied %} · 🔒 他人已占{% endif %}{% if hit %} · {{ hit.id or '' }} · {{ hit.status }}{% endif %}">
             {% if hit and hit.status in ('active','signed','submitting','leaving','failed') and hit.task_id %}
               {{ pop.cell_popover(task_id=hit.task_id, status=hit.status, account_id=hit.id or '', seat_num=row.seat.seat_num, day=hit.day or '', start_time=c.start.isoformat(timespec='minutes'), end_time=c.end.isoformat(timespec='minutes')) }}
@@ -44,6 +49,7 @@
 </div>
 <div class="gantt-legend">
   <span><span class="swatch cell-active"></span>已预约</span>
+  <span><span class="swatch cell-signed"></span>已签到</span>
   <span><span class="swatch cell-submitting"></span>提交中</span>
   <span><span class="swatch cell-leaving"></span>签退中</span>
   <span><span class="swatch cell-pending"></span>待执行</span>

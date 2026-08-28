@@ -6,21 +6,20 @@
 
 {% block content %}
 <div class="flex flex-col gap-5"
-     x-data='dashboardRefresh({{ rows_json|safe }})'>
+     x-data='dashboardRefresh({{ bundle_json|safe }})'>
   {# 指标卡 4 列 —— dashboardRefresh.applyToDom() 在每次刷新后会重建 #id 区域,
      所以服务端只渲染首屏占位,JS 接手后续更新。 #}
-  {% set _gap = namespace(n=0) %}
-  {% for r in rows %}{% for c in r.cells %}{% if not c.accounts_info and not c.user_reserved and not c.others_occupied %}{% set _gap.n = _gap.n + 1 %}{% endif %}{% endfor %}{% endfor %}
+  {% set _gap = namespace(n=gap_count_today) %}
   <div class="stat-grid" id="dashboard-stats">
-    {{ stat('目标座位', target_seats|length if target_seats is defined else rows|length) }}
+    {{ stat('目标座位', target_seats|length if target_seats is defined else rows_today|length) }}
     {{ stat('守护账号', accounts|length if accounts is defined else '—') }}
-    {{ stat('今日覆盖', rows|length ~ ' 座', hint=(_gap.n ~ ' 个空缺') if _gap.n else '全覆盖', accent=_gap.n > 0) }}
+    {{ stat('今日覆盖', rows_today|length ~ ' 座', hint=(_gap.n ~ ' 个空缺') if _gap.n else '全覆盖', accent=_gap.n > 0) }}
     {{ stat('当前时间', now_hhmm) }}
   </div>
 
-  {# 状态 banner —— JS 会重建内容 #}
+  {# 状态 banner（按今天）—— JS 会重建内容 #}
   <div id="dashboard-banner">
-    {% if not rows %}
+    {% if not rows_today %}
       {{ banner('warn', '尚未设置目标座位。<a class="text-accent" href="/targets">去添加 →</a>') }}
     {% elif _gap.n %}
       {{ banner('error', '检测到 <b>' ~ _gap.n ~ '</b> 个时段空缺，护城河有缺口。') }}
@@ -31,30 +30,44 @@
     {% endif %}
   </div>
 
-  {# 主区:gantt + 侧栏 #}
+  {# 主区:gantt(今天+明天) + 侧栏 #}
   <div class="dashboard-grid">
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">护城河（按座位）</span>
-        <div class="flex items-center gap-2">
-          <span class="text-xs text-ink-muted">点击单元格操作 · 30s 局部刷新</span>
-          <span class="text-xs px-2 py-0.5 rounded-full bg-ink-muted/20 text-ink-secondary font-mono"
-                x-text="formatCountdown()"></span>
-          <button class="btn btn-ghost btn-sm" type="button" @click="refresh()" :disabled="busy"
-                  aria-label="立即刷新">
-            <span x-text="busy ? '刷新中…' : '立即刷新'"></span>
-          </button>
+    <div class="flex flex-col gap-5 min-w-0">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">护城河（按座位）<span class="text-xs text-ink-muted ml-2">今天 {{ today }}</span></span>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-ink-muted">点击单元格操作 · 30s 局部刷新</span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-ink-muted/20 text-ink-secondary font-mono"
+                  x-text="formatCountdown()"></span>
+            <button class="btn btn-ghost btn-sm" type="button" @click="refresh()" :disabled="busy"
+                    aria-label="立即刷新">
+              <span x-text="busy ? '刷新中…' : '立即刷新'"></span>
+            </button>
+          </div>
+        </div>
+        <div class="card-body" id="dashboard-gantt-today">
+          {{ gantt(rows_today, by='seat') }}
         </div>
       </div>
-      <div class="card-body" id="dashboard-gantt">
-        {{ gantt(rows, by='seat') }}
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">护城河（按座位）<span class="text-xs text-ink-muted ml-2">明天 {{ tomorrow }}</span></span>
+          <span id="dashboard-occ-err-tomorrow" class="badge badge-warn text-xs"
+                {% if not occ_err_tomorrow %}style="display:none"{% endif %}>
+            他人占用获取失败：{{ occ_err_tomorrow or '' }}
+          </span>
+        </div>
+        <div class="card-body" id="dashboard-gantt-tomorrow">
+          {{ gantt(rows_tomorrow, by='seat') }}
+        </div>
       </div>
     </div>
     <div class="flex flex-col gap-4">
       {# 目标座位(静态,不参与刷新) #}
       <div class="card"><div class="card-header"><span class="card-title">目标座位</span><a class="text-xs text-accent" href="/targets">全部 →</a></div>
         <div class="card-body flex flex-col gap-1.5">
-          {% for r in rows[:6] %}
+          {% for r in rows_today[:6] %}
           <div class="flex items-center justify-between text-sm">
             <span class="font-mono">{{ r.seat.seat_num }}</span>
             <span class="text-xs text-ink-secondary">{{ r.seat.label or '—' }}</span>

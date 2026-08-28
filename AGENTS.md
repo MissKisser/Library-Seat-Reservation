@@ -199,7 +199,7 @@ assert total == 6, f"期望 6 段, 实际 {total}"
 ## 附录：本文件覆盖的具体威胁
 
 1. **明早 14:00 自动预约**：`scheduler.py:339-343` 注册的 `afternoon_bootstrap` cron 会在每日 14:00:10 触发，用 `config.yaml` 里 3 个真实账号的明文密码登录超星并发请求
-2. **dashboard 30 秒轮询副作用**：`/api/dashboard-data` 路由 → `_fetch_others_occupied()` → 对每个目标座位发 1 个 `/getusedtimes` POST 请求
+2. **dashboard 30 秒轮询副作用**：`/api/dashboard-data` 路由 → `_fetch_others_occupied()` → 对每个目标座位 × 今天/明天各发 1 个 `/getusedtimes` POST 请求（即每 30 秒 2N 个请求，N = 目标座位数）
 3. **playwright 误触真实预约**：若在 dev 模式 (`npm run dev`) 下用 playwright 操作 dashboard 单元格表单 (`/tasks/{id}/sign` 等)，可能触发真实签到
 4. **scheduler tick_account 误触发**：`tick_account` 在每分钟按 stagger 偏移触发，会对所有 `pending`/`active` tasks 执行真实签到/签退
 ---
@@ -213,8 +213,13 @@ assert total == 6, f"期望 6 段, 实际 {total}"
 5. 引用 `config.yaml` 里的密码字段时，**只引位置**（如"见 config.yaml L55"），**不暴露具体值**（与第二条禁令一致）。
 6. 遇到错误 / bug 时，**先披露"发生了什么"再披露"为什么"**——不要先找借口。
 
----
-最后更新：2026-08-25
-触发事件：用户在调试 dashboard 不停刷新问题时，明确要求"严禁直接操作账号进行预约等高危操作，除非用户明确要求"；
-后增：用户明确超星预约机制（14:00 批量预约 + 时段开始才能签到），以及要求规范模型输出（每条回复以一句话总结收尾）；
-2026-08-25 再增：测试默认仅允许使用 xiongjt 账号，守护账号（wangh/zhaozh）需用户明确点名方可用于测试。
+## 注释规范
+1. 必须使用标准文档注释（如 JSDoc、Docstring 等），仅说明代码功能、入参及返回值。
+2. 绝对禁止保留任何历史痕迹：不得出现日期、版本变动、需求/Bug单号、被注释的废弃代码或 TODO/FIXME。代码必须呈现为干净的最终版。
+
+## 文档规范
+1. 除了README.md，所有文档不得进入版本控制，禁止提交到 Git 仓库。
+2. 除了README.md，所有文档必须放入项目根目录下的 `docs/` 文件夹中，如果没有该文件夹，请创建。该文件夹下的所有文档必须按照其用途命名且放置在对应的子文件夹中，例如 `docs/api/`、`docs/admin/`、`docs/user/` 等。
+3. `docs/` 文件夹下必须有一个README.md文件，作为文档总览，介绍整个文档目录的结构。当有新的文档添加时，必须在该README.md中更新目录结构。
+4. 豁免清单：根目录 `README.md` 与 `docs/README.md`、`AGENTS.md`（agent 运行时自动加载的配置）、`.github/` 下的模板文件（GitHub 平台强制位置）、`LICENSE` 不受第 1、2 条限制；其余文档一律移入 `docs/` 对应子文件夹且不入库。
+
