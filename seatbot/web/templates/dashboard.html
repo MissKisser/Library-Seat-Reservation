@@ -1,95 +1,237 @@
 {% extends "base.html" %}
-{% from "_macros/stat.html" import stat %}
-{% from "_macros/banner.html" import banner %}
-{% from "_macros/gantt.html" import gantt %}
 {% block title %}覆盖图{% endblock %}
 
 {% block content %}
-<div class="flex flex-col gap-5"
-     x-data='dashboardRefresh({{ bundle_json|safe }})'>
-  {# 指标卡 4 列 —— dashboardRefresh.applyToDom() 在每次刷新后会重建 #id 区域,
-     所以服务端只渲染首屏占位,JS 接手后续更新。 #}
-  {% set _gap = namespace(n=gap_count_today) %}
-  <div class="stat-grid" id="dashboard-stats">
-    {{ stat('目标座位', target_seats|length if target_seats is defined else rows_today|length) }}
-    {{ stat('守护账号', accounts|length if accounts is defined else '—') }}
-    {{ stat('今日覆盖', rows_today|length ~ ' 座', hint=(_gap.n ~ ' 个空缺') if _gap.n else '全覆盖', accent=_gap.n > 0) }}
-    {{ stat('当前时间', now_hhmm) }}
+<div class="flex flex-col gap-5" x-data='coverageGrid({{ initial|tojson }})'>
+
+  {# 指标卡 4 张 #}
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="stat-label">目标座位</div>
+      <div class="stat-value" x-text="targetSeatCount"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">守护账号</div>
+      <div class="stat-value" x-text="accountCount"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">今日覆盖</div>
+      <div class="stat-value" :class="today.gap_count ? 'accent' : ''" x-text="today.rows.length + ' 座'"></div>
+      <div class="stat-hint" x-text="today.gap_count ? (today.gap_count + ' 个空缺') : '全覆盖'"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">当前时间</div>
+      <div class="stat-value" x-text="now"></div>
+    </div>
   </div>
 
-  {# 状态 banner（按今天）—— JS 会重建内容 #}
-  <div id="dashboard-banner">
-    {% if not rows_today %}
-      {{ banner('warn', '尚未设置目标座位。<a class="text-accent" href="/targets">去添加 →</a>') }}
-    {% elif _gap.n %}
-      {{ banner('error', '检测到 <b>' ~ _gap.n ~ '</b> 个时段空缺，护城河有缺口。') }}
-    {% elif occ_err %}
-      {{ banner('warn', '无法获取超星他人占用数据：' ~ occ_err) }}
-    {% else %}
-      {{ banner('ok', '护城河稳固，全部目标座位已覆盖。') }}
-    {% endif %}
+  {# 状态 banner #}
+  <div class="banner banner-warn" x-show="today.rows.length === 0">
+    <span class="dot"></span>
+    <span>尚未设置目标座位。<a class="text-accent underline" href="/targets">去添加 →</a></span>
+  </div>
+  <div class="banner banner-error" x-show="today.rows.length > 0 && today.gap_count > 0">
+    <span class="dot"></span>
+    <span>检测到 <b x-text="today.gap_count"></b> 个时段空缺，护城河有缺口。</span>
+  </div>
+  <div class="banner banner-warn" x-show="today.rows.length > 0 && !today.gap_count && today.occ_err">
+    <span class="dot"></span>
+    <span>无法获取超星他人占用数据：<span x-text="today.occ_err"></span></span>
+  </div>
+  <div class="banner banner-ok" x-show="today.rows.length > 0 && !today.gap_count && !today.occ_err">
+    <span class="dot"></span>
+    <span>护城河稳固，全部目标座位已覆盖。</span>
   </div>
 
-  {# 主区:gantt(今天+明天) + 侧栏 #}
+  {# 主区：左列双甘特 + 右列侧栏 #}
   <div class="dashboard-grid">
     <div class="flex flex-col gap-5 min-w-0">
+
+      {# 今天甘特 #}
       <div class="card">
         <div class="card-header">
-          <span class="card-title">护城河（按座位）<span class="text-xs text-ink-muted ml-2">今天 {{ today }}</span></span>
+          <span class="card-title">护城河（按座位）<span class="text-xs text-ink-muted ml-2 font-normal" x-text="'今天 ' + today.view_day"></span></span>
           <div class="flex items-center gap-2">
-            <span class="text-xs text-ink-muted">点击单元格操作 · 30s 局部刷新</span>
-            <span class="text-xs px-2 py-0.5 rounded-full bg-ink-muted/20 text-ink-secondary font-mono"
-                  x-text="formatCountdown()"></span>
-            <button class="btn btn-ghost btn-sm" type="button" @click="refresh()" :disabled="busy"
-                    aria-label="立即刷新">
-              <span x-text="busy ? '刷新中…' : '立即刷新'"></span>
-            </button>
+            <span class="chip chip-muted tabular" x-text="formatCountdown()"></span>
+            <button class="btn btn-secondary btn-sm" type="button" @click="refresh()" :disabled="busy"
+                    x-text="busy ? '刷新中…' : '立即刷新'"></button>
           </div>
         </div>
-        <div class="card-body" id="dashboard-gantt-today">
-          {{ gantt(rows_today, by='seat') }}
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">护城河（按座位）<span class="text-xs text-ink-muted ml-2">明天 {{ tomorrow }}</span></span>
-          <span id="dashboard-occ-err-tomorrow" class="badge badge-warn text-xs"
-                {% if not occ_err_tomorrow %}style="display:none"{% endif %}>
-            他人占用获取失败：{{ occ_err_tomorrow or '' }}
-          </span>
-        </div>
-        <div class="card-body" id="dashboard-gantt-tomorrow">
-          {{ gantt(rows_tomorrow, by='seat') }}
-        </div>
-      </div>
-    </div>
-    <div class="flex flex-col gap-4">
-      {# 目标座位(静态,不参与刷新) #}
-      <div class="card"><div class="card-header"><span class="card-title">目标座位</span><a class="text-xs text-accent" href="/targets">全部 →</a></div>
-        <div class="card-body flex flex-col gap-1.5">
-          {% for r in rows_today[:6] %}
-          <div class="flex items-center justify-between text-sm">
-            <span class="font-mono">{{ r.seat.seat_num }}</span>
-            <span class="text-xs text-ink-secondary">{{ r.seat.label or '—' }}</span>
-          </div>
-          {% else %}<div class="text-xs text-ink-muted">暂无</div>{% endfor %}
-        </div>
-      </div>
-      {# 最近活动 —— JS 会重建内容 #}
-      <div class="card"><div class="card-header"><span class="card-title">最近活动</span><a class="text-xs text-accent" href="/logs">全部 →</a></div>
-        <div class="card-body flex flex-col gap-2" id="dashboard-recent-logs">
-          {% for log in (recent_logs[:8] if recent_logs else []) %}
-          <div class="flex items-start gap-2 text-xs">
-            <span class="mt-1 h-1.5 w-1.5 rounded-full shrink-0 {% if log.level == 'ERROR' %}bg-danger{% elif log.level == 'WARN' %}bg-warn{% else %}bg-info{% endif %}"></span>
-            <div class="flex-1 min-w-0">
-              <div class="text-ink-secondary truncate">{{ log.message }}</div>
-              <div class="text-ink-muted">{{ log.account_id or '—' }}</div>
+        <div class="card-body">
+          <div class="gantt-wrap">
+            <table class="gantt">
+              <thead><tr>
+                <th class="row-label">座位 \ 时段</th>
+                <template x-for="c in (today.rows[0]?.cells || [])" :key="c.start">
+                  <th x-text="c.start"></th>
+                </template>
+              </tr></thead>
+              <tbody>
+                <template x-for="row in today.rows" :key="row.seat_num">
+                  <tr>
+                    <th class="row-label">
+                      <span class="font-mono text-xs text-ink" x-text="row.seat_num"></span>
+                      <span class="text-xs text-ink-muted ml-1" x-text="row.label"></span>
+                    </th>
+                    <template x-for="c in row.cells" :key="row.seat_num + c.start">
+                      <td class="cell"
+                          :class="[
+                            'cell-' + cellStatus(c),
+                            cellUserMark(c) ? 'cell-user-reserved' : '',
+                            cellOthersMark(c) ? 'cell-others-occupied' : '',
+                            cardHit(c) ? 'cell-actionable' : ''
+                          ]"
+                          @click="openCard('today', row.seat_num, c, $event)">
+                        <span class="text-xs" x-show="cellUserMark(c)">👤</span>
+                        <span class="text-xs" x-show="cellOthersMark(c)">🔒</span>
+                      </td>
+                    </template>
+                  </tr>
+                </template>
+                <tr x-show="today.rows.length === 0">
+                  <td colspan="99" class="text-center text-ink-muted p-4">暂无目标座位</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="gantt-legend">
+              <span><span class="swatch cell-active"></span>已预约</span>
+              <span><span class="swatch cell-signed"></span>已签到</span>
+              <span><span class="swatch cell-submitting"></span>提交中</span>
+              <span><span class="swatch cell-leaving"></span>签退中</span>
+              <span><span class="swatch cell-pending"></span>待执行</span>
+              <span><span class="swatch cell-failed"></span>失败</span>
+              <span><span class="swatch cell-complete"></span>已完成</span>
+              <span><span class="swatch cell-user-reserved"></span>👤 用户硬预约</span>
+              <span><span class="swatch cell-others-occupied"></span>🔒 他人已占</span>
             </div>
           </div>
-          {% else %}<div class="text-xs text-ink-muted">暂无活动</div>{% endfor %}
+        </div>
+      </div>
+
+      {# 明天甘特 #}
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">护城河（按座位）<span class="text-xs text-ink-muted ml-2 font-normal" x-text="'明天 ' + tomorrow.view_day"></span></span>
+          <span class="chip chip-warn" x-show="tomorrow.occ_err" x-text="'他人占用获取失败：' + (tomorrow.occ_err || '')"></span>
+        </div>
+        <div class="card-body">
+          <div class="gantt-wrap">
+            <table class="gantt">
+              <thead><tr>
+                <th class="row-label">座位 \ 时段</th>
+                <template x-for="c in (tomorrow.rows[0]?.cells || [])" :key="c.start">
+                  <th x-text="c.start"></th>
+                </template>
+              </tr></thead>
+              <tbody>
+                <template x-for="row in tomorrow.rows" :key="row.seat_num">
+                  <tr>
+                    <th class="row-label">
+                      <span class="font-mono text-xs text-ink" x-text="row.seat_num"></span>
+                      <span class="text-xs text-ink-muted ml-1" x-text="row.label"></span>
+                    </th>
+                    <template x-for="c in row.cells" :key="row.seat_num + c.start">
+                      <td class="cell"
+                          :class="[
+                            'cell-' + cellStatus(c),
+                            cellUserMark(c) ? 'cell-user-reserved' : '',
+                            cellOthersMark(c) ? 'cell-others-occupied' : '',
+                            cardHit(c) ? 'cell-actionable' : ''
+                          ]"
+                          @click="openCard('tomorrow', row.seat_num, c, $event)">
+                        <span class="text-xs" x-show="cellUserMark(c)">👤</span>
+                        <span class="text-xs" x-show="cellOthersMark(c)">🔒</span>
+                      </td>
+                    </template>
+                  </tr>
+                </template>
+                <tr x-show="tomorrow.rows.length === 0">
+                  <td colspan="99" class="text-center text-ink-muted p-4">暂无目标座位</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
+
+    {# 侧栏 #}
+    <div class="flex flex-col gap-4">
+      <div class="card">
+        <div class="card-header"><span class="card-title">目标座位</span><a class="text-xs text-accent" href="/targets">全部 →</a></div>
+        <div class="card-body flex flex-col gap-1.5">
+          <template x-for="r in today.rows.slice(0, 6)" :key="r.seat_num">
+            <div class="flex items-center justify-between text-sm">
+              <span class="font-mono" x-text="r.seat_num"></span>
+              <span class="text-xs text-ink-secondary" x-text="r.label || '—'"></span>
+            </div>
+          </template>
+          <div class="text-xs text-ink-muted" x-show="today.rows.length === 0">暂无</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">最近活动</span><a class="text-xs text-accent" href="/logs">全部 →</a></div>
+        <div class="card-body flex flex-col gap-2">
+          <template x-for="(log, i) in recentLogs.slice(0, 8)" :key="i + '-' + log.ts">
+            <div class="flex items-start gap-2 text-xs">
+              <span class="mt-1 h-1.5 w-1.5 rounded-full shrink-0"
+                    :class="log.level === 'ERROR' ? 'bg-danger' : (log.level === 'WARN' ? 'bg-warn' : 'bg-info')"></span>
+              <div class="flex-1 min-w-0">
+                <div class="text-ink-secondary truncate" x-text="log.message"></div>
+                <div class="text-ink-muted" x-text="log.account_id || '—'"></div>
+              </div>
+            </div>
+          </template>
+          <div class="text-xs text-ink-muted" x-show="recentLogs.length === 0">暂无活动</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# 单元格信息卡 #}
+  <div class="cell-card" x-show="card" x-cloak style="display:none"
+       :style="card ? ('left:' + card.left + 'px; top:' + card.top + 'px') : ''"
+       @click.outside="closeCard()" @keydown.escape.window="closeCard()">
+    <template x-if="card">
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-bold font-mono"
+                x-text="card.seatNum + ' · ' + (card.day === 'today' ? today.view_day : tomorrow.view_day)"></span>
+          <span class="chip"
+                :class="{'chip-progress': card.hit.status === 'active' || card.hit.status === 'submitting',
+                         'chip-success': card.hit.status === 'signed',
+                         'chip-warn': card.hit.status === 'leaving',
+                         'chip-danger': card.hit.status === 'failed'}"
+                x-text="card.hit.status"></span>
+        </div>
+        <div class="text-xs font-mono text-ink-secondary mb-0.5"
+             x-text="card.cell.start + '–' + card.cell.end"></div>
+        <div class="text-xs text-ink-secondary">守护账号 <b class="text-ink" x-text="card.hit.id"></b></div>
+        <div class="text-xs text-ink-muted mt-0.5 mb-3" x-text="updatedText(card.hit)"></div>
+        <div class="flex gap-2">
+          <form x-show="card.hit.status === 'active'" method="post"
+                :action="'/tasks/' + card.hit.task_id + '/sign'" class="flex-1">
+            <button class="btn btn-primary btn-sm w-full justify-center" type="submit">立即签到</button>
+          </form>
+          <form x-show="card.hit.status === 'active' || card.hit.status === 'signed'" method="post"
+                :action="'/tasks/' + card.hit.task_id + '/leave'" class="flex-1">
+            <button class="btn btn-secondary btn-sm w-full justify-center" type="submit">立即签退</button>
+          </form>
+          <form x-show="card.hit.status === 'failed'" method="post" action="/tasks/quick-reserve" class="flex-1">
+            <input type="hidden" name="account_id" :value="card.hit.id">
+            <input type="hidden" name="seat_num" :value="card.seatNum">
+            <input type="hidden" name="start" :value="card.cell.start">
+            <input type="hidden" name="end" :value="card.cell.end">
+            <button class="btn btn-primary btn-sm w-full justify-center" type="submit">续约该段</button>
+          </form>
+        </div>
+        <form x-ref="cancelForm" x-show="card.hit.status && !['active','signed','submitting','leaving','failed'].includes(card.hit.status)"
+              method="post" :action="'/tasks/' + card.hit.task_id + '/cancel'" class="mt-2">
+          <button class="btn btn-danger btn-sm w-full justify-center" type="button"
+                  @click="confirmAction({title:'确认取消？', desc:'取消该预约时段', confirmText:'取消预约', danger:true}).then(ok => { if (ok) $refs.cancelForm.submit(); })">取消这个时段的预约</button>
+        </form>
+      </div>
+    </template>
   </div>
 </div>
 {% endblock %}

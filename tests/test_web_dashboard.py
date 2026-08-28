@@ -172,7 +172,8 @@ def test_dashboard_page_renders_both_day_tables(client):
     resp = client.get("/")
     assert resp.status_code == 200
     html = resp.text
-    assert 'id="dashboard-gantt-today"' in html
-    assert 'id="dashboard-gantt-tomorrow"' in html
-    assert 'dashboardRefresh(' in html
-    assert 'setDay' not in html
+    # 新模板为数据驱动: 首屏 JSON 与 /api/dashboard-data 同源
+    assert 'coverageGrid(' in html
+    assert '"view_day"' in html
+    assert '护城河' in html
+    assert 'cell-card' in html

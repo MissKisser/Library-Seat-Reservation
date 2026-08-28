@@ -1,8 +1,0 @@
-{# Macro: stat. 单个指标卡。 #}
-{% macro stat(label='', value='', hint=None, accent=False) %}
-<div class="stat-card">
-  <div class="stat-label">{{ label }}</div>
-  <div class="stat-value {% if accent %}accent{% endif %}">{{ value }}</div>
-  {% if hint %}<div class="stat-hint">{{ hint }}</div>{% endif %}
-</div>
-{% endmacro %}
