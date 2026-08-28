@@ -483,7 +483,8 @@ class StateStore:
     ) -> list[Task]:
         q = (
             "SELECT id, account_id, seat_num, day, start_time, end_time, "
-            "status, reserve_id, last_error FROM tasks WHERE 1=1"
+            "status, reserve_id, last_error, created_at, updated_at "
+            "FROM tasks WHERE 1=1"
         )
         args: list[Any] = []
         if account_id:
@@ -628,4 +629,6 @@ def _row_to_task(row) -> Task:
         status=TaskStatus(row[6]),
         reserve_id=row[7],
         last_error=row[8],
+        created_at=row[9] if len(row) > 9 else 0,
+        updated_at=row[10] if len(row) > 10 else 0,
     )
