@@ -2,9 +2,39 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== 设计 Token：深色（默认）===== */
+/* ===== 设计 Token：浅色（默认）===== */
 @layer base {
-  :root,
+  :root {
+    --bg-app: #f8fafc;            --bg-app-rgb: 248 250 252;
+    --bg-elevated: #ffffff;       --bg-elevated-rgb: 255 255 255;
+    --bg-surface: #ffffff;        --bg-surface-rgb: 255 255 255;
+    --bg-muted: #f1f5f9;          --bg-muted-rgb: 241 245 249;
+    --border-subtle: #e2e8f0;     --border-subtle-rgb: 226 232 240;
+    --border-strong: #cbd5e1;     --border-strong-rgb: 203 213 225;
+    --text-primary: #0f172a;      --text-primary-rgb: 15 23 42;
+    --text-secondary: #475569;    --text-secondary-rgb: 71 85 105;
+    --text-muted: #94a3b8;        --text-muted-rgb: 148 163 184;
+    --text-inverse: #ffffff;      --text-inverse-rgb: 255 255 255;
+    --accent: #4f46e5;            --accent-rgb: 79 70 229;
+    --accent-hover: #4338ca;      --accent-hover-rgb: 67 56 202;
+    --accent-soft: #eef2ff;
+    --progress: #0ea5e9;          --progress-rgb: 14 165 233;
+    --progress-soft: #f0f9ff;
+    --target: #f97316;            --target-rgb: 249 115 22;
+    --target-soft: #fff7ed;
+    /* 语义色 soft 变体：浅色用淡底 */
+    --success: #10b981;           --success-rgb: 16 185 129;
+    --success-soft: #ecfdf5;
+    --warn: #f59e0b;              --warn-rgb: 245 158 11;
+    --warn-soft: #fffbeb;
+    --danger: #ef4444;            --danger-rgb: 239 68 68;
+    --danger-soft: #fef2f2;
+    --info: #0ea5e9;              --info-rgb: 14 165 233;
+    --info-soft: #f0f9ff;
+    --shadow-card: 0 1px 3px rgba(15, 23, 42, 0.06);
+    --shadow-float: 0 10px 30px rgba(15, 23, 42, 0.14);
+  }
+  /* ===== 深色伴生主题（同构映射）===== */
   [data-theme="dark"] {
     --bg-app: #0b1220;            --bg-app-rgb: 11 18 32;
     --bg-elevated: #0f172a;       --bg-elevated-rgb: 15 23 42;
@@ -19,6 +49,10 @@
     --accent: #818cf8;            --accent-rgb: 129 140 248;
     --accent-hover: #a5b4fc;      --accent-hover-rgb: 165 180 252;
     --accent-soft: rgba(129,140,248,0.12);
+    --progress: #38bdf8;          --progress-rgb: 56 189 248;
+    --progress-soft: rgba(56,189,248,0.14);
+    --target: #fb923c;            --target-rgb: 251 146 60;
+    --target-soft: rgba(251,146,60,0.16);
     --success: #10b981;           --success-rgb: 16 185 129;
     --success-soft: rgba(16,185,129,0.12);
     --warn: #f59e0b;              --warn-rgb: 245 158 11;
@@ -27,27 +61,8 @@
     --danger-soft: rgba(239,68,68,0.12);
     --info: #38bdf8;              --info-rgb: 56 189 248;
     --info-soft: rgba(56,189,248,0.12);
-  }
-  /* ===== 亮色 ===== */
-  [data-theme="light"] {
-    --bg-app: #fafafa;            --bg-app-rgb: 250 250 250;
-    --bg-elevated: #ffffff;       --bg-elevated-rgb: 255 255 255;
-    --bg-surface: #ffffff;        --bg-surface-rgb: 255 255 255;
-    --bg-muted: #f1f5f9;          --bg-muted-rgb: 241 245 249;
-    --border-subtle: #e2e8f0;     --border-subtle-rgb: 226 232 240;
-    --border-strong: #cbd5e1;     --border-strong-rgb: 203 213 225;
-    --text-primary: #0f172a;      --text-primary-rgb: 15 23 42;
-    --text-secondary: #475569;    --text-secondary-rgb: 71 85 105;
-    --text-muted: #94a3b8;        --text-muted-rgb: 148 163 184;
-    --text-inverse: #ffffff;      --text-inverse-rgb: 255 255 255;
-    --accent: #4f46e5;            --accent-rgb: 79 70 229;
-    --accent-hover: #4338ca;      --accent-hover-rgb: 67 56 202;
-    --accent-soft: #eef2ff;
-    /* 语义色 soft 变体：亮色用淡底（与深色 rgba 对应） */
-    --success-soft: #ecfdf5;
-    --warn-soft: #fffbeb;
-    --danger-soft: #fef2f2;
-    --info-soft: #f0f9ff;
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35);
+    --shadow-float: 0 10px 30px rgba(0, 0, 0, 0.5);
   }
 
   html { font-family: theme('fontFamily.sans'); -webkit-font-smoothing: antialiased; }
