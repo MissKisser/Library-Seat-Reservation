@@ -9,6 +9,10 @@
     <div><h1 class="page-title">目标座位</h1><p class="page-sub">守护账号会在这些座位上轮值预约</p></div>
   </div>
 
+  {% if error %}
+  <div class="card border-danger/40"><div class="card-body text-sm text-danger">{{ error }}</div></div>
+  {% endif %}
+
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
     {# 添加表单 #}
     <div class="card"><div class="card-header"><span class="card-title">添加目标座位</span></div>
@@ -46,6 +50,29 @@
           {{ empty(title='还没有目标座位', hint='添加你想守护的座位号') }}
         {% endif %}
       </div>
+    </div>
+  </div>
+
+  {# 换座 #}
+  <div class="card">
+    <div class="card-header"><span class="card-title">换座（整席迁移）</span></div>
+    <div class="card-body">
+      <form method="post" action="/targets/replace" class="flex flex-col gap-3">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="form-field">
+            <label for="old_seat">旧座位<span class="req">*</span></label>
+            <select id="old_seat" name="old_seat" class="select" required>
+              {% for s in seats %}<option value="{{ s.seat_num }}">{{ s.seat_num }}{% if s.label %} · {{ s.label }}{% endif %}</option>{% endfor %}
+            </select>
+          </div>
+          {{ text_field('new_seat', '新座位号', '', placeholder='030', required=True, pattern='\\d{1,4}') }}
+        </div>
+        <label class="checkbox-item"><input type="checkbox" name="rebook_tomorrow" value="1" checked><span>同时补约新座位<b>明天</b>时段（今天 14:00 批量已跑过后必勾，否则明天失守）</span></label>
+        <label class="checkbox-item"><input type="checkbox" name="rebook_today" value="1"><span>同时补约新座位<b>今天</b>剩余时段</span></label>
+        <div class="hint">执行内容：守护矩阵整体迁移到新座位；旧座位进行中的预约<b>立即签退</b>（真实账号操作）；旧座位未来已预约时段转为"到点自动签到、短持 20 分钟后自动签退"释放账号；旧座位未预约任务全部关闭。账号被旧预约占用的时段无法立即补约，会在结果页列出。</div>
+        <button class="btn btn-primary btn-sm w-fit" type="submit"
+          @click.prevent="confirmAction({title:'确认换座？',desc:'旧座位 {{ seats[0].seat_num if seats else '' }}… 在约预约将被立即签退（真实账号操作），矩阵整体迁移',confirmText:'执行换座',danger:true}).then(ok=>{if(ok)$el.closest('form').submit()})">执行换座</button>
+      </form>
     </div>
   </div>
 </div>

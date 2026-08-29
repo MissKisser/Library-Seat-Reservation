@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}换座结果{% endblock %}
+
+{% macro _row(desc, note='') %}
+<li class="flex items-baseline justify-between gap-3 py-1.5 border-b border-edge-subtle last:border-0">
+  <span class="text-xs font-mono">{{ desc }}</span>
+  {% if note %}<span class="text-xs text-ink-secondary whitespace-nowrap">{{ note }}</span>{% endif %}
+</li>
+{% endmacro %}
+
+{% block content %}
+<div class="flex flex-col gap-5">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">换座结果：{{ report.old }} → {{ report.new }}</h1>
+      <p class="page-sub">矩阵迁移 {{ report.accounts|length }} 个账号 · 签退 {{ report.released|length }} · 关闭 {{ report.closed|length }} · 释放型 {{ report.janitors|length }} · 补约 {{ report.rebooked|selectattr('ok')|list|length }}/{{ report.rebooked|length }} · 跳过 {{ report.skipped|length }} · 异常 {{ report.errors|length }}</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <a class="btn btn-secondary btn-sm" href="/targets">返回目标座位</a>
+      <a class="btn btn-secondary btn-sm" href="/tasks">查看任务</a>
+    </div>
+  </div>
+
+  {% if report.errors %}
+  <div class="card border-danger/40">
+    <div class="card-header"><span class="card-title text-danger">异常（{{ report.errors|length }}）</span></div>
+    <div class="card-body"><ul class="flex flex-col">
+      {% for e in report.errors %}<li class="text-xs text-danger py-1 break-all">⚠ {{ e }}</li>{% endfor %}
+    </ul></div>
+  </div>
+  {% endif %}
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    <div class="card">
+      <div class="card-header"><span class="card-title">矩阵迁移（{{ report.accounts|length }}）</span></div>
+      <div class="card-body">
+        {% if report.accounts %}
+        <ul class="flex flex-col">
+          {% for a in report.accounts %}{{ _row(a.id ~ ' → ' ~ report.new, a.slots|join(' / ') or '无时段') }}{% endfor %}
+        </ul>
+        {% else %}<p class="text-xs text-ink-muted">没有账号绑定旧座位</p>{% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">已签退（进行中预约，{{ report.released|length }}）</span></div>
+      <div class="card-body">
+        {% if report.released %}
+        <ul class="flex flex-col">
+          {% for r in report.released %}{{ _row(r.desc, r.msg) }}{% endfor %}
+        </ul>
+        {% else %}<p class="text-xs text-ink-muted">无进行中的旧座位预约</p>{% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">释放型任务（到点签到、短持后签退，{{ report.janitors|length }}）</span></div>
+      <div class="card-body">
+        {% if report.janitors %}
+        <ul class="flex flex-col">
+          {% for j in report.janitors %}{{ _row(j.desc, '签退提前至 ' ~ j.new_end) }}{% endfor %}
+        </ul>
+        {% else %}<p class="text-xs text-ink-muted">无未来在约的旧座位预约</p>{% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">已关闭任务（{{ report.closed|length }}）</span></div>
+      <div class="card-body">
+        {% if report.closed %}
+        <ul class="flex flex-col">
+          {% for c in report.closed %}{{ _row(c.desc, c.note) }}{% endfor %}
+        </ul>
+        {% else %}<p class="text-xs text-ink-muted">无</p>{% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">补约（{{ report.rebooked|selectattr('ok')|list|length }}/{{ report.rebooked|length }}）</span></div>
+      <div class="card-body">
+        {% if report.rebooked %}
+        <ul class="flex flex-col">
+          {% for r in report.rebooked %}{{ _row(r.desc, (r.msg if r.ok else '失败: ' ~ r.msg)) }}{% endfor %}
+        </ul>
+        {% else %}<p class="text-xs text-ink-muted">未勾选补约或无可补时段</p>{% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">跳过（{{ report.skipped|length }}）</span></div>
+      <div class="card-body">
+        {% if report.skipped %}
+        <ul class="flex flex-col">
+          {% for s in report.skipped %}{{ _row(s.desc, s.reason) }}{% endfor %}
+        </ul>
+        {% else %}<p class="text-xs text-ink-muted">无</p>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -16,6 +16,8 @@ class SeatTarget:
     enabled: bool = True
     created_at: int = 0
     updated_at: int = 0
+    # 该座位期望被守护的时段; None = 使用 bindings.DEFAULT_DESIRED_SLOTS
+    desired_slots: list[str] | None = None
 
 
 # ---------- account / slot ----------

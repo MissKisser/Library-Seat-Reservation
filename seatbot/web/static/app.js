@@ -272,6 +272,8 @@
       },
       get hasErrors() { return this.rows.some(r => this.validateRow(r).length); },
       addSlot(row) {
+        /* 每账号每天每座位最多 1 个时段（超星规则） */
+        if (row.slots.length >= 1) return;
         row.slots.push({ s: opts.open, e: toHM(Math.min(toMin(opts.open) + 120, toMin(opts.close))) });
       },
       removeSlot(row, i) { row.slots.splice(i, 1); },
@@ -301,27 +303,12 @@
       /* 把矩阵写回隐藏字段; 返回 false 表示有校验错误,调用方应阻止提交 */
       sync() {
         const seatSlots = {};
-        const bound = [];
-        const union = [];
         this.rows.forEach(r => {
           if (!r.slots.length) return;
-          bound.push(r.seat);
           seatSlots[r.seat] = r.slots.map(x => x.s + '-' + x.e);
-          r.slots.forEach(x => {
-            const key = x.s + '-' + x.e;
-            if (!union.includes(key)) union.push(key);
-          });
         });
-        document.getElementById('f-seat-slots').value = JSON.stringify(seatSlots);
-        document.getElementById('f-slots').value = bound.length ? 'custom' : 'full';
-        document.getElementById('f-slots-custom').value = JSON.stringify(union);
-        const bs = document.getElementById('f-bound-seats');
-        bs.replaceChildren();
-        bound.forEach(s => {
-          const inp = document.createElement('input');
-          inp.type = 'hidden'; inp.name = 'bound_seats'; inp.value = s;
-          bs.appendChild(inp);
-        });
+        const el = document.getElementById('f-seat-slots');
+        if (el) el.value = JSON.stringify(seatSlots);
         return !this.hasErrors;
       },
     };

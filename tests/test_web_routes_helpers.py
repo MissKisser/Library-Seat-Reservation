@@ -12,39 +12,56 @@ def _acc(id_: str, phone="138", pw="x") -> Account:
 # ---------- _parse_seat_slots ----------
 
 def test_parse_seat_slots_empty_returns_none():
-    assert _parse_seat_slots("", 2.0) is None
-    assert _parse_seat_slots("{}", 2.0) is None
-    assert _parse_seat_slots("   ", 2.0) is None
+    assert _parse_seat_slots("", 2.0, 5.0) is None
+    assert _parse_seat_slots("{}", 2.0, 5.0) is None
+    assert _parse_seat_slots("   ", 2.0, 5.0) is None
 
 
 def test_parse_seat_slots_valid_zfills_keys():
-    out = _parse_seat_slots('{"104": ["09:00-11:00"], "85": ["15:00-17:00"]}', 2.0)
+    out = _parse_seat_slots('{"104": ["09:00-11:00"], "85": ["15:00-17:00"]}', 2.0, 5.0)
     assert out == {"104": ["09:00-11:00"], "085": ["15:00-17:00"]}
 
 
 def test_parse_seat_slots_rejects_bad_json():
     with pytest.raises(ValueError, match="JSON"):
-        _parse_seat_slots("{not-json", 2.0)
+        _parse_seat_slots("{not-json", 2.0, 5.0)
 
 
 def test_parse_seat_slots_rejects_bad_seat_key():
     with pytest.raises(ValueError, match="座位号"):
-        _parse_seat_slots('{"abc": ["09:00-11:00"]}', 2.0)
+        _parse_seat_slots('{"abc": ["09:00-11:00"]}', 2.0, 5.0)
 
 
 def test_parse_seat_slots_rejects_non_list_value():
     with pytest.raises(ValueError, match="字符串数组"):
-        _parse_seat_slots('{"104": "09:00-11:00"}', 2.0)
+        _parse_seat_slots('{"104": "09:00-11:00"}', 2.0, 5.0)
 
 
 def test_parse_seat_slots_rejects_overlong_range():
     with pytest.raises(ValueError, match="上限"):
-        _parse_seat_slots('{"104": ["19:00-21:30"]}', 2.0)
+        _parse_seat_slots('{"104": ["19:00-21:30"]}', 2.0, 5.0)
 
 
 def test_parse_seat_slots_rejects_bad_range_format():
-    with pytest.raises(ValueError, match="时段格式"):
-        _parse_seat_slots('{"104": ["not-a-range"]}', 2.0)
+    with pytest.raises(ValueError, match="格式"):
+        _parse_seat_slots('{"104": ["not-a-range"]}', 2.0, 5.0)
+
+
+def test_parse_seat_slots_rejects_second_slot_per_seat():
+    with pytest.raises(ValueError, match="最多绑定 1 个时段"):
+        _parse_seat_slots('{"104": ["09:00-11:00", "15:00-17:00"]}', 2.0, 5.0)
+
+
+def test_parse_seat_slots_rejects_daily_limit_overrun():
+    with pytest.raises(ValueError, match="每日总时长"):
+        _parse_seat_slots(
+            '{"104": ["08:00-10:00"], "105": ["10:00-12:00"], "106": ["13:00-15:00"]}',
+            2.0, 5.0)
+
+
+def test_parse_seat_slots_rejects_overlap_across_seats():
+    with pytest.raises(ValueError, match="重叠"):
+        _parse_seat_slots('{"104": ["09:00-11:00"], "105": ["10:30-12:30"]}', 2.0, 5.0)
 
 
 # ---------- _pick_read_account ----------

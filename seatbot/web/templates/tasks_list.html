@@ -17,6 +17,47 @@
     </div>
   </div>
 
+  {# 导入手动抢到的预约号 #}
+  <details class="card">
+    <summary class="card-header cursor-pointer list-none"><span class="card-title">导入已有预约（App 手动抢到的预约号）</span></summary>
+    <div class="card-body">
+      <form method="post" action="/tasks/import" class="flex flex-col gap-3">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div class="form-field">
+            <label for="imp_account">守护账号<span class="req">*</span></label>
+            <select id="imp_account" name="account_id" class="select" required>
+              {% for a in accounts %}<option value="{{ a.id }}">{{ a.id }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="imp_seat">座位<span class="req">*</span></label>
+            <select id="imp_seat" name="seat_num" class="select" required>
+              {% for s in target_seats %}<option value="{{ s.seat_num }}">{{ s.seat_num }}{% if s.label %} · {{ s.label }}{% endif %}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="imp_day">日期<span class="req">*</span></label>
+            <input id="imp_day" name="day" type="date" value="{{ day }}" class="input" required>
+          </div>
+          <div class="form-field">
+            <label for="imp_start">开始<span class="req">*</span></label>
+            <input id="imp_start" name="start" type="time" value="19:00" class="input" required>
+          </div>
+          <div class="form-field">
+            <label for="imp_end">结束<span class="req">*</span></label>
+            <input id="imp_end" name="end" type="time" value="21:00" class="input" required>
+          </div>
+          <div class="form-field">
+            <label for="imp_rid">预约号<span class="req">*</span></label>
+            <input id="imp_rid" name="reserve_id" type="text" value="" placeholder="189689227" class="input font-mono" required pattern="\d+">
+          </div>
+        </div>
+        <div class="hint">导入后接入自动生命周期：时段开始自动签到、结束前自动签退。仅写入本地状态，不向超星发任何请求。</div>
+        <button class="btn btn-primary btn-sm w-fit" type="submit">导入</button>
+      </form>
+    </div>
+  </details>
+
   <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-start">
     <template x-for="col in columns" :key="col.key">
       <div class="flex flex-col gap-2">

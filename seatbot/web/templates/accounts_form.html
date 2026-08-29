@@ -12,6 +12,10 @@
     <a class="btn btn-ghost btn-sm" href="/accounts">← 返回列表</a>
   </div>
 
+  {% if error %}
+  <div class="card border-danger/40 mb-4"><div class="card-body text-sm text-danger">{{ error }}</div></div>
+  {% endif %}
+
   {# 编辑模式：验证按钮（重点交互）#}
   {% if account %}
   <div class="card mb-4" x-data="verifyButton('{{ account.id }}')">
@@ -33,7 +37,9 @@
 
   <div class="card">
     <div class="card-body">
-      <form method="post" action="{% if account %}/accounts/{{ account.id }}{% else %}/accounts{% endif %}"
+      {% if account %}
+      {# ===== 编辑模式：凭据 + 座位绑定矩阵 ===== #}
+      <form method="post" action="/accounts/{{ account.id }}"
             class="flex flex-col gap-4"
             x-data='matrixEditor({
               seats: {{ matrix_seats|default([])|tojson }},
@@ -44,31 +50,15 @@
               maxHours: {{ matrix_max_hours|default(2) }}
             })'
             @submit="if (!sync()) { $event.preventDefault(); showToast({type:'error', title:'请先修正校验错误'}); }">
-        {% if not account %}
-          {{ text_field('id', '账号 ID', '', placeholder='如 xiongjt', required=True, pattern='[A-Za-z0-9_-]+', hint='保存后不可修改，仅字母/数字/下划线/连字符') }}
-        {% endif %}
-        {{ text_field('phone', '手机号', account.phone if account else '', placeholder='13800000000', required=True) }}
-        {% if account %}
+        {{ text_field('phone', '手机号', account.phone, placeholder='13800000000', required=True) }}
         {{ text_field('password', '密码', '', type='password', hint='编辑时留空 = 保持原密码不变') }}
-        {% else %}
-        {{ text_field('password', '密码', '', type='password', required=True) }}
-        {% endif %}
-
-        {# 后端既有字段：由矩阵编辑器在提交时写入 #}
-        <input type="hidden" name="slots" id="f-slots" value="{% if account and account.slots != 'full' %}custom{% else %}full{% endif %}">
-        <input type="hidden" name="slots_custom" id="f-slots-custom" value="">
-        <span id="f-bound-seats">
-          {% for s in (account.bound_seats if account else []) %}
-          <input type="hidden" name="bound_seats" value="{{ s }}">
-          {% endfor %}
-        </span>
         <input type="hidden" name="seat_slots" id="f-seat-slots"
-               value="{{ (account.seat_slots | tojson) if account and account.seat_slots else '{}' }}">
+               value="{{ (account.seat_slots | tojson) if account.seat_slots else '{}' }}">
 
         {# 矩阵编辑器 #}
         <div class="border border-edge-subtle rounded-xl overflow-hidden">
           <div class="flex items-center justify-between px-4 pt-3.5">
-            <span class="text-[13px] font-bold text-ink">时段分配（每个绑定座位一行）</span>
+            <span class="text-[13px] font-bold text-ink">座位绑定（每个座位每天最多 1 个时段，每日累计 ≤ 5h）</span>
             <span class="chip" :class="hasErrors ? 'chip-danger' : 'chip-success'"
                   x-text="hasErrors ? '存在校验错误' : '校验通过'"></span>
           </div>
@@ -93,12 +83,13 @@
                       <button type="button" class="ml-1 text-danger font-bold" @click="removeSlot(row, i)" aria-label="删除时段">✕</button>
                     </span>
                   </template>
-                  <button type="button" class="chip chip-muted" @click="addSlot(row)">+ 添加时段</button>
+                  <button type="button" class="chip chip-muted"
+                          x-show="row.slots.length === 0" @click="addSlot(row)">+ 绑定时段</button>
                 </div>
                 <div class="text-xs text-danger mt-1" x-show="validateRow(row).length"
                      x-text="validateRow(row).join('；')"></div>
                 <div class="flex items-center gap-1 mt-2"
-                     title="全局覆盖预览：靛蓝=本账号，浅蓝=其他账号，浅灰=缺口">
+                      title="全局覆盖预览：靛蓝=本账号，浅蓝=其他账号，浅灰=缺口">
                   <template x-for="(b, bi) in coverage(row.seat)" :key="bi">
                     <span class="h-2 flex-1 rounded-sm"
                           :class="b === 'mine' ? 'bg-accent' : (b === 'other' ? 'bg-progress/40' : 'bg-app-muted border border-edge-subtle')"></span>
@@ -109,7 +100,7 @@
               </div>
             </template>
             <div class="text-xs text-ink-muted" x-show="rows.every(r => !r.slots.length)">
-              未分配任何时段 = 该账号以通用全天模式参与所有目标座位。
+              未绑定任何座位 = 该账号暂不参与守护；可在绑定页面自动分配，或在此手动绑定。
             </div>
           </div>
         </div>
@@ -119,6 +110,18 @@
           <a class="btn btn-ghost" href="/accounts">取消</a>
         </div>
       </form>
+      {% else %}
+      {# ===== 创建模式：仅凭据；ID 登录后自动取自学习通 ===== #}
+      <form method="post" action="/accounts" class="flex flex-col gap-4">
+        {{ text_field('phone', '手机号', '', placeholder='13800000000', required=True, pattern='\\d{8,20}') }}
+        {{ text_field('password', '密码', '', type='password', required=True) }}
+        <div class="hint">创建时会用该手机号密码<b>真实登录学习通一次</b>，账号 ID 直接使用学习通实名（如 熊金涛）；座位绑定保存后在下一页分配。</div>
+        <div class="flex items-center gap-2 mt-2">
+          <button class="btn btn-primary" type="submit">登录并创建账号</button>
+          <a class="btn btn-ghost" href="/accounts">取消</a>
+        </div>
+      </form>
+      {% endif %}
     </div>
   </div>
 </div>
