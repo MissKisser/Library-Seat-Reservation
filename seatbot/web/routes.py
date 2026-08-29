@@ -777,11 +777,43 @@ async def bindings_list(request: Request):
     for seat, slots in desired.items():
         bound = {b["range"] for b in seat_bindings.get(seat, [])}
         uncovered[seat] = [s for s in slots if s not in bound]
+
+    def _blocks_of(ranges: list[str]) -> list[str]:
+        """把 HH:MM-HH:MM 时段展开成 30 分钟块起点列表（复选框预勾选用）。"""
+        out: list[str] = []
+        for r in ranges:
+            try:
+                s, e = parse_range(r)
+            except Exception:
+                continue
+            cur = _dt.combine(date.today(), s)
+            end = _dt.combine(date.today(), e)
+            while cur < end:
+                out.append(cur.strftime("%H:%M"))
+                cur += timedelta(minutes=30)
+        return sorted(set(out))
+
+    ticks: list[str] = []
+    t = _dt.combine(date.today(), parse_hhmm(lib.open_time))
+    close = _dt.combine(date.today(), parse_hhmm(lib.close_time))
+    while t < close:
+        ticks.append(t.strftime("%H:%M"))
+        t += timedelta(minutes=30)
+    from seatbot.bindings import DEFAULT_DESIRED_SLOTS
+
+    desired_blocks = {
+        s.seat_num: _blocks_of(desired_slots_of(s)) for s in seats
+    }
+    using_default = {
+        s.seat_num: not s.desired_slots for s in seats
+    }
     margins = account_margins(accounts, daily_limit_hours=limit)
     ctx = await _ctx(request, active_page="bindings")
     ctx.update(
         seats=seats, desired=desired, seat_bindings=seat_bindings,
         uncovered=uncovered, margins=margins,
+        desired_blocks=desired_blocks, using_default=using_default,
+        ticks=ticks,
         total_remaining=sum(m["remaining_hours"] for m in margins),
         total_used=sum(m["used_hours"] for m in margins),
         accounts=accounts, daily_limit=limit,
@@ -903,41 +935,78 @@ async def bindings_delete(
 async def bindings_desired(
     request: Request,
     seat_num: str = Form(...),
-    slots: str = Form(""),
+    blocks: list[str] = Form(default=[]),
 ):
-    """编辑某座位的期望守护时段（每行/逗号分隔一个 HH:MM-HH:MM）。"""
+    """编辑期望守护时段：按 30 分钟块复选提交，连续块自动合并为时段段。
+
+    seat_num 为 "__ALL__" 时把同一组块应用到所有已启用座位；
+    全不勾选 = 清空自定义、恢复默认三段。每个合并后的时段段必须
+    ≤ max_reserve_hours（超星单段上限）。
+    """
     from urllib.parse import quote
 
     store = request.app.state.store
     lib = request.app.state.cfg.library
-    sn = seat_num.strip().zfill(3)
-    raw_items = [x.strip() for x in slots.replace("\n", ",").split(",") if x.strip()]
-    parsed: list[str] = []
-    for r in raw_items:
+    seats = await store.list_target_seats()
+    sn_raw = seat_num.strip()
+    if sn_raw == "__ALL__":
+        targets = [s.seat_num for s in seats]
+        if not targets:
+            return RedirectResponse(
+                f"/bindings?error={quote('没有已启用座位')}", status_code=303)
+    else:
+        sn = sn_raw.zfill(3)
+        if sn not in {s.seat_num for s in seats}:
+            return RedirectResponse(
+                f"/bindings?error={quote(f'座位 {sn} 不存在')}", status_code=303)
+        targets = [sn]
+
+    open_t = parse_hhmm(lib.open_time)
+    close_t = parse_hhmm(lib.close_time)
+    starts: list[_time] = []
+    for b in blocks:
         try:
-            s, e = parse_range(r)
+            t = parse_hhmm(b.strip())
         except Exception:
             return RedirectResponse(
-                f"/bindings?error={quote(f'时段 {r!r} 格式错误（应为 HH:MM-HH:MM）')}",
+                f"/bindings?error={quote(f'时间块 {b!r} 格式错误')}", status_code=303)
+        e = (_dt.combine(date.today(), t) + timedelta(minutes=30)).time()
+        if t < open_t or e > close_t:
+            span = f"{lib.open_time}-{lib.close_time}"
+            return RedirectResponse(
+                f"/bindings?error={quote(f'时间块 {b} 超出开放时间 {span}')}",
                 status_code=303)
+        if t not in starts:
+            starts.append(t)
+    starts.sort()
+
+    merged: list[tuple[_time, _time]] = []
+    for t in starts:
+        e = (_dt.combine(date.today(), t) + timedelta(minutes=30)).time()
+        if merged and merged[-1][1] == t:
+            merged[-1] = (merged[-1][0], e)
+        else:
+            merged.append((t, e))
+    ranges: list[str] = []
+    for s, e in merged:
         rng = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
-        if e <= s:
-            return RedirectResponse(
-                f"/bindings?error={quote(f'时段 {rng} 结束需晚于开始')}",
-                status_code=303)
-        h = (_dt.combine(date.today(), e) - _dt.combine(date.today(), s)).total_seconds() / 3600
+        h = (_dt.combine(date.today(), e) - _dt.combine(date.today(), s)
+             ).total_seconds() / 3600
         if h > lib.max_reserve_hours + 1e-9:
-            return RedirectResponse(
-                f"/bindings?error={quote(f'时段 {rng} 超过单段上限 {lib.max_reserve_hours:g}h')}",
-                status_code=303)
-        if rng not in parsed:
-            parsed.append(rng)
-    if not await store.set_target_seat_desired(sn, parsed):
-        return RedirectResponse(
-            f"/bindings?error={quote(f'座位 {sn} 不存在')}", status_code=303)
-    return RedirectResponse(
-        f"/bindings?msg={quote(f'{sn} 期望时段已更新为 {len(parsed)} 段')}",
-        status_code=303)
+            msg = (f"连续勾选形成时段 {rng} 长 {h:g}h，"
+                   f"超过单段上限 {lib.max_reserve_hours:g}h——请在中间断开勾选")
+            from urllib.parse import quote as _q
+            return RedirectResponse(f"/bindings?error={_q(msg)}", status_code=303)
+        ranges.append(rng)
+
+    for sn in targets:
+        await store.set_target_seat_desired(sn, ranges)
+    scope = "所有座位" if sn_raw == "__ALL__" else "、".join(targets)
+    if ranges:
+        msg = f"{scope} 期望时段已更新为 {len(ranges)} 段（{'、'.join(ranges)}）"
+    else:
+        msg = f"{scope} 已清空自定义期望时段（恢复默认三段）"
+    return RedirectResponse(f"/bindings?msg={quote(msg)}", status_code=303)
 
 
 # =========================================================================
