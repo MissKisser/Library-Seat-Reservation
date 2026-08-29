@@ -67,6 +67,7 @@ class _StubCfg:
         open_time = "08:00"
         close_time = "22:00"
         max_reserve_hours = 2.0
+        daily_reserve_hours_limit = 5.0
 
 
 class FakeClient:

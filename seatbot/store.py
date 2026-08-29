@@ -78,6 +78,16 @@ CREATE TABLE IF NOT EXISTS logs (
 );
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts DESC);
 
+-- 通知: 批量缺口等需要用户看到的事件 (看板 banner + 可选 webhook)
+CREATE TABLE IF NOT EXISTS notifications (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts          INTEGER NOT NULL,
+  level       TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  body        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_ts ON notifications(ts DESC);
+
 -- ★ 用户硬预约段 (亲述, scheduler 不应再覆盖)
 CREATE TABLE IF NOT EXISTS user_reserved (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -567,6 +577,15 @@ class StateStore:
         )
         await self.db.commit()
 
+    async def update_task_account(self, task_id: int, account_id: str) -> None:
+        """改绑任务归属账号（换账号重试时与矩阵迁移保持一致）。"""
+        self._bump()
+        await self.db.execute(
+            "UPDATE tasks SET account_id=?, updated_at=? WHERE id=?",
+            (account_id, int(_time.time() * 1000), task_id),
+        )
+        await self.db.commit()
+
     async def get_task(self, task_id: int) -> Task | None:
         cur = await self.db.execute(
             "SELECT id, account_id, seat_num, day, start_time, end_time, status, reserve_id, last_error "
@@ -715,6 +734,25 @@ class StateStore:
         cur = await self.db.execute(q, args)
         rows = await cur.fetchall()
         return [LogRow(id=r[0], ts=r[1], level=r[2], account_id=r[3], message=r[4]) for r in rows]
+
+    async def add_notification(self, title: str, body: str = "", level: str = "warn") -> None:
+        """落一条用户需要看到的通知（看板 banner 展示，可选 webhook 外推）。"""
+        await self.db.execute(
+            "INSERT INTO notifications (ts, level, title, body) VALUES (?, ?, ?, ?)",
+            (int(_time.time() * 1000), level, title, body),
+        )
+        await self.db.commit()
+
+    async def list_notifications(self, limit: int = 5) -> list[dict]:
+        cur = await self.db.execute(
+            "SELECT id, ts, level, title, body FROM notifications ORDER BY ts DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cur.fetchall()
+        return [
+            {"id": r[0], "ts": r[1], "level": r[2], "title": r[3], "body": r[4]}
+            for r in rows
+        ]
 
 
 def _row_to_task(row) -> Task:

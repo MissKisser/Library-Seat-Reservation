@@ -66,6 +66,20 @@ class Scheduler:
         await self.store.log_message("ERROR", acc, msg)
         print(f"[ERROR] {acc or '-'} {msg}")
 
+    async def _notify(self, title: str, body: str = "", level: str = "warn") -> None:
+        """用户需要看到的事件: 落库(看板 banner) + 可选 webhook 外推。"""
+        await self.store.add_notification(title, body, level)
+        print(f"[NOTIFY] {title} {body}")
+        url = (self.cfg.runtime.notify_webhook or "").strip()
+        if not url:
+            return
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10) as hc:
+                await hc.post(url, json={"title": title, "content": body})
+        except Exception as e:
+            await self._warn(f"通知 webhook 外推失败: {e}")
+
     # ---------- bootstrap ----------
     async def bootstrap_today(self) -> None:
         today = today_cst()
@@ -445,6 +459,14 @@ class Scheduler:
             await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
             await self._warn(f"签到窗口已关闭（{msg}）；标记已签到，停止重试", acc.id)
             return
+        if "不存在" in msg:
+            # 预约已在服务端消失 (被取消/退座), 永远签不上 → 终态, 停止空转
+            await self.store.update_task_status(
+                t.id, TaskStatus.FAILED,
+                last_error=f"签到: 服务端预约已不存在（{msg}）",
+            )
+            await self._warn(f"签到终止: 预约在服务端已不存在（{msg}），任务标失败", acc.id)
+            return
         await self._error(f"签到失败: {msg}（保持进行中，下个周期重试）", acc.id)
 
     async def _run_leave(self, acc: Account, t: Task) -> None:
@@ -474,7 +496,19 @@ class Scheduler:
             await self._error(f"签退(signback)异常: {e}", acc.id)
             sr = {}
         if not sr.get("success"):
-            await self._warn(f"签退未成功（{sr.get('msg')}），回退暂离通道", acc.id)
+            sb_msg = str(sr.get("msg") or "")
+            # signback 报"预约已不在服务端" = 终态, 直接收尾;
+            # 不能带着这条消息去回退暂离通道 (暂离的返回消息不含终态特征,
+            # 会把可终结的死号任务永远留在重试循环里)
+            if "不存在" in sb_msg:
+                await self._info(f"签退幂等收尾（{sb_msg}）→ 已完成", acc.id)
+                await self.store.log_action(
+                    acc.id, "signback", str(t.reserve_id), str(sr)[:500], False, sb_msg,
+                )
+                await self.store.update_task_status(
+                    t.id, TaskStatus.COMPLETE, last_error="服务端预约已不存在, 幂等收尾")
+                return
+            await self._warn(f"签退未成功（{sb_msg}），回退暂离通道", acc.id)
             try:
                 sr = await self._act_with_relogin(client, acc, client.leave, t.reserve_id, "leave")
             except Exception as e:
@@ -661,6 +695,15 @@ class Scheduler:
             f"下午批量预约完成: 成功={submitted} 失败={failed} 日期={tomorrow}",
             "scheduler",
         )
+        if failed:
+            await self._notify(
+                f"明日批量预约存在缺口（{tomorrow}）",
+                f"成功 {submitted} / 失败 {failed}。"
+                f"失败任务可在任务看板用「改绑重试」换账号，"
+                f"或在绑定页调整矩阵后等下个周期。",
+                level="error",
+            )
+
     async def shutdown(self) -> None:
         self.scheduler.shutdown(wait=False)
         for c in self._clients.values():

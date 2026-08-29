@@ -45,6 +45,16 @@
   </div>
 
   {# 状态 banner #}
+  <template x-if="notifications && notifications.length">
+    <div class="flex flex-col gap-2">
+      <template x-for="n in notifications" :key="n.id">
+        <div class="banner" :class="n.level === 'error' ? 'banner-error' : 'banner-warn'">
+          <span class="dot"></span>
+          <span><b x-text="n.title"></b><span class="ml-2" x-text="n.body"></span></span>
+        </div>
+      </template>
+    </div>
+  </template>
   <div class="banner banner-warn" x-show="today.rows.length === 0">
     <span class="dot"></span>
     <span>尚未设置目标座位。<a class="text-accent underline" href="/targets">去添加 →</a></span>

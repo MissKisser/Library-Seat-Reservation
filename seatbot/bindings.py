@@ -99,6 +99,39 @@ def account_margins(
     return out
 
 
+def candidate_accounts(
+    accounts: list[Account],
+    *,
+    seat: str,
+    start: time,
+    end: time,
+    exclude_id: str,
+    daily_limit_hours: float,
+) -> list[dict]:
+    """某 (座位, 时段) 的可改绑账号清单：余量够、时段不撞、该座位未绑。
+
+    返回 [{id, remaining_hours}]，按余量降序（改绑重试与前端提示共用）。
+    """
+    dur = _hours(start, end)
+    out: list[dict] = []
+    for a in accounts:
+        if a.id == exclude_id:
+            continue
+        if seat in (a.seat_slots or {}):
+            continue
+        if used_hours(a.seat_slots) + dur > daily_limit_hours + 1e-9:
+            continue
+        if any(start < e and s < end
+               for _seat, s, e, _h in matrix_windows(a.seat_slots)):
+            continue
+        out.append({
+            "id": a.id,
+            "remaining_hours": max(0.0, daily_limit_hours - used_hours(a.seat_slots)),
+        })
+    out.sort(key=lambda x: -x["remaining_hours"])
+    return out
+
+
 def desired_slots_of(seat_target) -> list[str]:
     """座位的期望守护时段；未配置时用默认三段。"""
     slots = getattr(seat_target, "desired_slots", None)

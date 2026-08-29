@@ -98,6 +98,9 @@ class RuntimeConfig(BaseModel):
     #   true  = 未来日期任务走 submit_via_page_rewrite (真实页面提交, 网络层改写 day/时段)
     #   false = 未来日期任务直接 FAILED, 绝不回退浏览器通道 (会错约到当天)
     direct_submit_enabled: bool = True
+    #: 通知外推 webhook (Server酱/bark/企业微信等); 空 = 只落库在看板展示。
+    #: 触发时 POST JSON {"title": ..., "content": ...}
+    notify_webhook: str = ""
     log_dir: str = "./logs"
     db_path: str = "./seatbot.db"
     web_host: str = "0.0.0.0"

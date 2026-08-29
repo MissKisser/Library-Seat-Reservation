@@ -326,6 +326,7 @@
       today: initial.today,
       tomorrow: initial.tomorrow,
       recentLogs: initial.recent_logs || [],
+      notifications: initial.notifications || [],
       targetSeatCount: initial.target_seat_count || 0,
       accountCount: initial.account_count || 0,
       now: initial.now_hhmm || '',
@@ -437,6 +438,7 @@
           this.today = j.today || this.today;
           this.tomorrow = j.tomorrow || this.tomorrow;
           this.recentLogs = j.recent_logs || [];
+          this.notifications = j.notifications || [];
           this.now = j.now_hhmm || this.now;
           if (this.boot.target < 100) this.boot.stage = '核对护城河覆盖…';
         } catch (e) {

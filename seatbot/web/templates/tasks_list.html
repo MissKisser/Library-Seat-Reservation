@@ -2,7 +2,13 @@
 {% block title %}任务{% endblock %}
 
 {% block content %}
-<div class="flex flex-col gap-5" x-data='tasksBoard({{ tasks_initial|tojson }})'>
+  <div class="flex flex-col gap-5" x-data='tasksBoard({{ tasks_initial|tojson }})'>
+  {% if request.query_params.get('error') %}
+  <div class="card border-danger/40"><div class="card-body text-sm text-danger">{{ request.query_params.get('error') }}</div></div>
+  {% endif %}
+  {% if request.query_params.get('msg') %}
+  <div class="card border-success/40"><div class="card-body text-sm text-success">{{ request.query_params.get('msg') }}</div></div>
+  {% endif %}
   <div class="page-header">
     <div>
       <h1 class="page-title">任务看板</h1>
@@ -79,8 +85,21 @@
                   <input type="hidden" name="seat_num" :value="t.seat_num">
                   <input type="hidden" name="start" :value="t.start">
                   <input type="hidden" name="end" :value="t.end">
-                  <button class="btn btn-danger btn-sm w-full justify-center" type="submit">重试</button>
+                  <button class="btn btn-danger btn-sm w-full justify-center" type="submit">原账号重试</button>
                 </form>
+                <template x-if="t.candidates && t.candidates.length">
+                  <form method="post" :action="'/tasks/' + t.id + '/reassign'" class="mt-2 flex flex-col gap-1.5">
+                    <label class="text-[11px] text-ink-secondary">改绑给有余量的账号并立即重试：</label>
+                    <div class="flex gap-1.5">
+                      <select name="account_id" class="select text-xs">
+                        <template x-for="c in t.candidates" :key="c.id">
+                          <option :value="c.id" x-text="c.id + '（余 ' + c.remaining_hours + 'h）'"></option>
+                        </template>
+                      </select>
+                      <button class="btn btn-secondary btn-sm whitespace-nowrap" type="submit">改绑重试</button>
+                    </div>
+                  </form>
+                </template>
               </div>
             </template>
           </div>
