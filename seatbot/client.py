@@ -429,11 +429,18 @@ class ChaoxingClient:
 
     @staticmethod
     async def _click_first_selectable_cell(page) -> bool:
-        """点页面上第一个可选格子 (供 enc harvest 触发表单构造用)。"""
+        """点页面上第一个可选格子 (供 enc harvest 触发表单构造用)。
+
+        格子由页面 XHR 异步渲染, 预约窗口开闸时段可能延迟数秒, 先等待渲染;
+        全量扫描不设条数上限, 避免低号座位全满时误判无格可点。
+        """
+        for _ in range(8):
+            if await page.locator("li").count() > 0:
+                break
+            await page.wait_for_timeout(1000)
         for sel in ("li:not(.noSelect)", "li"):
             loc = page.locator(sel)
-            n = await loc.count()
-            for i in range(min(n, 30)):
+            for i in range(await loc.count()):
                 el = loc.nth(i)
                 try:
                     cls = await el.get_attribute("class") or ""
@@ -457,6 +464,7 @@ class ChaoxingClient:
         day: str,            # 'YYYY-MM-DD' — 目标日期 (可为未来日期)
         start_time: str,     # 'HH:MM'
         end_time: str,       # 'HH:MM'
+        anchor_seat: str | None = None,  # 开页用座位号; 目标座位页可能处于占用详情态无格子
     ) -> dict[str, Any]:
         """跨天预约通道 B1 (2026-08-26 下午): 页面内改写放行。
 
@@ -554,7 +562,7 @@ class ChaoxingClient:
 
                 url = (
                     f"{self.OFFICE_BASE}/front/apps/seat/code"
-                    f"?id={room_id}&seatNum={seat_num}"
+                    f"?id={room_id}&seatNum={anchor_seat or seat_num}"
                 )
                 await page.goto(url)
                 await page.wait_for_load_state("networkidle")

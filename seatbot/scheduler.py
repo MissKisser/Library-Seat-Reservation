@@ -232,6 +232,38 @@ class Scheduler:
             acc.id,
         )
 
+    async def _pick_anchor_seat(self, client: ChaoxingClient, exclude: str) -> str | None:
+        """挑一个当前空闲且真实可约的座位作页面表单锚点。
+
+        座位页仅在座位当前未被使用时渲染格子网格; 目标座位正被使用时
+        页面是详情面板, 无格可点。锚点只决定开哪个座位页, 真实座位/日期/
+        时段由网络层改写覆盖。有未来预约不影响页面此刻呈格子, 故判据是
+        "当前不在任何占用窗口内"; 要求当天有过占用记录以排除特殊不可
+        约座位。候选顺序: 其余目标座位 → 相邻号 → 间隔扫描号。
+
+        Returns: 座位号; 无合格候选时 None。
+        """
+        now_hm = now_cst().strftime("%H:%M")
+        today = today_cst().isoformat()
+        n = int(exclude) if exclude.isdigit() else 0
+        adjacent = [f"{n + d:03d}" for d in (-2, -1, 1, 2) if 0 < n + d < 1000]
+        candidates = [s.seat_num for s in await self.store.list_target_seats()
+                      if s.seat_num != exclude]
+        candidates += adjacent + [f"{i:03d}" for i in range(1, 102, 10)]
+        tried: set[str] = set()
+        for seat in candidates:
+            if seat == exclude or seat in tried or len(tried) >= 12:
+                continue
+            tried.add(seat)
+            try:
+                used = await client.get_used_times(
+                    self.cfg.library.room_id, seat, today)
+            except Exception:
+                continue
+            if used and not any(s <= now_hm < e for s, e in used):
+                return seat
+        return None
+
     async def _run_submit(self, acc: Account, t: Task) -> None:
         """提交预约 (不签到)。
 
@@ -278,6 +310,23 @@ class Scheduler:
                     start_time=t.start_time.strftime("%H:%M"),
                     end_time=t.end_time.strftime("%H:%M"),
                 )
+                if not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
+                    anchor = await self._pick_anchor_seat(client, t.seat_num)
+                    if anchor:
+                        await self._warn(
+                            f"座位 {t.seat_num} 页面无格子, 改用锚点座位 {anchor} 重试",
+                            acc.id,
+                        )
+                        r = await client.submit_via_page_rewrite(
+                            phone=acc.phone,
+                            password=acc.password,
+                            room_id=self.cfg.library.room_id,
+                            seat_num=t.seat_num,
+                            day=t.day.isoformat(),
+                            start_time=t.start_time.strftime("%H:%M"),
+                            end_time=t.end_time.strftime("%H:%M"),
+                            anchor_seat=anchor,
+                        )
             else:
                 r = await client.submit_in_browser(
                     phone=acc.phone,
@@ -386,8 +435,13 @@ class Scheduler:
             return
         msg = str(sr.get("msg") or "")
         if "不在签到时间" in msg:
-            # 已签过, 或签到窗口 (start+signDuration≈20min) 已过 — 预约要么已生效
-            # 要么已失效, 继续重试只会每分钟打一次无效 API。置 SIGNED 终止。
+            # 消息无法区分"未到签到时间"(任务时间早于预约真实开始)与
+            # "窗口已关闭"。开始后 60 分钟内保持重试以自愈时间偏差,
+            # 超过则预约必然已生效或失效, 置 SIGNED 终止无效调用。
+            deadline = at_cst(t.day, t.start_time) + timedelta(minutes=60)
+            if now_cst() < deadline:
+                await self._warn(f"签到被拒（{msg}）；窗口状态不明，保持重试", acc.id)
+                return
             await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
             await self._warn(f"签到窗口已关闭（{msg}）；标记已签到，停止重试", acc.id)
             return
@@ -488,7 +542,7 @@ class Scheduler:
         # ★ 每天14:00触发：为明天生成预约任务（超星14:00后开放次日预约窗口）
         self.scheduler.add_job(
             self._afternoon_bootstrap,
-            CronTrigger(hour=14, minute=0, second=10, timezone="Asia/Shanghai"),
+            CronTrigger(hour=14, minute=0, second=3, timezone="Asia/Shanghai"),
             id="afternoon_bootstrap", replace_existing=True,
         )
         self.scheduler.start()
@@ -539,41 +593,70 @@ class Scheduler:
         for acc in accounts:
             await self._bootstrap_for_account(acc, tomorrow, seats)
 
-        submitted = 0
-        failed = 0
-        for acc in accounts:
-            tasks = await self.store.list_tasks(account_id=acc.id, day=tomorrow)
-            pending_tasks = [t for t in tasks if t.status == TaskStatus.PENDING]
-            if not pending_tasks:
-                continue
-            # 账号间错开 3 秒,避免 Playwright 资源冲突 / 风控检测
-            if submitted > 0:
-                await asyncio.sleep(3)
-            for t in pending_tasks:
-                # 单 task 独立 try/except — 一个失败不影响其他
-                try:
-                    await self._run_submit(acc, t)
-                    # 检查结果:reserve_id 写入 = 成功,否则 _run_submit 已标 FAILED
-                    after = await self.store.get_task(t.id)
-                    if after and after.status == TaskStatus.ACTIVE and after.reserve_id:
-                        submitted += 1
-                    else:
-                        failed += 1
-                        await self._warn(
-                            f"下午批量: 提交未成功 任务={t.id} "
-                            f"账号={acc.id} 座位={t.seat_num} {t.day} {t.start_time}-{t.end_time}",
+        for round_no in range(3):
+            if round_no > 0:
+                await self._info(
+                    f"下午批量重试轮 {round_no}: 等待 90 秒后重提未完成任务 日期={tomorrow}",
+                    "scheduler",
+                )
+                await asyncio.sleep(90)
+            progressed = False
+            for acc in accounts:
+                tasks = await self.store.list_tasks(account_id=acc.id, day=tomorrow)
+                todo = [
+                    t for t in tasks
+                    if t.status == TaskStatus.PENDING
+                    or (round_no > 0 and t.status == TaskStatus.FAILED)
+                ]
+                if not todo:
+                    continue
+                # 账号间错开 3 秒,避免 Playwright 资源冲突 / 风控检测
+                if progressed:
+                    await asyncio.sleep(3)
+                progressed = True
+                for t in todo:
+                    if t.status == TaskStatus.FAILED:
+                        await self.store.update_task_status(
+                            t.id, TaskStatus.READY, last_error="")
+                        t = await self.store.get_task(t.id)
+                    # 单 task 独立 try/except — 一个失败不影响其他
+                    try:
+                        await self._run_submit(acc, t)
+                        # 检查结果:reserve_id 写入 = 成功,否则 _run_submit 已标 FAILED
+                        after = await self.store.get_task(t.id)
+                        if not (after and after.status == TaskStatus.ACTIVE
+                                and after.reserve_id):
+                            await self._warn(
+                                f"下午批量: 提交未成功 任务={t.id} "
+                                f"账号={acc.id} 座位={t.seat_num} {t.day} "
+                                f"{t.start_time}-{t.end_time}",
+                                acc.id,
+                            )
+                    except Exception as e:
+                        await self._error(
+                            f"下午批量: 提交抛出异常 {type(e).__name__}: {e} "
+                            f"任务={t.id} 账号={acc.id} 座位={t.seat_num} {t.day} "
+                            f"{t.start_time}-{t.end_time}",
                             acc.id,
                         )
-                except Exception as e:
-                    failed += 1
-                    await self._error(
-                        f"下午批量: 提交抛出异常 {type(e).__name__}: {e} "
-                        f"任务={t.id} 账号={acc.id} 座位={t.seat_num} {t.day} {t.start_time}-{t.end_time}",
-                        acc.id,
-                    )
-                    # 任务保持 PENDING, 让明天的 _afternoon_bootstrap 重试
-                # 单账号内 task 间错开 2 秒,避免连续 submit 触发风控
-                await asyncio.sleep(2)
+                    # 单账号内 task 间错开 2 秒,避免连续 submit 触发风控
+                    await asyncio.sleep(2)
+            unfinished = [
+                t for acc in accounts
+                for t in await self.store.list_tasks(account_id=acc.id, day=tomorrow)
+                if t.status in (TaskStatus.PENDING, TaskStatus.FAILED)
+            ]
+            if not unfinished:
+                break
+        final_tasks = [
+            t for acc in accounts
+            for t in await self.store.list_tasks(account_id=acc.id, day=tomorrow)
+        ]
+        submitted = sum(
+            1 for t in final_tasks
+            if t.status == TaskStatus.ACTIVE and t.reserve_id
+        )
+        failed = sum(1 for t in final_tasks if t.status == TaskStatus.FAILED)
         await self._info(
             f"下午批量预约完成: 成功={submitted} 失败={failed} 日期={tomorrow}",
             "scheduler",
