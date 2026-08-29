@@ -13,7 +13,8 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from seatbot.bindings import (
-    account_margins, auto_assign, desired_slots_of, validate_matrix,
+    account_margins, auto_assign, candidate_accounts,
+    desired_slots_of, validate_matrix,
 )
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
@@ -368,6 +369,7 @@ async def _build_dashboard_data(request: Request) -> dict:
     )
 
     recent_logs = await store.list_logs(limit=8)
+    notifications = await store.list_notifications(limit=3)
     return {
         "today": {
             "view_day": today.isoformat(),
@@ -386,6 +388,7 @@ async def _build_dashboard_data(request: Request) -> dict:
             "ts": l.ts, "level": l.level,
             "account_id": l.account_id, "message": l.message,
         } for l in recent_logs],
+        "notifications": notifications,
         "target_seat_count": len(target_seats),
         "account_count": len(accounts),
     }
@@ -445,6 +448,28 @@ def _serialize_task(t: Task) -> dict:
     }
 
 
+async def _tasks_payload(store, cfg, d: date) -> dict:
+    """任务看板数据（HTML 首屏与 JSON 局部刷新共用）。
+
+    失败/待定任务附可改绑账号清单（余量够/时段不撞/该座位未绑），
+    前端渲染「改绑重试」下拉。
+    """
+    tasks = await store.list_tasks(day=d)
+    payload = {
+        "day": d.isoformat(),
+        "tasks": [_serialize_task(t) for t in tasks],
+    }
+    accounts = await store.list_accounts()
+    for t, tj in zip(tasks, payload["tasks"]):
+        if t.status in (TaskStatus.FAILED, TaskStatus.PENDING):
+            tj["candidates"] = candidate_accounts(
+                accounts, seat=t.seat_num, start=t.start_time, end=t.end_time,
+                exclude_id=t.account_id,
+                daily_limit_hours=cfg.library.daily_reserve_hours_limit,
+            )
+    return payload
+
+
 @router.get("/api/tasks")
 async def api_tasks(request: Request, day: str | None = None):
     """任务看板 JSON 视图，仅读本地 DB，不发起超星请求。"""
@@ -453,11 +478,7 @@ async def api_tasks(request: Request, day: str | None = None):
         d = date.fromisoformat(day) if day else today_cst()
     except ValueError:
         raise HTTPException(400, "day must be YYYY-MM-DD")
-    tasks = await store.list_tasks(day=d)
-    return JSONResponse({
-        "day": d.isoformat(),
-        "tasks": [_serialize_task(t) for t in tasks],
-    })
+    return JSONResponse(await _tasks_payload(store, request.app.state.cfg, d))
 
 
 # =========================================================================
@@ -1303,11 +1324,7 @@ async def tasks_list(
         d = date.fromisoformat(day) if day else today_cst()
     except ValueError:
         raise HTTPException(400, "day must be YYYY-MM-DD")
-    tasks = await store.list_tasks(day=d)
-    payload = {
-        "day": d.isoformat(),
-        "tasks": [_serialize_task(t) for t in tasks],
-    }
+    payload = await _tasks_payload(store, request.app.state.cfg, d)
     ctx = await _ctx(request, active_page="tasks")
     # 传 dict 由模板 |tojson 一次性编码; 传已 dumps 的字符串会被二次编码致前端解析成字符串
     ctx["tasks_initial"] = payload
@@ -1415,6 +1432,90 @@ async def tasks_import(
         True, "",
     )
     return RedirectResponse(f"/tasks?day={d.isoformat()}&imported=1", status_code=303)
+
+
+@router.post("/tasks/{task_id}/reassign")
+async def task_reassign(
+    request: Request,
+    task_id: int,
+    account_id: str = Form(...),
+):
+    """失败任务改绑重试：把该 (座位, 时段) 换给新账号并立即重新提交。
+
+    同步迁移守护矩阵（旧账号释放该座位绑定、新账号接手），保持
+    矩阵与实际持约一致；新账号校验不过（余量/重叠/每座位1段）则拒绝。
+    """
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    sched = request.app.state.sched
+    lib = request.app.state.cfg.library
+    t = await store.get_task(task_id)
+    if not t:
+        raise HTTPException(404)
+    if t.status not in (TaskStatus.FAILED, TaskStatus.PENDING):
+        return RedirectResponse(
+            f"/tasks?day={t.day.isoformat()}&error="
+            f"{quote(f'任务 #{task_id} 状态为 {t.status.value}，只有失败/待定任务可改绑')}",
+            status_code=303)
+    new_acc = await store.get_account(account_id)
+    if not new_acc:
+        raise HTTPException(404, f"account {account_id} not found")
+    if account_id == t.account_id:
+        return RedirectResponse(
+            f"/tasks?day={t.day.isoformat()}&error={quote('不能改绑给当前账号')}",
+            status_code=303)
+    # 以服务端实时候选为准, 防止页面滞留旧清单导致越权改绑
+    candidates = candidate_accounts(
+        await store.list_accounts(), seat=t.seat_num,
+        start=t.start_time, end=t.end_time, exclude_id=t.account_id,
+        daily_limit_hours=lib.daily_reserve_hours_limit,
+    )
+    if account_id not in [c["id"] for c in candidates]:
+        return RedirectResponse(
+            f"/tasks?day={t.day.isoformat()}&error="
+            f"{quote(f'{account_id} 不满足接手条件（余量不足/时段冲突/该座位已绑）')}",
+            status_code=303)
+
+    old_acc = await store.get_account(t.account_id)
+    rng = f"{t.start_time.strftime('%H:%M')}-{t.end_time.strftime('%H:%M')}"
+    new_matrix = dict(new_acc.seat_slots or {})
+    new_matrix[t.seat_num] = [rng]
+    try:
+        validate_matrix(
+            new_matrix, max_seg_hours=lib.max_reserve_hours,
+            daily_limit_hours=lib.daily_reserve_hours_limit,
+        )
+    except ValueError as e:
+        return RedirectResponse(
+            f"/tasks?day={t.day.isoformat()}&error={quote(str(e))}", status_code=303)
+    if old_acc:
+        old_matrix = dict(old_acc.seat_slots or {})
+        if old_matrix.get(t.seat_num) == [rng]:
+            old_matrix.pop(t.seat_num, None)
+            old_acc.seat_slots = old_matrix
+            old_acc.bound_seats = sorted(old_matrix.keys())
+            await store.upsert_account(old_acc)
+    new_acc.seat_slots = new_matrix
+    new_acc.bound_seats = sorted(new_matrix.keys())
+    await store.upsert_account(new_acc)
+
+    await store.update_task_account(task_id, account_id)
+    await store.update_task_status(task_id, TaskStatus.READY, last_error="")
+    fresh = await store.get_task(task_id)
+    await sched._run_submit(new_acc, fresh)
+    after = await store.get_task(task_id)
+    if after and after.reserve_id:
+        msg = f"#{task_id} 已改绑 {account_id} 并预约成功（预约号 {after.reserve_id}）"
+    else:
+        msg = (f"#{task_id} 已改绑 {account_id}，但提交仍失败："
+               f"{(after.last_error if after else '') or '见任务板'}")
+    await store.log_action(
+        account_id, "reassign", str(task_id),
+        f"改绑重试: seat={t.seat_num} {t.day} {rng} → {account_id}", True, "",
+    )
+    return RedirectResponse(
+        f"/tasks?day={t.day.isoformat()}&msg={quote(msg)}", status_code=303)
 
 
 @router.post("/tasks/{task_id}/sign")

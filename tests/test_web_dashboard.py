@@ -54,6 +54,9 @@ class FakeStore:
     async def list_logs(self, account_id=None, level=None, limit=200):
         return []
 
+    async def list_notifications(self, limit=5):
+        return []
+
 
 class _StubCfg:
     class library:
