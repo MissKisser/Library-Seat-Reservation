@@ -86,6 +86,61 @@
     </div>
   </div>
 
+  {# 期望时段编辑（统一 + 单座，复选框） #}
+  <div class="card" id="desired-editor">
+    <div class="card-header"><span class="card-title">期望时段编辑（按 30 分钟块勾选，连续块自动合并为一段）</span></div>
+    <div class="card-body flex flex-col gap-4">
+      <div class="hint -mt-1">勾选 = 该座位要守护的半小时块；连续勾选合并为一段（单段 ≤{{ '%g'|format(max_seg) }}h，超长会被拒绝）；<b>全不勾提交 = 清空自定义、恢复默认三段</b>。</div>
+
+      {# 统一编辑：应用到所有座位 #}
+      <form method="post" action="/bindings/desired" class="border border-edge-subtle rounded-xl p-3">
+        <input type="hidden" name="seat_num" value="__ALL__">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-[13px] font-bold">统一应用到所有座位（{{ seats|length }} 个）</span>
+          <button class="btn btn-primary btn-sm" type="submit">应用到全部座位</button>
+        </div>
+        <div class="checkbox-grid">
+          {% for t in ticks %}
+          <label class="checkbox-item">
+            <input type="checkbox" name="blocks" value="{{ t }}">
+            <span class="font-mono text-[11px]">{{ t }}</span>
+          </label>
+          {% endfor %}
+        </div>
+        <div class="hint mt-2">会覆盖每个座位各自的期望时段（含自定义）。</div>
+      </form>
+
+      {# 单座编辑 #}
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {% for s in seats %}
+        <form method="post" action="/bindings/desired" class="border border-edge-subtle rounded-xl p-3 flex flex-col gap-2">
+          <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
+          <div class="flex items-center justify-between">
+            <span class="text-[13px] font-bold">{{ s.seat_num }}{% if s.label %} · {{ s.label }}{% endif %}</span>
+            <span class="chip {{ 'chip-muted' if using_default[s.seat_num] else 'chip-accent' }}">
+              {{ '默认三段' if using_default[s.seat_num] else '自定义' }}
+            </span>
+          </div>
+          <div class="checkbox-grid">
+            {% for t in ticks %}
+            <label class="checkbox-item">
+              <input type="checkbox" name="blocks" value="{{ t }}" {% if t in desired_blocks[s.seat_num] %}checked{% endif %}>
+              <span class="font-mono text-[11px]">{{ t }}</span>
+            </label>
+            {% endfor %}
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-ink-muted">
+              当前：{% for d in desired[s.seat_num] %}<span class="font-mono">{{ d }}</span>{% if not loop.last %}、{% endif %}{% else %}（默认三段）{% endfor %}
+            </span>
+            <button class="btn btn-secondary btn-sm" type="submit">保存 {{ s.seat_num }}</button>
+          </div>
+        </form>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
   {# 每座位：期望时段 × 绑定 #}
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
     {% for s in seats %}
@@ -119,15 +174,12 @@
           {% for u in uncovered[s.seat_num] %}<span class="chip chip-danger font-mono">{{ u }}</span>{% endfor %}
         </div>
         {% endif %}
-        <details>
-          <summary class="text-xs text-ink-secondary cursor-pointer">期望时段（{{ desired[s.seat_num]|length }} 段）</summary>
-          <form method="post" action="/bindings/desired" class="flex flex-col gap-2 mt-2">
-            <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
-            <textarea name="slots" class="textarea font-mono" rows="3">{{ desired[s.seat_num]|join('\n') }}</textarea>
-            <div class="hint">每行一个 HH:MM-HH:MM，单段 ≤{{ '%g'|format(max_seg) }}h；留空提交 = 清空自定义（恢复默认三段）。</div>
-            <button class="btn btn-secondary btn-sm w-fit" type="submit">保存期望时段</button>
-          </form>
-        </details>
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span class="text-xs text-ink-muted">期望：</span>
+          {% for d in desired[s.seat_num] %}<span class="chip chip-accent font-mono">{{ d }}</span>{% endfor %}
+          {% if using_default[s.seat_num] %}<span class="chip chip-muted">默认三段</span>{% endif %}
+          <a class="text-xs text-accent underline" href="#desired-editor">去编辑</a>
+        </div>
       </div>
     </div>
     {% else %}
