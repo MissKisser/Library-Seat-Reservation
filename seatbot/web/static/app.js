@@ -342,7 +342,7 @@
       targetSeatCount: initial.target_seat_count || 0,
       accountCount: initial.account_count || 0,
       now: initial.now_hhmm || '',
-      countdown: 30,
+      countdown: 12,
       busy: false,
       timer: null,
       card: null,
@@ -352,11 +352,14 @@
         this.timer = setInterval(() => this.tick(), 1000);
         this._initBoot();
         this.refresh();
+        this._onVis = () => { if (!document.hidden) this.probe(); };
+        document.addEventListener('visibilitychange', this._onVis);
       },
       destroy() {
         clearInterval(this.timer);
         clearInterval(this._bootTimer);
         clearTimeout(this._bootGuard);
+        document.removeEventListener('visibilitychange', this._onVis);
       },
 
       /* 首屏加载动画: 缓动数字向 target 爬升, 首次数据到达后放行到 100% 揭幕 */
@@ -388,11 +391,24 @@
         setTimeout(() => { this.boot.active = false; }, 320);
       },
       tick() {
-        if (this.busy) return;
+        if (this.busy || this.boot.active) return;
         this.countdown = Math.max(0, this.countdown - 1);
-        if (this.countdown === 0) this.refresh();
+        if (this.countdown === 0) this.probe();
       },
-      formatCountdown() { return '下次刷新 ' + this.countdown + 's'; },
+      formatCountdown() { return this.busy ? '刷新中…' : '下次检查 ' + this.countdown + 's'; },
+
+      /* 版本探针: 纯本地轻请求; 版本没变就不拉覆盖数据、不打超星 */
+      async probe() {
+        if (this.busy || this.boot.active) return;
+        this.countdown = 12;
+        try {
+          const r = await fetch('/api/version', { cache: 'no-store' });
+          if (!r.ok) return;
+          const j = await r.json();
+          if (this._knownV === undefined) { this._knownV = j.v; return; }
+          if (j.v !== this._knownV) await this.refresh();
+        } catch (e) { /* 探针失败静默, 下轮再试 */ }
+      },
 
       cellStatus(c) {
         const hit = c.accounts_info && c.accounts_info[0];
@@ -439,9 +455,10 @@
         } catch (e) {
           console.warn('dashboard refresh failed:', e);
         } finally {
-          this.countdown = 30;
+          this.countdown = 12;
           this.busy = false;
           if (this.boot.target < 100) this.boot.target = 100;
+          this._knownV = undefined;  // 拉取后重置基线, 由下轮探针重新对齐
         }
       },
     };

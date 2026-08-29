@@ -129,6 +129,15 @@ class StateStore:
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
         self._legacy_target_seat_num = legacy_target_seat_num
+        # 覆盖图数据版本号: 任何影响覆盖视图的写操作 +1, 前端据此按需拉取
+        self._data_version = 0
+
+    @property
+    def data_version(self) -> int:
+        return self._data_version
+
+    def _bump(self) -> None:
+        self._data_version += 1
 
     async def init(self) -> None:
         self._db = await aiosqlite.connect(self.db_path)
@@ -212,6 +221,7 @@ class StateStore:
     async def add_user_reserved(self, account_id: str, seat_num: str,
                                  day: date, start_time: time, end_time: time,
                                  note: str = "") -> int:
+        self._bump()
         now = int(_time.time() * 1000)
         cur = await self.db.execute(
             """INSERT INTO user_reserved
@@ -226,6 +236,7 @@ class StateStore:
         return cur.lastrowid or 0
 
     async def delete_user_reserved(self, rid: int) -> None:
+        self._bump()
         await self.db.execute("DELETE FROM user_reserved WHERE id=?", (rid,))
         await self.db.commit()
 
@@ -269,6 +280,7 @@ class StateStore:
 
     # ---------- accounts ----------
     async def upsert_account(self, acc: Account) -> None:
+        self._bump()
         now = int(_time.time() * 1000)
         slots_json = acc.slots if isinstance(acc.slots, str) else json.dumps(acc.slots)
         bound_json = json.dumps(acc.bound_seats)
@@ -369,6 +381,7 @@ class StateStore:
         return len(accounts)
 
     async def delete_account(self, acc_id: str) -> None:
+        self._bump()
         await self.db.execute("DELETE FROM accounts WHERE id=?", (acc_id,))
         await self.db.commit()
 
@@ -390,6 +403,7 @@ class StateStore:
 
     # ---------- target seats ----------
     async def add_target_seat(self, seat_num: str, *, label: str = "") -> None:
+        self._bump()
         now = int(_time.time() * 1000)
         await self.db.execute(
             """INSERT INTO target_seats (seat_num, label, enabled, created_at, updated_at)
@@ -400,6 +414,7 @@ class StateStore:
         await self.db.commit()
 
     async def delete_target_seat(self, seat_num: str) -> None:
+        self._bump()
         await self.db.execute(
             "DELETE FROM target_seats WHERE seat_num=?", (seat_num.zfill(3),)
         )
@@ -421,6 +436,7 @@ class StateStore:
 
     # ---------- tasks ----------
     async def add_task(self, t: Task) -> int:
+        self._bump()
         now = int(_time.time() * 1000)
         cur = await self.db.execute(
             """INSERT INTO tasks
@@ -445,6 +461,7 @@ class StateStore:
         reserve_id: int | None = None,
         last_error: str | None = None,   # "" = 显式清空(成功路径); None = 保持不变
     ) -> None:
+        self._bump()
         now = int(_time.time() * 1000)
         if last_error == "":
             # ★ 成功路径清残留: 任务转 ACTIVE/SIGNED/COMPLETE 时不应再挂历史错误文案

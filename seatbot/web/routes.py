@@ -253,7 +253,7 @@ async def _collect_day_bundle(
     }
     """
     user_reserved = await _collect_user_reserved(store, view_day)
-    others_occupied, occ_err = await _fetch_others_occupied(
+    others_occupied, occ_err = await _fetch_others_occupied_cached(
         request, store, view_day, [s.seat_num for s in target_seats],
     )
     own_intervals = await _collect_own_intervals(store, view_day)
@@ -423,8 +423,40 @@ async def _build_dashboard_data(request: Request) -> dict:
 
 @router.get("/api/dashboard-data")
 async def api_dashboard_data(request: Request):
-    """Dashboard 局部刷新用的 JSON 视图 (每 30s 拉一次, 含今天+明天两块)。"""
+    """Dashboard 局部刷新用的 JSON 视图 (前端按数据版本变化时才拉取)。"""
     return JSONResponse(await _build_dashboard_data(request))
+
+
+# 他人占用查询缓存: (day, seats) -> (monotonic_ts, ok, payload)
+# 命中即不触超星; 成功结果 TTL 90s, 失败结果 TTL 30s (尽快重试)
+_OCC_CACHE: dict = {}
+
+
+async def _fetch_others_occupied_cached(
+    request: Request, store, day: date, seat_nums: list[str],
+) -> tuple[list[tuple[str, _time, time]], str | None]:
+    """带 TTL 的他人占用查询包装, 把超星请求频率与页面刷新解耦。"""
+    import time as _time_mod
+    key = (day.isoformat(), tuple(seat_nums))
+    now = _time_mod.monotonic()
+    hit = _OCC_CACHE.get(key)
+    if hit is not None:
+        ts, ok, payload = hit
+        if (now - ts) < (90 if ok else 30):
+            return payload
+    payload = await _fetch_others_occupied(request, store, day, seat_nums)
+    _OCC_CACHE[key] = (now, payload[1] is None, payload)
+    return payload
+
+
+@router.get("/api/version")
+async def api_version(request: Request):
+    """覆盖图数据版本探针: 纯本地读取, 不发起超星请求。"""
+    store = request.app.state.store
+    return JSONResponse({
+        "v": getattr(store, "data_version", 0),
+        "now": now_cst().isoformat(timespec="seconds"),
+    })
 
 
 def _serialize_task(t: Task) -> dict:

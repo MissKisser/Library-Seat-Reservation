@@ -181,3 +181,35 @@ def test_dashboard_page_renders_both_day_tables(client):
     assert '"view_day"' in html
     assert '护城河' in html
     assert 'cell-card' in html
+
+def test_api_version_returns_local_counter(client):
+    resp = client.get("/api/version")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "v" in body and isinstance(body["v"], int)
+
+
+def test_others_occupied_cache_avoids_refetch(monkeypatch, client):
+    """TTL 内的重复调用不得再次触达底层超星查询。"""
+    import asyncio
+    from seatbot.web import routes
+    calls = {"n": 0}
+
+    async def fake_fetch(request, store, day, seat_nums):
+        calls["n"] += 1
+        return ([("104", __import__("datetime").time(9, 0), __import__("datetime").time(9, 30))], None)
+
+    monkeypatch.setattr(routes, "_fetch_others_occupied", fake_fetch)
+    routes._OCC_CACHE.clear()
+    from datetime import date as _date
+    d = _date(2026, 8, 29)
+
+    async def run():
+        return await asyncio.gather(
+            routes._fetch_others_occupied_cached(None, None, d, ["104"]),
+            routes._fetch_others_occupied_cached(None, None, d, ["104"]),
+        )
+
+    r1, r2 = asyncio.run(run())
+    assert calls["n"] == 1
+    assert r1 == r2
