@@ -71,7 +71,7 @@ async def _cmd_run(args) -> int:
     await store.init()
     # seed target_seats from config
     for s in cfg.target_seats:
-        await store.add_target_seat(s.seat_num, label=s.label)
+        await store.seed_target_seat(s.seat_num, label=s.label)
     n = await store.sync_accounts(cfg.accounts)
     print(f"synced {n} account(s); {len(cfg.target_seats)} target seat(s) from config")
     sched = Scheduler(cfg, store)
@@ -98,7 +98,7 @@ async def _cmd_init_db(args) -> int:
     store = _make_store(cfg)
     await store.init()
     for s in cfg.target_seats:
-        await store.add_target_seat(s.seat_num, label=s.label)
+        await store.seed_target_seat(s.seat_num, label=s.label)
     n = await store.sync_accounts(cfg.accounts)
     await store.close()
     print(f"initialized: {cfg.runtime.db_path}; {len(cfg.target_seats)} seat(s); {n} account(s)")
@@ -110,7 +110,7 @@ async def _cmd_once(args) -> int:
     store = _make_store(cfg)
     await store.init()
     for s in cfg.target_seats:
-        await store.add_target_seat(s.seat_num, label=s.label)
+        await store.seed_target_seat(s.seat_num, label=s.label)
     await store.sync_accounts(cfg.accounts)
     sched = Scheduler(cfg, store)
     await sched.bootstrap_today()

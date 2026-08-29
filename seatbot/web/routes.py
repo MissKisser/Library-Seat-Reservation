@@ -12,11 +12,16 @@ from datetime import time as _time
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from seatbot.bindings import (
+    account_margins, auto_assign, desired_slots_of, validate_matrix,
+)
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.scheduler import NextRelay
-from seatbot.utils.timeutil import now_cst, parse_hhmm, parse_range, today_cst
+from seatbot.utils.timeutil import (
+    at_cst, now_cst, parse_hhmm, parse_range, today_cst,
+)
 
 
 router = APIRouter()
@@ -35,12 +40,15 @@ def _pick_read_account(accounts: list[Account]) -> Account | None:
     )
 
 
-def _parse_seat_slots(raw: str, max_hours: float) -> dict[str, list[str]] | None:
+def _parse_seat_slots(
+    raw: str, max_hours: float, daily_limit: float,
+) -> dict[str, list[str]] | None:
     """解析并校验表单提交的 seat_slots JSON。
 
-    合法: {"104": ["09:00-11:00"], ...} — key 为 1-4 位数字, value 为
-    字符串数组且单段 ≤ max_hours (与 _validate_custom_slots 同一规则)。
-    空 / 非法为空对象时返回 None (回退扁平 slots 模式); 校验失败抛 ValueError。
+    合法: {"104": ["09:00-11:00"], ...} — key 为 1-4 位数字, value 为字符串数组。
+    约束（AGENTS.md 机制规范）: 每座位每天最多 1 时段、单段 ≤ max_hours、
+    全账号每日 ≤ daily_limit 小时、各座位时段不重叠。
+    空 / 非法为空对象时返回 None; 校验失败抛 ValueError。
     """
     raw = (raw or "").strip()
     if not raw:
@@ -58,51 +66,13 @@ def _parse_seat_slots(raw: str, max_hours: float) -> dict[str, list[str]] | None
             raise ValueError(f"seat_slots 座位号非法: {seat!r}")
         if not isinstance(slots, list) or not all(isinstance(x, str) for x in slots):
             raise ValueError(f"seat_slots[{sn}] 必须是字符串数组")
-        for r in slots:
-            try:
-                s, e = parse_range(r)
-            except ValueError as exc:
-                raise ValueError(f"seat_slots[{sn}] 时段格式错误: {exc}") from exc
-            dur_h = (_dt.combine(date.today(), e) - _dt.combine(date.today(), s)).total_seconds() / 3600
-            if dur_h > max_hours:
-                raise ValueError(
-                    f"seat_slots[{sn}] 时段 {r} 长 {dur_h}h 超过单段上限 {max_hours}h"
-                )
         out[sn.zfill(3)] = slots
+    validate_matrix(
+        out, max_seg_hours=max_hours,
+        daily_limit_hours=daily_limit,
+    )
     return out
 
-
-async def _validate_custom_slots(request: Request, slots_value, template, ctx_account):
-    """★ v0.6: 校验自定义时段 — 格式合法且单段 ≤ max_reserve_hours (不自动拆段)。
-
-    返回 None 表示通过; 否则返回 400 TemplateResponse。
-    与 planner._reject_overlong_ranges 同一业务规则 (AGENTS.md 2026-08-24):
-    超长 range 自动拆开会破坏精确守护矩阵, 必须在输入处拒绝。
-    """
-    if slots_value == "full" or not slots_value:
-        return None
-    max_hours = request.app.state.cfg.library.max_reserve_hours
-    for r in slots_value:
-        try:
-            s, e = parse_range(r)
-        except ValueError as exc:
-            return _templates(request).TemplateResponse(
-                request, template,
-                await _ctx(request, account=ctx_account,
-                            error=f"时段格式错误: {exc}", active_page="accounts"),
-                status_code=400,
-            )
-        dur_h = (_dt.combine(date.today(), e) - _dt.combine(date.today(), s)).total_seconds() / 3600
-        if dur_h > max_hours:
-            return _templates(request).TemplateResponse(
-                request, template,
-                await _ctx(request, account=ctx_account,
-                            error=(f"时段 {r} 长 {dur_h}h, 超过单段上限 {max_hours}h — "
-                                   f"请在表单里拆成多段 (自动拆段已禁用, 避免破坏守护矩阵)"),
-                            active_page="accounts"),
-                status_code=400,
-            )
-    return None
 
 
 def _templates(request: Request):
@@ -511,8 +481,9 @@ async def targets_list(request: Request):
             used_by.setdefault(sn, []).append(a.id)
     return _templates(request).TemplateResponse(
         request, "targets_list.html",
-        await _ctx(request, seats=seats, used_by=used_by, error=None,
-                    active_page="targets"),
+        await _ctx(request, seats=seats, used_by=used_by,
+                   error=request.query_params.get("error"),
+                   active_page="targets"),
     )
 
 
@@ -538,6 +509,435 @@ async def targets_delete(request: Request, seat_num: str):
     store = request.app.state.store
     await store.delete_target_seat(seat_num)
     return RedirectResponse("/targets?deleted=1", status_code=303)
+
+
+# =========================================================================
+# Targets — 换座（整席迁移事务）
+# =========================================================================
+
+def _split_range_ceiling(s: _time, e: _time, max_hours: float) -> list[tuple[_time, _time]]:
+    """把时段按单段时长上限切成子段列表（服务端 max_reserve_hours 硬约束）。"""
+    base = date(2000, 1, 1)
+    cur = _dt.combine(base, s)
+    end = _dt.combine(base, e)
+    step = timedelta(hours=max_hours)
+    out: list[tuple[_time, _time]] = []
+    while cur < end:
+        nxt = min(cur + step, end)
+        out.append((cur.time(), nxt.time()))
+        cur = nxt
+    return out
+
+
+def _overlaps(a1: _dt, a2: _dt, b1: _dt, b2: _dt) -> bool:
+    """两个 [start, end) 窗口是否有交集。"""
+    return a1 < b2 and b1 < a2
+
+
+async def _signback_task_now(sched, store, acc: Account, t: Task) -> tuple[bool, str]:
+    """立即对在约任务执行真签退（signback 通道），返回 (是否成功, 消息)。"""
+    client = sched._client_for(acc)
+    try:
+        if not client.cookies():
+            await client.login(acc.phone, acc.password)
+        r = await client.signback(t.reserve_id)
+    except Exception as e:
+        return False, f"登录/签退异常: {e}"
+    ok = bool(r.get("success"))
+    msg = str(r.get("msg") or ("ok" if ok else "signback failed"))
+    await store.log_action(
+        acc.id, "signback", str(t.reserve_id), str(r)[:500], ok, msg,
+    )
+    return ok, msg
+
+
+@router.post("/targets/replace")
+async def targets_replace(
+    request: Request,
+    old_seat: str = Form(...),
+    new_seat: str = Form(""),
+    rebook_today: str = Form(""),
+    rebook_tomorrow: str = Form(""),
+):
+    """整席换防：矩阵迁移 → 旧席在约释放/任务清理 → 新席注册 → 可选补约。
+
+    会对旧座位上仍在进行中的预约立即发起真签退（真实账号操作，
+    仅应由用户在页面上明确点击触发）。
+    """
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    sched = request.app.state.sched
+    max_h = request.app.state.cfg.library.max_reserve_hours
+
+    old_sn = old_seat.strip().zfill(3)
+    new_raw = new_seat.strip()
+    if not new_raw.isdigit() or not (1 <= len(new_raw) <= 4):
+        return RedirectResponse(
+            f"/targets?error={quote('新座位号必须是 1-4 位数字')}", status_code=303)
+    new_sn = new_raw.zfill(3)
+
+    seat_map = {s.seat_num: s for s in await store.list_target_seats()}
+    if old_sn not in seat_map:
+        return RedirectResponse(
+            f"/targets?error={quote(f'旧座位 {old_sn} 不是已注册目标')}", status_code=303)
+    if new_sn == old_sn:
+        return RedirectResponse(
+            f"/targets?error={quote('新旧座位号相同')}", status_code=303)
+    if new_sn in seat_map:
+        return RedirectResponse(
+            f"/targets?error={quote(f'新座位 {new_sn} 已注册，请先删除再替换')}",
+            status_code=303)
+
+    report: dict = {
+        "old": old_sn, "new": new_sn,
+        "accounts": [], "released": [], "closed": [],
+        "janitors": [], "rebooked": [], "skipped": [], "errors": [],
+    }
+    now = now_cst()
+    today = today_cst()
+    tomorrow = today + timedelta(days=1)
+
+    # 1) 迁移守护矩阵（seat_slots 键改名 + bound_seats 替换）
+    for acc in await store.list_accounts():
+        changed = False
+        if acc.seat_slots and old_sn in acc.seat_slots:
+            slots = dict(acc.seat_slots)
+            moved = slots.pop(old_sn)
+            if new_sn in slots:
+                report["errors"].append(
+                    f"{acc.id}: 新座位已有时段配置，矩阵未迁移（请手动核对）")
+                continue
+            slots[new_sn] = moved
+            acc.seat_slots = slots
+            changed = True
+        if old_sn in (acc.bound_seats or []):
+            acc.bound_seats = [new_sn if x == old_sn else x
+                               for x in acc.bound_seats]
+            changed = True
+        if changed:
+            await store.upsert_account(acc)
+            report["accounts"].append({
+                "id": acc.id,
+                "slots": (acc.seat_slots or {}).get(new_sn) or [],
+            })
+
+    # 2) 清理旧座位在途任务（今天及未来）
+    old_tasks = [t for t in await store.list_tasks(seat_num=old_sn)
+                 if t.day >= today]
+    for t in sorted(old_tasks, key=lambda x: (x.day, x.start_time)):
+        desc = (f"#{t.id} {t.account_id} {t.day.isoformat()} "
+                f"{t.start_time.strftime('%H:%M')}-{t.end_time.strftime('%H:%M')}")
+        t_start = at_cst(t.day, t.start_time)
+        t_end = at_cst(t.day, t.end_time)
+
+        if t.status in (TaskStatus.PENDING, TaskStatus.READY,
+                        TaskStatus.SUBMITTING, TaskStatus.FAILED) or not t.reserve_id:
+            await store.update_task_status(
+                t.id, TaskStatus.FAILED, last_error="换座迁移: 旧座位任务已关闭")
+            report["closed"].append({"desc": desc, "note": t.status.value})
+            continue
+        if now >= t_end:
+            await store.update_task_status(t.id, TaskStatus.COMPLETE)
+            report["closed"].append({"desc": desc, "note": "时段已结束, 置完成"})
+            continue
+        if now >= t_start:
+            acc = await store.get_account(t.account_id)
+            if not acc:
+                report["errors"].append(f"{desc}: 账号不存在, 无法签退（任务保留）")
+                continue
+            ok, msg = await _signback_task_now(sched, store, acc, t)
+            if ok:
+                await store.update_task_status(t.id, TaskStatus.COMPLETE)
+                report["released"].append({"desc": desc, "msg": msg})
+            else:
+                report["errors"].append(
+                    f"签退失败 {desc}: {msg}（任务保留, 可在任务页手动签退）")
+            continue
+        # 未来时段：转为释放型任务 —— 到点自动签到, 短持后自动签退
+        new_end_dt = min(
+            _dt.combine(t.day, t.end_time),
+            _dt.combine(t.day, t.start_time) + timedelta(minutes=20),
+        )
+        if new_end_dt <= _dt.combine(t.day, t.start_time) + timedelta(minutes=5):
+            report["skipped"].append(
+                {"desc": desc, "reason": "时段过短, 保留原任务到点正常签退"})
+            continue
+        await store.shorten_task_end(t.id, new_end_dt.time())
+        report["janitors"].append({
+            "desc": desc,
+            "new_end": new_end_dt.strftime("%H:%M"),
+        })
+
+    # 3) 换目标座位行（注册新席继承标签与期望时段 + 软删旧席）
+    await store.add_target_seat(
+        new_sn, label=seat_map[old_sn].label,
+        desired_slots=seat_map[old_sn].desired_slots,
+    )
+    await store.delete_target_seat(old_sn)
+
+    # 4) 可选补约（新座位矩阵今天/明天的时段, 跳过账号被占用的窗口）
+    rebook_days: list[date] = []
+    if rebook_today:
+        rebook_days.append(today)
+    if rebook_tomorrow:
+        rebook_days.append(tomorrow)
+    for day in rebook_days:
+        for acc in await store.list_accounts():
+            ranges = (acc.seat_slots or {}).get(new_sn) or []
+            if not ranges:
+                continue
+            acc_tasks = await store.list_tasks(account_id=acc.id, day=day)
+            busy = [
+                (at_cst(x.day, x.start_time), at_cst(x.day, x.end_time))
+                for x in acc_tasks
+                if x.reserve_id and x.status in (
+                    TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.LEAVING)
+            ]
+            new_seat_starts = {
+                x.start_time for x in acc_tasks if x.seat_num == new_sn
+            }
+            for rng in ranges:
+                try:
+                    rs, re_ = parse_range(rng)
+                except Exception:
+                    report["errors"].append(
+                        f"{acc.id}: 时段 {rng!r} 无法解析, 跳过")
+                    continue
+                for s, e in _split_range_ceiling(rs, re_, max_h):
+                    seg_desc = (f"{acc.id} {new_sn} {day.isoformat()} "
+                                f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}")
+                    if day == today and now >= at_cst(day, e):
+                        report["skipped"].append(
+                            {"desc": seg_desc, "reason": "今日该时段已过"})
+                        continue
+                    if s in new_seat_starts:
+                        report["skipped"].append(
+                            {"desc": seg_desc, "reason": "已存在同段任务"})
+                        continue
+                    seg_s, seg_e = at_cst(day, s), at_cst(day, e)
+                    holder = next((b for b in busy if _overlaps(seg_s, seg_e, *b)), None)
+                    if holder:
+                        report["skipped"].append({
+                            "desc": seg_desc,
+                            "reason": (f"账号当日被旧预约占用至 "
+                                       f"{holder[1].strftime('%H:%M')}，需手动补约"),
+                        })
+                        continue
+                    tid = await store.add_task(Task(
+                        id=None, account_id=acc.id, day=day,
+                        start_time=s, end_time=e, seat_num=new_sn,
+                        status=TaskStatus.READY,
+                    ))
+                    loaded = await store.get_task(tid)
+                    try:
+                        await sched._run_submit(acc, loaded)
+                        final = await store.get_task(tid)
+                        ok = bool(final and final.reserve_id)
+                        report["rebooked"].append({
+                            "desc": seg_desc, "ok": ok,
+                            "msg": (f"预约号 {final.reserve_id}" if ok
+                                    else (final.last_error if final else "任务丢失")),
+                        })
+                    except Exception as ex:
+                        report["errors"].append(f"补约异常 {seg_desc}: {ex}")
+
+    ctx = await _ctx(request, active_page="targets")
+    ctx["report"] = report
+    return _templates(request).TemplateResponse(
+        request, "targets_replace_result.html", ctx,
+    )
+
+
+# =========================================================================
+# Bindings — 座位绑定矩阵管理（余量 / 自动绑定 / 手动绑定）
+# =========================================================================
+
+def _count_bindings(matrices: dict[str, dict[str, list[str]]]) -> int:
+    """统计一批矩阵里的绑定总数。"""
+    return sum(len(ranges) for m in matrices.values() for ranges in m.values())
+
+
+@router.get("/bindings", response_class=HTMLResponse)
+async def bindings_list(request: Request):
+    """绑定矩阵页：各账号余量 + 各座位期望时段覆盖情况。"""
+    store = request.app.state.store
+    lib = request.app.state.cfg.library
+    limit = lib.daily_reserve_hours_limit
+    seats = await store.list_target_seats()
+    accounts = await store.list_accounts()
+    desired = {s.seat_num: desired_slots_of(s) for s in seats}
+    seat_bindings: dict[str, list[dict]] = {s.seat_num: [] for s in seats}
+    for a in accounts:
+        for seat, ranges in (a.seat_slots or {}).items():
+            for r in ranges:
+                seat_bindings.setdefault(seat, []).append(
+                    {"account_id": a.id, "range": r})
+    uncovered: dict[str, list[str]] = {}
+    for seat, slots in desired.items():
+        bound = {b["range"] for b in seat_bindings.get(seat, [])}
+        uncovered[seat] = [s for s in slots if s not in bound]
+    margins = account_margins(accounts, daily_limit_hours=limit)
+    ctx = await _ctx(request, active_page="bindings")
+    ctx.update(
+        seats=seats, desired=desired, seat_bindings=seat_bindings,
+        uncovered=uncovered, margins=margins,
+        total_remaining=sum(m["remaining_hours"] for m in margins),
+        total_used=sum(m["used_hours"] for m in margins),
+        accounts=accounts, daily_limit=limit,
+        max_seg=lib.max_reserve_hours,
+        msg=request.query_params.get("msg"),
+        error=request.query_params.get("error"),
+    )
+    return _templates(request).TemplateResponse(request, "bindings_list.html", ctx)
+
+
+@router.post("/bindings/auto")
+async def bindings_auto(request: Request):
+    """自动绑定：为所有未覆盖的 (座位, 期望时段) 挑账号，保留既有绑定。"""
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    lib = request.app.state.cfg.library
+    seats = await store.list_target_seats()
+    accounts = await store.list_accounts()
+    if not seats or not accounts:
+        return RedirectResponse(
+            f"/bindings?error={quote('没有目标座位或守护账号')}", status_code=303)
+    desired = {s.seat_num: desired_slots_of(s) for s in seats}
+    before = _count_bindings({a.id: (a.seat_slots or {}) for a in accounts})
+    matrices, unfillable = auto_assign(
+        accounts, desired,
+        max_seg_hours=lib.max_reserve_hours,
+        daily_limit_hours=lib.daily_reserve_hours_limit,
+    )
+    changed = 0
+    for a in accounts:
+        new = matrices.get(a.id)
+        if new is None or new == (a.seat_slots or {}):
+            continue
+        a.seat_slots = new
+        a.bound_seats = sorted(new.keys())
+        await store.upsert_account(a)
+        changed += 1
+    filled = _count_bindings(matrices) - before
+    msg = f"自动绑定完成：新增 {filled} 条，更新 {changed} 个账号"
+    if unfillable:
+        msg += "；仍无法覆盖 " + "；".join(unfillable)
+    return RedirectResponse(f"/bindings?msg={quote(msg)}", status_code=303)
+
+
+@router.post("/bindings/manual")
+async def bindings_manual(
+    request: Request,
+    account_id: str = Form(...),
+    seat_num: str = Form(...),
+    start: str = Form(...),
+    end: str = Form(...),
+):
+    """手动绑定/切换：设置某账号在某座位的那一个时段。"""
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    lib = request.app.state.cfg.library
+    acc = await store.get_account(account_id)
+    if not acc:
+        raise HTTPException(404, f"account {account_id} not found")
+    sn = seat_num.strip().zfill(3)
+    if sn not in {s.seat_num for s in await store.list_target_seats()}:
+        return RedirectResponse(
+            f"/bindings?error={quote(f'座位 {sn} 不是已注册目标')}", status_code=303)
+    try:
+        s = parse_hhmm(start)
+        e = parse_hhmm(end)
+        rng = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+    except (ValueError, TypeError) as exc:
+        return RedirectResponse(
+            f"/bindings?error={quote(f'时间格式错误: {exc}')}", status_code=303)
+    matrix = dict(acc.seat_slots or {})
+    matrix[sn] = [rng]
+    try:
+        validate_matrix(
+            matrix, max_seg_hours=lib.max_reserve_hours,
+            daily_limit_hours=lib.daily_reserve_hours_limit,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            f"/bindings?error={quote(str(exc))}", status_code=303)
+    acc.seat_slots = matrix
+    acc.bound_seats = sorted(matrix.keys())
+    await store.upsert_account(acc)
+    return RedirectResponse(
+        f"/bindings?msg={quote(f'已绑定 {account_id} → {sn} {rng}')}",
+        status_code=303)
+
+
+@router.post("/bindings/delete")
+async def bindings_delete(
+    request: Request,
+    account_id: str = Form(...),
+    seat_num: str = Form(...),
+):
+    """解绑：移除某账号在某座位的时段。"""
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    acc = await store.get_account(account_id)
+    if not acc:
+        raise HTTPException(404)
+    sn = seat_num.strip().zfill(3)
+    matrix = dict(acc.seat_slots or {})
+    removed = matrix.pop(sn, None)
+    if removed is None:
+        return RedirectResponse(
+            f"/bindings?error={quote(f'{account_id} 在 {sn} 无绑定')}",
+            status_code=303)
+    acc.seat_slots = matrix
+    acc.bound_seats = sorted(matrix.keys())
+    await store.upsert_account(acc)
+    return RedirectResponse(
+        f"/bindings?msg={quote(f'已解绑 {account_id} × {sn}')}", status_code=303)
+
+
+@router.post("/bindings/desired")
+async def bindings_desired(
+    request: Request,
+    seat_num: str = Form(...),
+    slots: str = Form(""),
+):
+    """编辑某座位的期望守护时段（每行/逗号分隔一个 HH:MM-HH:MM）。"""
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    lib = request.app.state.cfg.library
+    sn = seat_num.strip().zfill(3)
+    raw_items = [x.strip() for x in slots.replace("\n", ",").split(",") if x.strip()]
+    parsed: list[str] = []
+    for r in raw_items:
+        try:
+            s, e = parse_range(r)
+        except Exception:
+            return RedirectResponse(
+                f"/bindings?error={quote(f'时段 {r!r} 格式错误（应为 HH:MM-HH:MM）')}",
+                status_code=303)
+        rng = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+        if e <= s:
+            return RedirectResponse(
+                f"/bindings?error={quote(f'时段 {rng} 结束需晚于开始')}",
+                status_code=303)
+        h = (_dt.combine(date.today(), e) - _dt.combine(date.today(), s)).total_seconds() / 3600
+        if h > lib.max_reserve_hours + 1e-9:
+            return RedirectResponse(
+                f"/bindings?error={quote(f'时段 {rng} 超过单段上限 {lib.max_reserve_hours:g}h')}",
+                status_code=303)
+        if rng not in parsed:
+            parsed.append(rng)
+    if not await store.set_target_seat_desired(sn, parsed):
+        return RedirectResponse(
+            f"/bindings?error={quote(f'座位 {sn} 不存在')}", status_code=303)
+    return RedirectResponse(
+        f"/bindings?msg={quote(f'{sn} 期望时段已更新为 {len(parsed)} 段')}",
+        status_code=303)
 
 
 # =========================================================================
@@ -658,44 +1058,86 @@ async def accounts_new(request: Request):
 @router.post("/accounts")
 async def accounts_create(
     request: Request,
-    id: str = Form(...),
     phone: str = Form(...),
     password: str = Form(...),
-    slots: str = Form("full"),
-    slots_custom: str = Form(""),
-    bound_seats: list[str] = Form(default=[]),
-    seat_slots: str = Form("{}"),
 ):
+    """新建守护账号：仅凭手机号+密码，真实登录学习通后以上游实名作账号 ID。
+
+    实名来自办公端 `oa_name` cookie（如 熊金涛）；同名不同人追加序号，
+    实名不可得时退回 u{uid}；同一手机号不可重复导入。
+    """
+    import re
+
+    from urllib.parse import unquote
+
     store = request.app.state.store
-    slots_value: str | list[str] = slots
-    if slots == "custom":
+    phone = phone.strip()
+    if not phone.isdigit() or not (8 <= len(phone) <= 20):
+        return _templates(request).TemplateResponse(
+            request, "accounts_form.html",
+            await _ctx(request, account=None,
+                       error="手机号必须是 8-20 位数字",
+                       active_page="accounts"),
+            status_code=400,
+        )
+    client = ChaoxingClient()
+    uid: str | None = None
+    name: str = ""
+    try:
         try:
-            slots_value = json.loads(slots_custom) if slots_custom.strip() else []
-        except json.JSONDecodeError as e:
+            await client.login(phone, password)
+            jar = client.cookies()
+            uid = jar.get("uid") or jar.get("_uid")
+            name = unquote(jar.get("oa_name") or "")
+            if not name:
+                # 登录链路可能未途经办公端鉴权, 读一次座位占用接口补齐身份 cookie
+                try:
+                    await client.get_used_times(
+                        request.app.state.cfg.library.room_id, "001",
+                        today_cst().isoformat())
+                except Exception:
+                    pass
+                name = unquote(client.cookies().get("oa_name") or "")
+        except ChaoxingError as e:
             return _templates(request).TemplateResponse(
                 request, "accounts_form.html",
                 await _ctx(request, account=None,
-                            error=f"slots JSON 错误: {e}",
-                            active_page="accounts"),
+                           error=f"学习通登录失败：{e}",
+                           active_page="accounts"),
                 status_code=400,
             )
-        err_resp = await _validate_custom_slots(request, slots_value, "accounts_form.html", None)
-        if err_resp is not None:
-            return err_resp
-    try:
-        seat_slots_val = _parse_seat_slots(
-            seat_slots, request.app.state.cfg.library.max_reserve_hours)
-    except ValueError as e:
+    finally:
+        await client.close()
+    if not uid or not str(uid).strip().isdigit():
         return _templates(request).TemplateResponse(
             request, "accounts_form.html",
-            await _ctx(request, account=None, error=str(e), active_page="accounts"),
+            await _ctx(request, account=None,
+                       error="登录成功但未能从学习通获取 uid，未保存",
+                       active_page="accounts"),
             status_code=400,
         )
+    uid = str(uid).strip()
+
+    for a in await store.list_accounts():
+        if a.phone == phone:
+            return _templates(request).TemplateResponse(
+                request, "accounts_form.html",
+                await _ctx(request, account=None,
+                           error=f"该手机号已导入为账号 {a.id}，无需重复创建",
+                           active_page="accounts"),
+                status_code=400,
+            )
+
+    base = re.sub(r"[\s/?#%&+]", "", name)[:32] or f"u{uid}"
+    acc_id = base
+    suffix = 2
+    while await store.get_account(acc_id):
+        acc_id = f"{base}{suffix}"
+        suffix += 1
+
     acc = Account(
-        id=id, phone=phone, password=password,
-        slots=slots_value,
-        bound_seats=list(bound_seats),
-        seat_slots=seat_slots_val,
+        id=acc_id, phone=phone, password=password,
+        slots="full", bound_seats=[], seat_slots=None,
     )
     try:
         await store.upsert_account(acc)
@@ -705,7 +1147,11 @@ async def accounts_create(
             await _ctx(request, account=acc, error=str(e), active_page="accounts"),
             status_code=400,
         )
-    return RedirectResponse("/accounts?created=1", status_code=303)
+    await store.log_action(
+        acc_id, "import", uid,
+        f"新建账号: uid={uid} -> id={acc_id}", True, "",
+    )
+    return RedirectResponse(f"/accounts/{acc_id}/edit?created=1", status_code=303)
 
 
 @router.get("/accounts/{acc_id}/edit", response_class=HTMLResponse)
@@ -725,33 +1171,17 @@ async def accounts_update(
     request: Request, acc_id: str,
     phone: str = Form(...),
     password: str = Form(""),
-    slots: str = Form("full"),
-    slots_custom: str = Form(""),
-    bound_seats: list[str] = Form(default=[]),
     seat_slots: str = Form("{}"),
 ):
+    """更新账号凭据与座位绑定矩阵（bound_seats 由矩阵键自动推导）。"""
     store = request.app.state.store
     existing = await store.get_account(acc_id)
     if not existing:
         raise HTTPException(404)
-    slots_value: str | list[str] = slots
-    if slots == "custom":
-        try:
-            slots_value = json.loads(slots_custom) if slots_custom.strip() else []
-        except json.JSONDecodeError as e:
-            return _templates(request).TemplateResponse(
-                request, "accounts_form.html",
-                await _ctx(request, account=existing,
-                            error=f"slots JSON 错误: {e}",
-                            active_page="accounts"),
-                status_code=400,
-            )
-        err_resp = await _validate_custom_slots(request, slots_value, "accounts_form.html", existing)
-        if err_resp is not None:
-            return err_resp
+    lib = request.app.state.cfg.library
     try:
         seat_slots_val = _parse_seat_slots(
-            seat_slots, request.app.state.cfg.library.max_reserve_hours)
+            seat_slots, lib.max_reserve_hours, lib.daily_reserve_hours_limit)
     except ValueError as e:
         return _templates(request).TemplateResponse(
             request, "accounts_form.html",
@@ -761,9 +1191,9 @@ async def accounts_update(
     existing.phone = phone
     if password.strip():
         existing.password = password
-    existing.slots = slots_value
-    existing.bound_seats = list(bound_seats)
+    existing.slots = "full"
     existing.seat_slots = seat_slots_val
+    existing.bound_seats = sorted((seat_slots_val or {}).keys())
     await store.upsert_account(existing)
     return RedirectResponse("/accounts?updated=1", status_code=303)
 
@@ -854,6 +1284,68 @@ async def quick_reserve(
     if loaded:
         await sched._run_submit(acc, loaded)
     return RedirectResponse("/tasks?reserved=1", status_code=303)
+
+
+@router.post("/tasks/import")
+async def tasks_import(
+    request: Request,
+    account_id: str = Form(...),
+    seat_num: str = Form(...),
+    day: str = Form(...),
+    start: str = Form(...),
+    end: str = Form(...),
+    reserve_id: str = Form(...),
+):
+    """导入用户在 App 手动抢到的预约号，接入自动签到/签退生命周期。
+
+    仅写入本地任务状态（status=ACTIVE + reserve_id），不发起任何超星请求；
+    scheduler 会在时段开始时自动签到、结束前自动签退。
+    """
+    store = request.app.state.store
+    acc = await store.get_account(account_id)
+    if not acc:
+        raise HTTPException(404, f"account {account_id} not found")
+    try:
+        d = date.fromisoformat(day)
+        s = parse_hhmm(start)
+        e = parse_hhmm(end)
+        if e <= s:
+            raise ValueError("end must be after start")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, f"日期/时间格式错误: {exc}")
+    rid_raw = reserve_id.strip()
+    if not rid_raw.isdigit():
+        raise HTTPException(400, "预约号必须是数字")
+    rid = int(rid_raw)
+    if rid <= 0:
+        raise HTTPException(400, "预约号非法")
+    if d < today_cst():
+        raise HTTPException(400, "日期不能早于今天")
+    now = now_cst()
+    if d == today_cst() and now >= at_cst(d, e):
+        raise HTTPException(400, "该时段今天已结束，无法导入")
+    sn = seat_num.strip().zfill(3)
+    seats = [x.seat_num for x in await store.list_target_seats()]
+    if sn not in seats:
+        raise HTTPException(400, f"seat {sn} not a registered target")
+    for t in await store.list_tasks(account_id=acc.id, day=d, seat_num=sn):
+        if t.start_time == s and t.reserve_id == rid:
+            raise HTTPException(400, "该预约号已导入过")
+        if t.start_time == s and t.reserve_id:
+            raise HTTPException(
+                400, f"同账号同座位同时段已存在任务 #{t.id}（预约号 {t.reserve_id}）")
+    tid = await store.add_task(Task(
+        id=None, account_id=acc.id, day=d,
+        start_time=s, end_time=e, seat_num=sn,
+        status=TaskStatus.ACTIVE, reserve_id=rid,
+    ))
+    await store.log_action(
+        acc.id, "import", str(rid),
+        f"手动导入预约: seat={sn} {d.isoformat()} "
+        f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')} → task#{tid}",
+        True, "",
+    )
+    return RedirectResponse(f"/tasks?day={d.isoformat()}&imported=1", status_code=303)
 
 
 @router.post("/tasks/{task_id}/sign")

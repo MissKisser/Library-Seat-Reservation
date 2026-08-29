@@ -1,12 +1,11 @@
 """Expand user-facing slot config into ≤ max_hours task chunks (v2: per-seat).
 
-v2:
-  - Each task carries its own `seat_num` (不再共享 library.target_seat_num)。
-  - 一个 account 拥有 `bound_seats` 列表, 调度时该账号会在每个绑定的座位上
-    各 expand 一遍 slots。
-  - 如果 `bound_seats` 为空 (wildcard 账号),调度时使用 `fallback_seats`
-    (library 的 target_seats 表)逐一展开。
-  - 推荐用 `seat_slots` 字段精确指定 (seat, slot) 组合 (AGENTS.md 2026-08-24)。
+模式:
+  - `seat_slots` 矩阵模式（推荐, Web 绑定页/账号表单维护）: 每个 (座位, 时段)
+    精确展开成一条 Task, 不做笛卡尔积。
+  - `slots` + `bound_seats` 扁平模式（遗留）: 每个绑定座位各展开一遍 slots。
+  - 账号既无 seat_slots 也无 bound_seats = 未参与守护, 展开结果为空
+    （不回退到全部目标座位, 避免笛卡尔积意外放大）。
 """
 from __future__ import annotations
 
@@ -54,24 +53,19 @@ class ReservationPlanner:
     def expand_for_day(self, day: date) -> list[Task]:
         """展开成 (account, seat, slot) → Task list.
 
-        例子 (单 slots + 多座 — 笛卡尔积, v2 默认):
-          account=guard_a, bound_seats=['084'], slots=['08:00-10:00','15:00-17:00']
-          → 2 Task: (guard_a, 084, 08:00-10:00) + (guard_a, 084, 15:00-17:00)
+        矩阵模式:
+          account=guard_a, seat_slots={'104': ['09:00-11:00'], '105': ['15:00-17:00']}
+          → 2 Task: (guard_a, 104, 09:00-11:00) + (guard_a, 105, 15:00-17:00)
 
+        扁平模式（遗留）:
           account=guard_c, bound_seats=['084','085'], slots=['08:00-10:00']
           → 2 Task: (guard_c, 084, 08:00-10:00) + (guard_c, 085, 08:00-10:00)
 
-          account=guard_wild, bound_seats=[], fallback_seats=['084','085'], slots=['08:00-10:00']
-          → 2 Task: (guard_wild, 084, 08:00-10:00) + (guard_wild, 085, 08:00-10:00)
-
-        例子 (per-seat slots, 2026-08-24 新增):
-          account=guard_a, seat_slots={'104': ['09:00-11:00'], '105': ['15:00-17:00']}
-          → 2 Task: (guard_a, 104, 09:00-11:00) + (guard_a, 105, 15:00-17:00)
-          (跳过笛卡尔积,只用 seat_slots 字典里指定的 (seat, slot) 组合)
+        未绑定（seat_slots 与 bound_seats 均为空）→ 空列表。
         """
         out: list[Task] = []
 
-        # 模式 1: per-seat slots (2026-08-24 新增)
+        # 模式 1: per-seat slots 矩阵
         # 如果 account.seat_slots 非空,只生成 seat_slots 里指定的 (seat, slot) 组合
         if self.account.seat_slots:
             for seat_num, slots in self.account.seat_slots.items():
@@ -109,12 +103,10 @@ class ReservationPlanner:
                     ))
             return out
 
-        # 模式 2: 传统笛卡尔积 (slots × bound_seats)
-        seats = self.bound_seats or self.fallback_seats
-        if not seats:
-            raise PlannerError(
-                f"account {self.account.id} has no bound seats and no fallback seats"
-            )
+        # 模式 2: 传统笛卡尔积 (slots × bound_seats); 未绑定账号不参与守护
+        if not self.bound_seats:
+            return []
+        seats = self.bound_seats
         if isinstance(self.account.slots, list):
             _reject_overlong_ranges(self.account.slots, self.max_reserve_hours, self.account.id)
         try:

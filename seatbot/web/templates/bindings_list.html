@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% from "_macros/form.html" import text_field %}
+{% from "_macros/empty.html" import empty %}
+{% block title %}绑定矩阵{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-5">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">绑定矩阵</h1>
+      <p class="page-sub">每账号每座位每天 1 时段（≤{{ '%g'|format(max_seg) }}h）· 每账号每日累计 ≤ {{ '%g'|format(daily_limit) }}h</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <form method="post" action="/bindings/auto">
+        <button class="btn btn-primary btn-sm" type="submit">⚡ 自动绑定未覆盖时段</button>
+      </form>
+    </div>
+  </div>
+
+  {% if msg %}
+  <div class="card border-success/40"><div class="card-body text-sm text-success">{{ msg }}</div></div>
+  {% endif %}
+  {% if error %}
+  <div class="card border-danger/40"><div class="card-body text-sm text-danger">{{ error }}</div></div>
+  {% endif %}
+
+  {# 账号余量总览 #}
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">账号余量（全体已用 {{ '%g'|format(total_used) }}h / 剩余 {{ '%g'|format(total_remaining) }}h）</span>
+    </div>
+    <div class="card-body">
+      {% if margins %}
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {% for m in margins %}
+        <div class="border border-edge-subtle rounded-xl p-3">
+          <div class="flex items-center justify-between">
+            <span class="font-mono font-bold text-sm">{{ m.id }}</span>
+            <span class="chip {{ 'chip-success' if m.remaining_hours >= 2 else ('chip-muted' if m.remaining_hours > 0 else 'chip-danger') }}">
+              余 {{ '%g'|format(m.remaining_hours) }}h
+            </span>
+          </div>
+          <div class="text-xs text-ink-secondary mt-1">已用 {{ '%g'|format(m.used_hours) }}h / {{ '%g'|format(daily_limit) }}h · 还能容纳 {{ m.full_slots_left }} 个完整 2h 段</div>
+          <div class="text-xs text-ink-muted mt-0.5">{{ m.seats|join('、') if m.seats else '未绑定座位' }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      {{ empty(title='还没有守护账号', hint='先到「守护账号」页创建') }}
+      {% endif %}
+    </div>
+  </div>
+
+  {# 手动绑定 #}
+  <div class="card">
+    <div class="card-header"><span class="card-title">手动绑定 / 切换</span></div>
+    <div class="card-body">
+      {% if accounts and seats %}
+      <form method="post" action="/bindings/manual" class="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+        <div class="form-field">
+          <label for="mb_account">账号<span class="req">*</span></label>
+          <select id="mb_account" name="account_id" class="select" required>
+            {% for a in accounts %}<option value="{{ a.id }}">{{ a.id }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="mb_seat">座位<span class="req">*</span></label>
+          <select id="mb_seat" name="seat_num" class="select" required>
+            {% for s in seats %}<option value="{{ s.seat_num }}">{{ s.seat_num }}{% if s.label %} · {{ s.label }}{% endif %}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="mb_start">开始<span class="req">*</span></label>
+          <input id="mb_start" name="start" type="time" value="19:00" step="1800" class="input" required>
+        </div>
+        <div class="form-field">
+          <label for="mb_end">结束<span class="req">*</span></label>
+          <input id="mb_end" name="end" type="time" value="21:00" step="1800" class="input" required>
+        </div>
+        <button class="btn btn-primary btn-sm" type="submit">绑定（同座位原时段将被替换）</button>
+      </form>
+      <div class="hint mt-2">约束：每座位每天 1 时段 ≤{{ '%g'|format(max_seg) }}h；账号每日 ≤ {{ '%g'|format(daily_limit) }}h；不同座位时段不得重叠。违者拒绝保存。</div>
+      {% else %}
+      {{ empty(title='需要至少一个账号和一个目标座位', hint='先到「目标座位」「守护账号」页添加') }}
+      {% endif %}
+    </div>
+  </div>
+
+  {# 每座位：期望时段 × 绑定 #}
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    {% for s in seats %}
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">{{ s.seat_num }}{% if s.label %} · {{ s.label }}{% endif %}
+          {% if uncovered[s.seat_num] %}<span class="chip chip-danger ml-1">缺 {{ uncovered[s.seat_num]|length }} 段</span>
+          {% else %}<span class="chip chip-success ml-1">已全覆盖</span>{% endif %}
+        </span>
+      </div>
+      <div class="card-body flex flex-col gap-3">
+        {% for b in seat_bindings[s.seat_num] %}
+        <div class="flex items-center justify-between gap-3 py-1.5 border-b border-edge-subtle last:border-0">
+          <div class="flex items-center gap-3">
+            <span class="text-xs font-mono">{{ b.range }}</span>
+            <span class="text-xs text-ink-secondary">{{ b.account_id }}</span>
+            {% if b.range not in desired[s.seat_num] %}<span class="chip chip-muted">非期望时段</span>{% endif %}
+          </div>
+          <form method="post" action="/bindings/delete">
+            <input type="hidden" name="account_id" value="{{ b.account_id }}">
+            <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
+            <button class="btn btn-ghost btn-sm text-danger" type="submit">解绑</button>
+          </form>
+        </div>
+        {% else %}
+        <p class="text-xs text-ink-muted">该座位暂无任何绑定</p>
+        {% endfor %}
+        {% if uncovered[s.seat_num] %}
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs text-ink-muted">未覆盖：</span>
+          {% for u in uncovered[s.seat_num] %}<span class="chip chip-danger font-mono">{{ u }}</span>{% endfor %}
+        </div>
+        {% endif %}
+        <details>
+          <summary class="text-xs text-ink-secondary cursor-pointer">期望时段（{{ desired[s.seat_num]|length }} 段）</summary>
+          <form method="post" action="/bindings/desired" class="flex flex-col gap-2 mt-2">
+            <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
+            <textarea name="slots" class="textarea font-mono" rows="3">{{ desired[s.seat_num]|join('\n') }}</textarea>
+            <div class="hint">每行一个 HH:MM-HH:MM，单段 ≤{{ '%g'|format(max_seg) }}h；留空提交 = 清空自定义（恢复默认三段）。</div>
+            <button class="btn btn-secondary btn-sm w-fit" type="submit">保存期望时段</button>
+          </form>
+        </details>
+      </div>
+    </div>
+    {% else %}
+    {{ empty(title='还没有目标座位', hint='先到「目标座位」页添加') }}
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

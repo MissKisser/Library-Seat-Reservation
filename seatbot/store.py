@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS target_seats (
   label       TEXT NOT NULL DEFAULT '',
   enabled     INTEGER NOT NULL DEFAULT 1,
   created_at  INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL
+  updated_at  INTEGER NOT NULL,
+  desired_slots_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -196,6 +197,13 @@ class StateStore:
             )
         except Exception:
             pass
+        # 5. target_seats: 增加期望时段列
+        cur = await self.db.execute("PRAGMA table_info(target_seats)")
+        seat_cols = {row[1] for row in await cur.fetchall()}
+        if "desired_slots_json" not in seat_cols:
+            await self.db.execute(
+                "ALTER TABLE target_seats ADD COLUMN desired_slots_json TEXT"
+            )
         await self.db.commit()
 
     async def close(self) -> None:
@@ -317,7 +325,7 @@ class StateStore:
     async def get_account(self, acc_id: str) -> Account | None:
         cur = await self.db.execute(
             "SELECT id, phone, password, slots_json, seat_slots_json, bound_seats_json "
-            "FROM accounts WHERE id=?",
+            "FROM accounts WHERE id=? AND status!='disabled'",
             (acc_id,),
         )
         row = await cur.fetchone()
@@ -356,12 +364,17 @@ class StateStore:
         return out
 
     async def sync_accounts(self, accounts) -> int:
-        """Sync accounts to DB. 可接受 AccountConfig (pydantic) 或 Account (dataclass)。
-        实际使用 cfg.accounts (AccountConfig 列表),这里转成 Account dataclass。
+        """启动时从 config 同步账号（DB 为业务真源）。
+
+        - 新账号：整行插入（含 slots/seat_slots/bound_seats）；
+        - 已有账号：仅刷新凭据 phone/password，不覆盖业务矩阵；
+        - 已删除（status='disabled'）的账号：跳过，绝不复活。
+
+        Returns: 实际处理的账号数。
         """
         from seatbot.models import Account as _Account
+        n = 0
         for cfg_acc in accounts:
-            # cfg_acc 可能是 pydantic BaseModel 或 dataclass
             raw_slots = cfg_acc.slots
             if isinstance(raw_slots, str):
                 slots = raw_slots  # 'full' 原样
@@ -377,12 +390,31 @@ class StateStore:
                 bound_seats=bound,
                 seat_slots=seat_slots,
             )
-            await self.upsert_account(acc)
-        return len(accounts)
+            cur = await self.db.execute(
+                "SELECT status FROM accounts WHERE id=?", (acc.id,)
+            )
+            row = await cur.fetchone()
+            if row is None:
+                await self.upsert_account(acc)
+            elif row[0] == "disabled":
+                continue
+            else:
+                await self.db.execute(
+                    "UPDATE accounts SET phone=?, password=?, updated_at=? WHERE id=?",
+                    (acc.phone, acc.password,
+                     int(_time.time() * 1000), acc.id),
+                )
+                await self.db.commit()
+            n += 1
+        return n
 
     async def delete_account(self, acc_id: str) -> None:
+        """软删除账号（status='disabled'），防止启动时被 config 种子复活。"""
         self._bump()
-        await self.db.execute("DELETE FROM accounts WHERE id=?", (acc_id,))
+        await self.db.execute(
+            "UPDATE accounts SET status='disabled', updated_at=? WHERE id=?",
+            (int(_time.time() * 1000), acc_id),
+        )
         await self.db.commit()
 
     async def set_bootstrap_day(self, acc_id: str, day: date) -> None:
@@ -402,37 +434,80 @@ class StateStore:
         return date.fromisoformat(row[0])
 
     # ---------- target seats ----------
-    async def add_target_seat(self, seat_num: str, *, label: str = "") -> None:
+    async def add_target_seat(
+        self, seat_num: str, *, label: str = "",
+        desired_slots: list[str] | None = None,
+    ) -> None:
+        """注册目标座位；对已软删除的座位重新启用（Web/CLI 入口）。"""
         self._bump()
         now = int(_time.time() * 1000)
         await self.db.execute(
-            """INSERT INTO target_seats (seat_num, label, enabled, created_at, updated_at)
-               VALUES (?, ?, 1, ?, ?)
-               ON CONFLICT(seat_num) DO UPDATE SET label=excluded.label, updated_at=excluded.updated_at""",
-            (seat_num.zfill(3), label, now, now),
+            """INSERT INTO target_seats
+                   (seat_num, label, enabled, created_at, updated_at, desired_slots_json)
+               VALUES (?, ?, 1, ?, ?, ?)
+               ON CONFLICT(seat_num) DO UPDATE SET
+                   label=excluded.label, enabled=1, updated_at=excluded.updated_at""",
+            (seat_num.zfill(3), label, now, now,
+             json.dumps(desired_slots) if desired_slots is not None else None),
         )
         await self.db.commit()
 
+    async def seed_target_seat(
+        self, seat_num: str, *, label: str = "",
+        desired_slots: list[str] | None = None,
+    ) -> None:
+        """启动种子：仅插入不存在的座位，绝不复活已被删除（enabled=0）的行。"""
+        await self.db.execute(
+            """INSERT INTO target_seats
+                   (seat_num, label, enabled, created_at, updated_at, desired_slots_json)
+               VALUES (?, ?, 1, ?, ?, ?)
+               ON CONFLICT(seat_num) DO NOTHING""",
+            (seat_num.zfill(3), label,
+             int(_time.time() * 1000), int(_time.time() * 1000),
+             json.dumps(desired_slots) if desired_slots is not None else None),
+        )
+        await self.db.commit()
+
+    async def set_target_seat_desired(
+        self, seat_num: str, slots: list[str]
+    ) -> bool:
+        """更新座位期望时段；座位不存在时返回 False。"""
+        self._bump()
+        cur = await self.db.execute(
+            "UPDATE target_seats SET desired_slots_json=?, updated_at=? "
+            "WHERE seat_num=? AND enabled=1",
+            (json.dumps(slots), int(_time.time() * 1000), seat_num.zfill(3)),
+        )
+        await self.db.commit()
+        return cur.rowcount > 0
+
     async def delete_target_seat(self, seat_num: str) -> None:
+        """软删除目标座位（置 enabled=0），防止下次启动被 config 种子复活。"""
         self._bump()
         await self.db.execute(
-            "DELETE FROM target_seats WHERE seat_num=?", (seat_num.zfill(3),)
+            "UPDATE target_seats SET enabled=0, updated_at=? WHERE seat_num=?",
+            (int(_time.time() * 1000), seat_num.zfill(3)),
         )
         await self.db.commit()
 
     async def list_target_seats(self) -> list[SeatTarget]:
         cur = await self.db.execute(
-            "SELECT seat_num, label, enabled, created_at, updated_at "
-            "FROM target_seats WHERE enabled=1 ORDER BY seat_num"
+            "SELECT seat_num, label, enabled, created_at, updated_at, "
+            "desired_slots_json FROM target_seats WHERE enabled=1 ORDER BY seat_num"
         )
         rows = await cur.fetchall()
-        return [
-            SeatTarget(
+        out: list[SeatTarget] = []
+        for r in rows:
+            try:
+                desired = json.loads(r[5]) if r[5] else None
+            except Exception:
+                desired = None
+            out.append(SeatTarget(
                 seat_num=r[0], label=r[1], enabled=bool(r[2]),
                 created_at=r[3], updated_at=r[4],
-            )
-            for r in rows
-        ]
+                desired_slots=desired,
+            ))
+        return out
 
     # ---------- tasks ----------
     async def add_task(self, t: Task) -> int:
@@ -480,6 +555,16 @@ class StateStore:
                    WHERE id=?""",
                 (status.value, reserve_id, last_error, now, task_id),
             )
+        await self.db.commit()
+
+    async def shorten_task_end(self, task_id: int, new_end: "time") -> None:
+        """缩短任务结束时间（换座释放：时段开始签到后短持即签退）。"""
+        self._bump()
+        await self.db.execute(
+            "UPDATE tasks SET end_time=?, updated_at=? WHERE id=?",
+            (new_end.isoformat(timespec="minutes"),
+             int(_time.time() * 1000), task_id),
+        )
         await self.db.commit()
 
     async def get_task(self, task_id: int) -> Task | None:
