@@ -35,3 +35,7 @@ docs/*
 qc
 query
 config.test.yaml
+
+# 文档规范: 规则文件不入库
+AGENTS.md
+CLAUDE.md
