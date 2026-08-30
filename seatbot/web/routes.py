@@ -266,41 +266,42 @@ def _rows_to_json(annotated_rows: list[dict]) -> list[dict]:
 async def _annotate_rows(rows, store, day: date) -> list[dict]:
     """把当日 tasks 的真实状态标注到覆盖图格子上。
 
-    任务是 planner 产出的 1-2h 块，格子是 30min，因此按区间重叠匹配
-    (t.start < c.end and t.end > c.start)，而非起止完全相等。
-    当日任务只查一次，按 (account_id, seat_num) 索引后内存匹配。
+    真实优先: 格子归属以**当日真实任务**为准 (同格多条时新 id 优先,
+    避免被重排后遗留的旧终态任务遮挡), 与矩阵归属无关; 无真实任务时——
+      - 当天已过去的格子: 不标注 (诚实显示空缺, 不渲染幻影"待执行")
+      - 未来格子/未来日期: 按矩阵归属显示计划态 (pending)
+    任务是 planner 产出的 1-2h 块，格子是 30min，按区间重叠匹配。
     """
-    ACTIVE_STATUSES = (
+    REAL_STATUSES = (
         TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.SUBMITTING,
         TaskStatus.LEAVING, TaskStatus.FAILED, TaskStatus.COMPLETE,
     )
-    DETAIL_STATUSES = ("active", "signed", "submitting", "failed", "leaving", "complete")
-    tasks_by_acc_seat: dict[tuple[str, str], list[Task]] = {}
+    real_by_seat: dict[str, list[Task]] = {}
     for t in await store.list_tasks(day=day):
-        if t.status in ACTIVE_STATUSES:
-            tasks_by_acc_seat.setdefault((t.account_id, t.seat_num), []).append(t)
+        if t.status in REAL_STATUSES:
+            real_by_seat.setdefault(t.seat_num, []).append(t)
+    for tasks in real_by_seat.values():
+        tasks.sort(key=lambda x: x.id or 0, reverse=True)
 
+    now = now_cst().time()
+    is_today = day == today_cst()
     out: list[dict] = []
     for sc in rows:
         cells: list[dict] = []
         for c in sc.coverage.cells:
             accs_info: list[dict] = []
-            for aid in c.accounts:
-                match_status = "pending"
-                match_task: Task | None = None
-                for t in tasks_by_acc_seat.get((aid, sc.seat.seat_num), []):
-                    if t.start_time < c.end and t.end_time > c.start:
-                        match_status = t.status.value
-                        match_task = t
-                        break
-                info: dict = {"id": aid, "status": match_status}
-                if match_status in DETAIL_STATUSES and match_task is not None:
-                    info["task_id"] = match_task.id
-                    info["day"] = match_task.day.isoformat()
-                    info["start_time"] = match_task.start_time.isoformat(timespec="minutes")
-                    info["end_time"] = match_task.end_time.isoformat(timespec="minutes")
-                    info["updated_at"] = match_task.updated_at
-                accs_info.append(info)
+            for t in real_by_seat.get(sc.seat.seat_num, []):
+                if t.start_time < c.end and t.end_time > c.start:
+                    accs_info.append({
+                        "id": t.account_id, "status": t.status.value,
+                        "task_id": t.id, "day": t.day.isoformat(),
+                        "start_time": t.start_time.isoformat(timespec="minutes"),
+                        "end_time": t.end_time.isoformat(timespec="minutes"),
+                        "updated_at": t.updated_at,
+                    })
+            if not accs_info and not (is_today and c.end <= now):
+                for aid in c.accounts:
+                    accs_info.append({"id": aid, "status": "pending"})
             cells.append({
                 "start": c.start, "end": c.end,
                 "accounts_info": accs_info,
@@ -1589,6 +1590,109 @@ async def task_leave(request: Request, task_id: int):
     else:
         await store.update_task_status(task_id, t.status, last_error=f"签退失败: {r.get('msg')}")
     return RedirectResponse("/?left=1", status_code=303)
+
+
+# =========================================================================
+# Reservations — 预约记录（对齐官方 App 预约记录页）
+# =========================================================================
+
+#: (ts, items, error) 按账号缓存 60s, 避免高频打开页面反复打超星只读接口
+_RESERVE_CACHE: dict[str, tuple[float, list[dict] | None, str | None]] = {}
+_RESERVE_TTL = 60.0
+_RESERVE_TABS = [
+    ("all", "全部", None),
+    ("pending", "待履约", (0, 1)),
+    ("done", "已履约", (2,)),
+    ("cancelled", "已取消", (7,)),
+    ("violation", "违约", (8,)),
+]
+_RESERVE_STATUS = {
+    0: ("待履约", "chip-accent"),
+    1: ("使用中", "chip-accent"),
+    2: ("已履约", "chip-success"),
+    7: ("已取消", "chip-muted"),
+    8: ("违约", "chip-danger"),
+}
+
+
+def _fmt_ms(ms) -> str:
+    """毫秒时间戳 → HH:MM；空值显示占位符。"""
+    from datetime import datetime as _dtm
+    if not ms:
+        return "—"
+    return _dtm.fromtimestamp(ms / 1000).strftime("%H:%M")
+
+
+@router.get("/reservations", response_class=HTMLResponse)
+async def reservations_page(
+    request: Request,
+    account_id: str | None = None,
+    tab: str = "all",
+):
+    """预约记录页：切换任意守护账号，按官方五页签查看其预约情况。
+
+    每次刷新/切换账号对超星发 **1 个只读 GET**（reservelist，60s TTL 缓存）；
+    接口只返回登录人本人的记录, 故查谁就用谁的会话（懒登录）。
+    """
+    store = request.app.state.store
+    sched = request.app.state.sched
+    accounts = await store.list_accounts()
+    ctx = await _ctx(request, active_page="reservations")
+    if not accounts:
+        return _templates(request).TemplateResponse(
+            request, "reservations_list.html", ctx)
+    acc = next((a for a in accounts if a.id == account_id), accounts[0])
+
+    now = _dt.now().timestamp()
+    cached = _RESERVE_CACHE.get(acc.id)
+    if cached and now - cached[0] < _RESERVE_TTL:
+        items, err = cached[1], cached[2]
+    else:
+        items, err = None, None
+        try:
+            client = sched._client_for(acc)
+            if not client.cookies():
+                await client.login(acc.phone, acc.password)
+            items = await client.reserve_list()
+        except Exception as e:
+            err = str(e)
+        _RESERVE_CACHE[acc.id] = (now, items, err)
+
+    rows = []
+    for it in (items or []):
+        code = it.get("status")
+        label, chip = _RESERVE_STATUS.get(code, (str(code), "chip-muted"))
+        rows.append({
+            "day": it.get("today") or "",
+            "start": _fmt_ms(it.get("startTime")),
+            "end": _fmt_ms(it.get("endTime")),
+            "seat": it.get("seatNum"),
+            "room": it.get("thirdLevelName") or "",
+            "rid": it.get("id"),
+            "code": code,
+            "label": label,
+            "chip": chip,
+            "signin": _fmt_ms(it.get("signInTime")),
+            "signout": _fmt_ms(it.get("signBackTime")),
+            "start_ms": it.get("startTime") or 0,
+        })
+    rows.sort(key=lambda r: r["start_ms"], reverse=True)
+    counts = {t[0]: 0 for t in _RESERVE_TABS}
+    for r in rows:
+        for t_id, _label, codes in _RESERVE_TABS:
+            if codes is None or r["code"] in codes:
+                counts[t_id] += 1
+    tab_def = next((t for t in _RESERVE_TABS if t[0] == tab), _RESERVE_TABS[0])
+    if tab_def[2] is not None:
+        rows = [r for r in rows if r["code"] in tab_def[2]]
+
+    ctx.update(
+        accounts=accounts, account=acc,
+        tabs=_RESERVE_TABS, tab_id=tab_def[0], tab_label=tab_def[1],
+        counts=counts, rows=rows, error=err,
+    )
+    return _templates(request).TemplateResponse(
+        request, "reservations_list.html", ctx)
 
 
 # =========================================================================

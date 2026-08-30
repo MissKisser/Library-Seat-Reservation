@@ -692,6 +692,38 @@ class ChaoxingClient:
         sr = (payload.get("data") or {}).get("seatReserve")
         return sr
 
+    # ---------- reservation records ----------
+    #: reservelist 状态码 → 官方含义（详见 docs/api/reservelist.md）
+    RESERVE_STATUS = {0: "待履约", 1: "使用中", 2: "已履约", 7: "已取消", 8: "违约"}
+
+    async def reserve_list(
+        self,
+        *,
+        index_id: int = 0,
+        page_size: int = 50,
+        type_: int = -1,
+    ) -> list[dict]:
+        """查询**当前登录账号**的预约记录（官方 App「预约记录」页数据源）。
+
+        Endpoint:  GET /data/apps/seat/reservelist
+        Params:    indexId (0 起的页码), pageSize, type (-1 全部), fidEnc (移动端)
+        Auth:      当前会话账号; 接口只返回登录人本人的记录, 无按 uid 查他人参数。
+        Returns:   reserveList[] 原始条目列表; status 含义见 RESERVE_STATUS。
+        只读查询, 无预约/违约副作用。
+        """
+        r = await self._client.get(
+            f"{self.OFFICE_BASE}/data/apps/seat/reservelist",
+            params={"indexId": index_id, "pageSize": page_size, "type": type_,
+                    "fidEnc": self.FID_ENC_MOBILE},
+            headers={"Referer": self.OFFICE_BASE + "/"},
+        )
+        payload = r.json()
+        if not payload.get("success"):
+            raise ChaoxingError(
+                f"reservelist rejected: {payload.get('msg') or payload!r}"
+            )
+        return (payload.get("data") or {}).get("reserveList") or []
+
     # ---------- occupancy lookup ----------
     async def get_used_times(
         self,

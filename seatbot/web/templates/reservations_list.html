@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% from "_macros/empty.html" import empty %}
+{% block title %}预约记录{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-5">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">预约记录</h1>
+      <p class="page-sub">对齐官方「预约记录」页 · 数据来自超星实时查询（每账号 60s 缓存，每次查看 1 个只读请求）</p>
+    </div>
+  </div>
+
+  {% if not accounts %}
+    {{ empty(title='还没有守护账号', hint='先到「守护账号」页创建') }}
+  {% else %}
+  {# 账号切换 #}
+  <div class="card"><div class="card-body flex items-center gap-3 flex-wrap">
+    <span class="text-xs text-ink-secondary">查看账号</span>
+    <form method="get" action="/reservations" class="flex items-center gap-2">
+      <input type="hidden" name="tab" value="{{ tab_id }}">
+      <select name="account_id" class="select" onchange="this.form.submit()">
+        {% for a in accounts %}
+        <option value="{{ a.id }}" {% if a.id == account.id %}selected{% endif %}>{{ a.id }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-secondary btn-sm" type="submit">查看</button>
+    </form>
+  </div></div>
+
+  {% if error %}
+  <div class="card border-danger/40"><div class="card-body text-sm text-danger">超星查询失败：{{ error }}</div></div>
+  {% endif %}
+
+  {# 五页签 #}
+  <div class="flex items-center gap-2 flex-wrap">
+    {% for t_id, t_label, _ in tabs %}
+    <a class="chip {{ 'chip-accent' if t_id == tab_id else 'chip-muted' }}"
+       href="/reservations?account_id={{ account.id }}&tab={{ t_id }}">
+      {{ t_label }} · {{ counts[t_id] }}
+    </a>
+    {% endfor %}
+  </div>
+
+  {# 记录表 #}
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">{{ account.id }} · {{ tab_label }}（{{ rows|length }} 条）</span>
+    </div>
+    <div class="card-body overflow-x-auto">
+      {% if rows %}
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-xs text-ink-muted border-b border-edge-subtle">
+            <th class="py-2 pr-4">日期</th>
+            <th class="py-2 pr-4">时段</th>
+            <th class="py-2 pr-4">座位</th>
+            <th class="py-2 pr-4">阅览室</th>
+            <th class="py-2 pr-4">状态</th>
+            <th class="py-2 pr-4">签到</th>
+            <th class="py-2 pr-4">签退</th>
+            <th class="py-2">预约号</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr class="border-b border-edge-subtle last:border-0">
+            <td class="py-2 pr-4 font-mono text-xs whitespace-nowrap">{{ r.day }}</td>
+            <td class="py-2 pr-4 font-mono text-xs whitespace-nowrap">{{ r.start }}-{{ r.end }}</td>
+            <td class="py-2 pr-4 font-mono text-xs">{{ r.seat }}</td>
+            <td class="py-2 pr-4 text-xs text-ink-secondary">{{ r.room }}</td>
+            <td class="py-2 pr-4"><span class="chip {{ r.chip }}">{{ r.label }}</span></td>
+            <td class="py-2 pr-4 font-mono text-xs">{{ r.signin }}</td>
+            <td class="py-2 pr-4 font-mono text-xs">{{ r.signout }}</td>
+            <td class="py-2 font-mono text-xs">{{ r.rid }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="text-xs text-ink-muted py-4 text-center">该页签下暂无记录</p>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
