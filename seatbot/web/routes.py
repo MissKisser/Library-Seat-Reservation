@@ -108,8 +108,9 @@ async def _fetch_others_occupied(
     logged in, or every seat lookup failed; callers should still render
     the dashboard, just without the "others_occupied" overlay.
 
-    Auth: 优先复用 scheduler._client_for(acc) 的已登录 cookie 缓存，
-    避免每次页面加载都触发一次无头浏览器登录。
+    Auth: 优先复用 scheduler 的持久化 cookie（内存池 + 落库会话），
+    只有 jar 与持久化均为空才触发一次无头浏览器登录；
+    全部座位查询抛异常（会话失效特征）时重登一次并重试。
     """
     if not seat_nums:
         return [], None
@@ -125,27 +126,45 @@ async def _fetch_others_occupied(
     if acc is None:
         return [], "无可用账号"
 
+    cfg = request.app.state.cfg
     if sched is not None:
-        client = sched._client_for(acc)
+        client = await sched.client_ready(acc)
     else:
         client = ChaoxingClient()
 
+    just_logged_in = False
     if not client.cookies():
-        try:
-            await client.login(acc.phone, acc.password)
-        except Exception as e:
-            return [], f"silent login failed: {type(e).__name__}: {e}"
+        if sched is not None:
+            just_logged_in = await sched.login_and_persist(acc, client, "占用查询登录")
+            if not just_logged_in:
+                return [], "silent login failed: browser login failed (see logs)"
+        else:
+            try:
+                await client.login(acc.phone, acc.password)
+                just_logged_in = True
+            except Exception as e:
+                return [], f"silent login failed: {type(e).__name__}: {e}"
 
     day_str = day.isoformat()
-    out: list[tuple[str, _time, _time]] = []
+
+    async def _gather() -> list:
+        return await asyncio.gather(
+            *(client.get_used_times(cfg.library.room_id, sn, day_str)
+              for sn in seat_nums),
+            return_exceptions=True,
+        )
+
+    results = await _gather()
+    # 所有座位查询都抛异常且本次调用未刚登录过 → 会话大概率失效:
+    # 重置会话并重登一次再试 (区分"查到空数据"——空数据是正常结果不重试)
+    if (sched is not None and not just_logged_in and results
+            and all(isinstance(r, Exception) for r in results)):
+        client.reset_session()
+        if await sched.login_and_persist(acc, client, "占用查询重登"):
+            results = await _gather()
+
+    out: list[tuple[str, _time, time]] = []
     last_err: str | None = None
-    # 并行拉所有座位的 usedtimes (互不依赖)
-    cfg = request.app.state.cfg
-    results = await asyncio.gather(
-        *(client.get_used_times(cfg.library.room_id, sn, day_str)
-          for sn in seat_nums),
-        return_exceptions=True,
-    )
     for sn, r in zip(seat_nums, results):
         if isinstance(r, Exception):
             last_err = f"{sn}: {type(r).__name__}: {r}"
@@ -240,7 +259,8 @@ async def _collect_day_bundle(
         others_occupied=others_occupied,
     )
     annotated = await _annotate_rows(rows, store, view_day)
-    # 缺口只统计**期望时段内**的未覆盖块; 主动排除的时段 (如午休) 不算缺口
+    # 缺口只统计**期望时段内**的未覆盖块：需有成功任务或用户/他人占用才算覆盖
+    # 成功 = active/signed/etc 且无 last_error；future 的 pending 视为已计划覆盖
     desired_blocks: dict[str, set[str]] = {}
     for s in target_seats:
         blocks: set[str] = set()
@@ -254,11 +274,27 @@ async def _collect_day_bundle(
                 blocks.add(f"{cur // 60:02d}:{cur % 60:02d}")
                 cur += 30
         desired_blocks[s.seat_num] = blocks
-    gap_count = sum(
-        1 for sc in rows for c in sc.coverage.cells
-        if (not c.accounts and not c.user_reserved and not c.others_occupied)
-        and c.start.strftime("%H:%M") in desired_blocks.get(sc.seat.seat_num, set())
-    )
+    now_time = now_cst().time()
+    is_today_view = view_day == today_cst()
+    SUCCESS = {"active", "signed", "submitting", "leaving", "complete"}
+    gap_count = 0
+    for row in annotated:
+        seat_num = row["seat"].seat_num
+        desired = desired_blocks.get(seat_num, set())
+        for c in row["cells"]:
+            if c["start"].strftime("%H:%M") not in desired:
+                continue
+            has_success = any(
+                info.get("status") in SUCCESS and not info.get("last_error")
+                for info in c["accounts_info"]
+            )
+            # future pending 视为已计划覆盖
+            if not has_success:
+                is_future = (not is_today_view) or (c["end"] > now_time)
+                if is_future and any(info.get("status") == "pending" for info in c["accounts_info"]):
+                    has_success = True
+            if not has_success and not c["user_reserved"] and not c["others_occupied"]:
+                gap_count += 1
     return {"rows": annotated, "gap_count": gap_count, "occ_err": occ_err}
 
 
@@ -313,6 +349,7 @@ async def _annotate_rows(rows, store, day: date) -> list[dict]:
                         "start_time": t.start_time.isoformat(timespec="minutes"),
                         "end_time": t.end_time.isoformat(timespec="minutes"),
                         "updated_at": t.updated_at,
+                        "last_error": t.last_error or "",
                     })
             if not accs_info and not (is_today and c.end <= now):
                 for aid in c.accounts:
@@ -582,10 +619,10 @@ def _overlaps(a1: _dt, a2: _dt, b1: _dt, b2: _dt) -> bool:
 
 async def _signback_task_now(sched, store, acc: Account, t: Task) -> tuple[bool, str]:
     """立即对在约任务执行真签退（signback 通道），返回 (是否成功, 消息)。"""
-    client = sched._client_for(acc)
+    client = await sched.client_ready(acc)
     try:
-        if not client.cookies():
-            await client.login(acc.phone, acc.password)
+        if not client.cookies() and not await sched.login_and_persist(acc, client, "签退登录"):
+            return False, "登录失败，无法签退"
         r = await client.signback(t.reserve_id)
     except Exception as e:
         return False, f"登录/签退异常: {e}"
@@ -1330,6 +1367,7 @@ async def accounts_test_login(request: Request, acc_id: str):
     client = ChaoxingClient()
     try:
         await client.login(db_acc.phone, db_acc.password)
+        await store.save_account_cookies(db_acc.id, client.cookies())
         return JSONResponse({"ok": True})
     except ChaoxingError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
@@ -1554,9 +1592,9 @@ async def task_sign(request: Request, task_id: int):
     acc = await store.get_account(t.account_id)
     if not acc:
         raise HTTPException(404)
-    client = sched._client_for(acc)
-    if not client.cookies():
-        await client.login(acc.phone, acc.password)
+    client = await sched.client_ready(acc)
+    if not client.cookies() and not await sched.login_and_persist(acc, client, "手动签到"):
+        raise HTTPException(400, "登录失败，无法签到")
     r = await client.sign(t.reserve_id)
     await store.log_action(acc.id, "sign", str(t.reserve_id), str(r)[:500], bool(r.get("success")))
     return RedirectResponse("/tasks?signed=1", status_code=303)
@@ -1572,9 +1610,9 @@ async def task_cancel(request: Request, task_id: int):
     acc = await store.get_account(t.account_id)
     if not acc:
         raise HTTPException(404)
-    client = sched._client_for(acc)
-    if not client.cookies():
-        await client.login(acc.phone, acc.password)
+    client = await sched.client_ready(acc)
+    if not client.cookies() and not await sched.login_and_persist(acc, client, "取消登录"):
+        raise HTTPException(400, "登录失败，无法取消")
     r = await client.cancel(t.reserve_id)
     await store.log_action(acc.id, "cancel", str(t.reserve_id), str(r)[:500], bool(r.get("success")), str(r.get("msg")))
     if r.get("success"):
@@ -1595,11 +1633,11 @@ async def task_leave(request: Request, task_id: int):
     acc = await store.get_account(t.account_id)
     if not acc:
         raise HTTPException(404)
-    client = sched._client_for(acc)
-    if not client.cookies():
-        await client.login(acc.phone, acc.password)
+    client = await sched.client_ready(acc)
+    if not client.cookies() and not await sched.login_and_persist(acc, client, "手动签退"):
+        raise HTTPException(400, "登录失败，无法签退")
     r = await client.signback(t.reserve_id)
-    await store.log_action(acc.id, "signback", str(t.reserve_id), str(r)[:500], bool(r.get("success")), str(r.get("msg")))
+    await store.log_action(acc.id, "signback", str(t.reserve_id), str(r)[:500], bool(r.get("success")))
     if r.get("success"):
         await store.update_task_status(task_id, TaskStatus.COMPLETE)
     else:
@@ -1665,9 +1703,9 @@ async def reservations_page(
     else:
         items, err = None, None
         try:
-            client = sched._client_for(acc)
-            if not client.cookies():
-                await client.login(acc.phone, acc.password)
+            client = await sched.client_ready(acc)
+            if not client.cookies() and not await sched.login_and_persist(acc, client, "预约记录登录"):
+                raise ChaoxingError("登录失败")
             items = await client.reserve_list()
         except Exception as e:
             err = str(e)

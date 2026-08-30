@@ -54,6 +54,30 @@ class Scheduler:
             self._clients[acc.id] = ChaoxingClient()
         return self._clients[acc.id]
 
+    async def client_ready(self, acc: Account) -> ChaoxingClient:
+        """取账号 client；jar 为空时优先用持久化 cookie 恢复会话（不做网络请求）。
+
+        会话是否真的有效由后续 API 调用判定——失效路径由调用方
+        reset_session + login_and_persist 自愈，避免每次都走无头浏览器登录。
+        """
+        client = self._client_for(acc)
+        if not client.cookies():
+            persisted = await self.store.load_account_cookies(acc.id)
+            if persisted and client.set_cookies(persisted):
+                await self._info(f"会话恢复（{len(persisted)} cookies，来自本地持久化）", acc.id)
+        return client
+
+    async def login_and_persist(self, acc: Account, client: ChaoxingClient, label: str = "登录") -> bool:
+        """浏览器登录一次并把 cookie 写入持久化存储；成功返回 True。"""
+        try:
+            await client.login(acc.phone, acc.password)
+        except ChaoxingError as e:
+            await self._warn(f"{label}预登录失败（{e}）", acc.id)
+            return False
+        await self.store.save_account_cookies(acc.id, client.cookies())
+        await self._info(f"{label}成功（{len(client.cookies())} cookies，已持久化）", acc.id)
+        return True
+
     # ---------- logging helpers ----------
     async def _info(self, msg: str, acc: str | None = None) -> None:
         await self.store.log_message("INFO", acc, msg)
@@ -307,14 +331,10 @@ class Scheduler:
         sign 由 _run_sign 在时段开始后再调用。
         """
         await self.store.update_task_status(t.id, TaskStatus.SUBMITTING)
-        client = self._client_for(acc)
+        client = await self.client_ready(acc)
 
         if not client.cookies():
-            try:
-                await client.login(acc.phone, acc.password)
-                await self._info(f"登录成功（{len(client.cookies())} cookies）", acc.id)
-            except ChaoxingError as e:
-                await self._warn(f"预登录失败（{e}），改用页面内登录重试", acc.id)
+            await self.login_and_persist(acc, client, "登录")
 
         try:
             if t.day > today_cst():
@@ -434,8 +454,8 @@ class Scheduler:
         if not sr.get("success") and "未登录" in msg:
             await self._warn(f"{label}: 会话过期（未登录）→ 重置会话并重登重试", acc.id)
             client.reset_session()
-            await client.login(acc.phone, acc.password)
-            sr = await fn(reserve_id)
+            if await self.login_and_persist(acc, client, f"{label}重登"):
+                sr = await fn(reserve_id)
         return sr
 
     async def _run_sign(self, acc: Account, t: Task) -> None:
@@ -443,18 +463,15 @@ class Scheduler:
         if not t.reserve_id:
             await self._warn(f"跳过签到: 无预约号 座位={t.seat_num} {t.chunk_key()}", acc.id)
             return
-        client = self._client_for(acc)
-        # ★ lazy login — jar 为空才登录 (陈旧 cookie 由 _act_with_relogin 自愈)
+        client = await self.client_ready(acc)
+        # ★ lazy login — jar 与持久化都为空才走浏览器登录 (陈旧 cookie 由 _act_with_relogin 自愈)
         if not client.cookies():
-            try:
-                await client.login(acc.phone, acc.password)
-                await self._info(f"签到登录成功（{len(client.cookies())} cookies）", acc.id)
-            except ChaoxingError as e:
-                await self._warn(f"签到预登录失败（{e}）", acc.id)
+            await self.login_and_persist(acc, client, "签到登录")
         try:
             sr = await self._act_with_relogin(client, acc, client.sign, t.reserve_id, "sign")
         except Exception as e:
             await self._error(f"签到异常: {e}", acc.id)
+            await self.store.update_task_status(t.id, t.status, last_error=f"签到异常 {type(e).__name__}: {e}")
             await self._track_signleave_failure(t, "签到", f"异常 {type(e).__name__}: {e}")
             return
         await self.store.log_action(
@@ -474,6 +491,7 @@ class Scheduler:
             deadline = at_cst(t.day, t.start_time) + timedelta(minutes=60)
             if now_cst() < deadline:
                 await self._warn(f"签到被拒（{msg}）；窗口状态不明，保持重试", acc.id)
+                await self.store.update_task_status(t.id, t.status, last_error=msg)
                 await self._track_signleave_failure(t, "签到", f"窗口状态不明（{msg}）")
                 return
             await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
@@ -496,6 +514,8 @@ class Scheduler:
             )
             return
         await self._error(f"签到失败: {msg}（保持进行中，下个周期重试）", acc.id)
+        # ★ 持久化失败原因：覆盖图需据此标红（否则 active 仍被视作成功）
+        await self.store.update_task_status(t.id, t.status, last_error=msg)
         await self._track_signleave_failure(t, "签到", msg)
 
     async def _run_leave(self, acc: Account, t: Task) -> None:
@@ -517,14 +537,10 @@ class Scheduler:
                 level="error",
             )
             return
-        client = self._client_for(acc)
+        client = await self.client_ready(acc)
         # ★ lazy login — _run_leave 是独立调用路径
         if not client.cookies():
-            try:
-                await client.login(acc.phone, acc.password)
-                await self._info(f"签退登录成功（{len(client.cookies())} cookies）", acc.id)
-            except ChaoxingError as e:
-                await self._warn(f"签退预登录失败（{e}）", acc.id)
+            await self.login_and_persist(acc, client, "签退登录")
         try:
             sr = await self._act_with_relogin(client, acc, client.signback, t.reserve_id, "signback")
         except Exception as e:

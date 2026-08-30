@@ -99,6 +99,12 @@ CREATE TABLE IF NOT EXISTS user_reserved (
   note        TEXT,
   created_at  INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS account_cookies (
+  account_id   TEXT PRIMARY KEY,
+  cookies_json TEXT NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_user_reserved_seat_day ON user_reserved(seat_num, day);
 """
 
@@ -425,6 +431,38 @@ class StateStore:
             "UPDATE accounts SET status='disabled', updated_at=? WHERE id=?",
             (int(_time.time() * 1000), acc_id),
         )
+        await self.db.execute("DELETE FROM account_cookies WHERE account_id=?", (acc_id,))
+        await self.db.commit()
+
+    # ---------- 登录会话 cookie 持久化 ----------
+    async def save_account_cookies(self, account_id: str, cookies: dict[str, str]) -> None:
+        """保存账号的登录会话 cookie（JSON），供重启后免浏览器登录恢复会话。"""
+        await self.db.execute(
+            "INSERT INTO account_cookies (account_id, cookies_json, updated_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(account_id) DO UPDATE SET cookies_json=excluded.cookies_json, "
+            "updated_at=excluded.updated_at",
+            (account_id, json.dumps(cookies), int(_time.time() * 1000)),
+        )
+        await self.db.commit()
+
+    async def load_account_cookies(self, account_id: str) -> dict[str, str] | None:
+        """读取账号持久化的登录 cookie；不存在或损坏时返回 None。"""
+        cur = await self.db.execute(
+            "SELECT cookies_json FROM account_cookies WHERE account_id=?", (account_id,)
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        try:
+            data = json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return data if isinstance(data, dict) and data else None
+
+    async def clear_account_cookies(self, account_id: str) -> None:
+        """清除账号持久化的登录 cookie（会话已确认失效时调用）。"""
+        await self.db.execute("DELETE FROM account_cookies WHERE account_id=?", (account_id,))
         await self.db.commit()
 
     async def set_bootstrap_day(self, acc_id: str, day: date) -> None:

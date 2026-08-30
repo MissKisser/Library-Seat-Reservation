@@ -55,6 +55,25 @@ class ChaoxingClient:
     def cookies(self) -> dict[str, str]:
         return {c.name: c.value for c in self._cookie_jar.jar}
 
+    def set_cookies(self, cookies: dict[str, str]) -> bool:
+        """注入持久化 cookie 恢复会话；含 `_uid`/`vc3` 等鉴权 cookie 时返回 True。
+
+        用于重启后免浏览器登录：注入成功即可直接调 API，
+        会话若已失效由调用方按"请求失败"路径 reset_session + login 自愈。
+        """
+        from httpx import Cookies
+        if not cookies:
+            return False
+        if not isinstance(self._cookie_jar, Cookies):
+            self._cookie_jar = Cookies()
+            self._client.cookies = self._cookie_jar
+        for name, value in cookies.items():
+            self._cookie_jar.set(
+                name, value,
+                domain=".chaoxing.com", path="/",
+            )
+        return any(c.name in ("_uid", "vc3") for c in self._cookie_jar.jar)
+
     def reset_session(self) -> None:
         """Drop all cookies so the next login starts clean.
 

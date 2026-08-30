@@ -211,8 +211,9 @@
         <div class="text-xs font-mono text-ink-secondary mb-0.5"
              x-text="card.cell.start + '–' + card.cell.end"></div>
         <div class="text-xs text-ink-secondary">守护账号 <b class="text-ink" x-text="card.hit.id"></b></div>
-        <div class="text-xs text-ink-muted mt-0.5 mb-3" x-text="updatedText(card.hit)"></div>
-        <div class="flex gap-2">
+        <div class="text-xs text-ink-muted mt-0.5" x-text="updatedText(card.hit)"></div>
+        <div x-show="card.hit.last_error" class="text-xs text-danger mt-1.5 p-1.5 bg-danger/10 rounded border border-danger/20 break-words" x-text="card.hit.last_error"></div>
+        <div class="flex gap-2 mt-3">
           <form x-show="card.hit.status === 'active'" method="post"
                 :action="'/tasks/' + card.hit.task_id + '/sign'" class="flex-1">
             <button class="btn btn-primary btn-sm w-full justify-center" type="submit">立即签到</button>

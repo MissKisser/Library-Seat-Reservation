@@ -15,6 +15,8 @@ module.exports = {
           elevated: 'rgb(var(--bg-elevated-rgb) / <alpha-value>)',
           surface: 'rgb(var(--bg-surface-rgb) / <alpha-value>)',
           muted: 'rgb(var(--bg-muted-rgb) / <alpha-value>)',
+          sidebar: 'rgb(var(--bg-sidebar-rgb) / <alpha-value>)',
+          'table-header': 'rgb(var(--bg-table-header-rgb) / <alpha-value>)',
         },
         edge: {
           subtle: 'rgb(var(--border-subtle-rgb) / <alpha-value>)',
@@ -39,7 +41,7 @@ module.exports = {
         info:    { DEFAULT: 'rgb(var(--info-rgb) / <alpha-value>)',    soft: 'var(--info-soft)' },
       },
       fontFamily: {
-        sans: ['-apple-system','BlinkMacSystemFont','"Segoe UI"','"Microsoft YaHei"','"PingFang SC"','system-ui','sans-serif'],
+        sans: ['"Public Sans"','-apple-system','BlinkMacSystemFont','"Segoe UI"','"Microsoft YaHei"','"PingFang SC"','system-ui','sans-serif'],
         mono: ['"JetBrains Mono"','"SF Mono"','Consolas','monospace'],
       },
       fontSize: {

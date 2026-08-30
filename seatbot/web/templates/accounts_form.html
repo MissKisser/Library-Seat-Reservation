@@ -53,7 +53,7 @@
         {{ text_field('phone', '手机号', account.phone, placeholder='13800000000', required=True) }}
         {{ text_field('password', '密码', '', type='password', hint='编辑时留空 = 保持原密码不变') }}
         <input type="hidden" name="seat_slots" id="f-seat-slots"
-               value="{{ (account.seat_slots | tojson) if account.seat_slots else '{}' }}">
+               value='{{ (account.seat_slots | tojson) if account.seat_slots else '{}' }}'>
 
         {# 矩阵编辑器 #}
         <div class="border border-edge-subtle rounded-xl overflow-hidden">
