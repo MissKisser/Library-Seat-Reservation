@@ -92,7 +92,7 @@
               <thead><tr>
                 <th class="row-label">座位 \ 时段</th>
                 <template x-for="c in (today.rows[0]?.cells || [])" :key="c.start">
-                  <th x-text="c.start"></th>
+                  <th class="whitespace-nowrap" x-text="c.start + '–' + c.end"></th>
                 </template>
               </tr></thead>
               <tbody>
@@ -149,7 +149,7 @@
               <thead><tr>
                 <th class="row-label">座位 \ 时段</th>
                 <template x-for="c in (tomorrow.rows[0]?.cells || [])" :key="c.start">
-                  <th x-text="c.start"></th>
+                  <th class="whitespace-nowrap" x-text="c.start + '–' + c.end"></th>
                 </template>
               </tr></thead>
               <tbody>
