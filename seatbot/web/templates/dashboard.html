@@ -11,9 +11,9 @@
     <div class="boot-box">
       <div class="boot-brand"><span class="boot-logo">📚</span><span>SeatBot</span></div>
       <div class="boot-slots">
-        <div class="boot-slot" :class="boot.display >= 30 ? 'lit' : ''">09–11</div>
-        <div class="boot-slot" :class="boot.display >= 62 ? 'lit' : ''">15–17</div>
-        <div class="boot-slot" :class="boot.display >= 94 ? 'lit' : ''">19–21</div>
+        <template x-for="(s, i) in bootSlots" :key="'boot-' + s">
+          <div class="boot-slot" :class="boot.display >= Math.ceil((i + 1) * 100 / (bootSlots.length + 1)) ? 'lit' : ''" x-text="s"></div>
+        </template>
       </div>
       <div class="boot-track">
         <div class="boot-fill" :style="'width:' + boot.display + '%'"></div>

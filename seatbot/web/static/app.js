@@ -327,6 +327,7 @@
       tomorrow: initial.tomorrow,
       recentLogs: initial.recent_logs || [],
       notifications: initial.notifications || [],
+      bootSlots: initial.boot_slots || [],
       targetSeatCount: initial.target_seat_count || 0,
       accountCount: initial.account_count || 0,
       now: initial.now_hhmm || '',
