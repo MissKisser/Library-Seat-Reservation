@@ -82,6 +82,12 @@ class FakeSched:
     def _client_for(self, acc):
         return FakeClient()
 
+    async def client_ready(self, acc):
+        return self._client_for(acc)
+
+    async def login_and_persist(self, acc, client, label=""):
+        return True
+
 
 def _make_client(store, sched=None):
     app = FastAPI()

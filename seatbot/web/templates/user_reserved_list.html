@@ -20,7 +20,7 @@
     <div class="card-body">
       <form method="post" action="/user-reserved" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
             x-data="{ check(){ const s=document.getElementById('start_time'),e=document.getElementById('end_time'); if(s.value&&e.value&&s.value>=e.value){window.showToast({type:'warn',title:'时段无效',desc:'结束时间需晚于开始时间'});return false;}return true;} }"
-            @submit="return check()">
+            @submit="if (!check()) { $event.preventDefault(); }">
         {{ select_field('account_id', '账号', account_opts, '') }}
         {{ select_field('seat_num', '座位', seat_opts, '') }}
         {{ text_field('day', '日期', '', type='date', required=True) }}

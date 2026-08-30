@@ -400,15 +400,25 @@
       },
 
       cellStatus(c) {
-        const hit = c.accounts_info && c.accounts_info[0];
-        return hit ? hit.status : 'empty';
+        if (!c.accounts_info || !c.accounts_info.length) return 'empty';
+        // 优先找无错误的成功任务；若全部成功任务都带 last_error，则视为失败
+        for (const hit of c.accounts_info) {
+          if (SUCCESS_STATUSES.includes(hit.status) && !hit.last_error) return hit.status;
+        }
+        // 其次若首个带错误则标红
+        const hit = c.accounts_info[0];
+        if (hit.last_error) return 'failed';
+        return hit.status;
       },
       isSuccess(c) { return SUCCESS_STATUSES.includes(this.cellStatus(c)); },
       cellUserMark(c) { return !!c.user_reserved && !this.isSuccess(c); },
       cellOthersMark(c) { return !!c.others_occupied && !this.isSuccess(c); },
       cardHit(c) {
         const hit = (c.accounts_info && c.accounts_info[0]) || null;
-        return hit && hit.task_id && CARD_STATUSES.includes(hit.status) ? hit : null;
+        if (!hit || !hit.task_id) return null;
+        // 带 last_error 的 active 视为可操作的失败态，便于续约
+        const effective = hit.last_error && hit.status === 'active' ? 'failed' : hit.status;
+        return CARD_STATUSES.includes(effective) ? {...hit, status: effective} : null;
       },
 
       openCard(day, seatNum, cell, evt) {

@@ -41,3 +41,10 @@ config.test.yaml
 # 文档规范: 规则文件不入库
 AGENTS.md
 CLAUDE.md
+# 一次性脚本不入库
+scripts/test_*.py
+scripts/oneoff_*.py
+scripts/_diag_*.py
+uv.lock
+scripts/*.superseded
+tests/test_cookie_persistence.py
