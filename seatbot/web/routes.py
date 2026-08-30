@@ -240,9 +240,24 @@ async def _collect_day_bundle(
         others_occupied=others_occupied,
     )
     annotated = await _annotate_rows(rows, store, view_day)
+    # 缺口只统计**期望时段内**的未覆盖块; 主动排除的时段 (如午休) 不算缺口
+    desired_blocks: dict[str, set[str]] = {}
+    for s in target_seats:
+        blocks: set[str] = set()
+        for r in desired_slots_of(s):
+            try:
+                rs, re_ = parse_range(r)
+            except Exception:
+                continue
+            cur, end = rs.hour * 60 + rs.minute, re_.hour * 60 + re_.minute
+            while cur < end:
+                blocks.add(f"{cur // 60:02d}:{cur % 60:02d}")
+                cur += 30
+        desired_blocks[s.seat_num] = blocks
     gap_count = sum(
         1 for sc in rows for c in sc.coverage.cells
-        if not c.accounts and not c.user_reserved and not c.others_occupied
+        if (not c.accounts and not c.user_reserved and not c.others_occupied)
+        and c.start.strftime("%H:%M") in desired_blocks.get(sc.seat.seat_num, set())
     )
     return {"rows": annotated, "gap_count": gap_count, "occ_err": occ_err}
 
