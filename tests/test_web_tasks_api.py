@@ -9,7 +9,7 @@ from seatbot.models import Account, Task, TaskStatus
 from seatbot.web.app import TEMPLATES_DIR
 from seatbot.web.routes import router
 
-DAY = date(2026, 8, 29)
+DAY = date.today()
 
 
 def _task(id_, acc, seat, start, end, status, day=DAY):

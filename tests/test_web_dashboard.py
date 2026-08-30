@@ -165,10 +165,11 @@ def test_dashboard_data_returns_both_days(client):
     assert set(body["today"]) >= {"view_day", "rows", "gap_count", "occ_err"}
     assert set(body["tomorrow"]) >= {"view_day", "rows", "gap_count", "occ_err"}
     assert body["tomorrow"]["view_day"] > body["today"]["view_day"]
-    # 今天: 无任务 → 涂色格保持 pending (已规划未预约)
+    # 今天: 无真实任务 → 已过去的格子诚实空缺, 不渲染幻影 pending;
+    # (部分当前仍未来的格子按矩阵归属显示 pending, 数量随运行时刻变化)
     today_status = [c["accounts_info"][0]["status"]
                     for r in body["today"]["rows"] for c in r["cells"] if c["accounts_info"]]
-    assert today_status == ["pending"] * 4
+    assert all(s == "pending" for s in today_status)
     # 明天: 任务落在明天 → 明天视图的涂色格标注为 active
     tmr_status = [c["accounts_info"][0]["status"]
                   for r in body["tomorrow"]["rows"] for c in r["cells"] if c["accounts_info"]]
