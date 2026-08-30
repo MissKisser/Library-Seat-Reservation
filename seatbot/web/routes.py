@@ -324,11 +324,20 @@ async def dashboard(request: Request):
     def _empty_shell(day: date) -> dict:
         return {"view_day": day.isoformat(), "rows": [], "gap_count": 0, "occ_err": None}
 
+    # 启动动画的时段徽章: 取全部座 位期望时段的并集 (紧凑显示 08–09 样式)
+    boot_slots: list[str] = []
+    for s in target_seats:
+        for r in desired_slots_of(s):
+            label = r.split("-")[0][:2] + "–" + r.split("-")[1][:2]
+            if label not in boot_slots:
+                boot_slots.append(label)
+
     initial = {
         "today": _empty_shell(today),
         "tomorrow": _empty_shell(tomorrow),
         "now_hhmm": now_cst().strftime("%H:%M"),
         "recent_logs": [],
+        "boot_slots": boot_slots,
         "target_seat_count": len(target_seats),
         "account_count": len(accounts),
     }
