@@ -43,14 +43,15 @@ def test_bound_account_covers_only_its_seat():
     assert c105[("09:00", "09:30")].accounts == []
 
 
-def test_wildcard_account_covers_all_target_seats():
+def test_unbound_account_covers_nothing():
+    # 空绑定账号不参与守护, 不再通配全部目标座位
     rows = compute_seat_coverage(
-        [_acc("w", ["15:00-16:00"])],          # bound_seats=[] → wildcard
+        [_acc("w", ["15:00-16:00"])],          # bound_seats=[] → 不参与
         [_seat("104"), _seat("105")], DAY,
     )
     for r in rows:
         c = _cells(r)
-        assert c[("15:00", "15:30")].accounts == ["w"]
+        assert c[("15:00", "15:30")].accounts == []
 
 
 def test_gap_property_reports_uncovered_span():
@@ -134,16 +135,16 @@ def test_seat_slots_guard_matrix_yields_six_segments():
 
 
 def test_seat_slots_and_flat_accounts_coexist():
-    """seat_slots 账号与扁平 slots wildcard 账号可以在同一张图上叠加。"""
+    """seat_slots 账号与显式绑定 bound_seats 的扁平账号可以叠加。"""
     rows = compute_seat_coverage(
         [Account(id="ss", phone="13800000000", password="x", slots=[],
                  bound_seats=[], seat_slots={"104": ["09:00-10:00"]}),
-         _acc("wild", ["10:00-11:00"])],                 # bound_seats=[] → wildcard
+         _acc("flat", ["10:00-11:00"], bound_seats=["104"])],
         [_seat("104")], DAY,
     )
     c = _cells(rows[0])
     assert c[("09:00", "09:30")].accounts == ["ss"]
-    assert c[("10:00", "10:30")].accounts == ["wild"]
+    assert c[("10:00", "10:30")].accounts == ["flat"]
 
 
 def test_invalid_window_raises():
