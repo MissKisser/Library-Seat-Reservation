@@ -47,6 +47,7 @@ class Scheduler:
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         self._clients: dict[str, ChaoxingClient] = {}
         self._bootstrap_done_for: set[tuple[str, str, str]] = set()  # (account_id, day, seat_num)
+        self._fail_streak: dict[int, int] = {}  # task_id → 签到/签退连续失败次数
 
     def _client_for(self, acc: Account) -> ChaoxingClient:
         if acc.id not in self._clients:
@@ -79,6 +80,22 @@ class Scheduler:
                 await hc.post(url, json={"title": title, "content": body})
         except Exception as e:
             await self._warn(f"通知 webhook 外推失败: {e}")
+
+    async def _track_signleave_failure(self, t: Task, action: str, reason: str) -> None:
+        """签到/签退失败连击计数; 连续 3 次及此后每 10 次推送一次告警。"""
+        n = self._fail_streak.get(t.id, 0) + 1
+        self._fail_streak[t.id] = n
+        if n == 3 or n % 10 == 0:
+            await self._notify(
+                f"{action}连续失败 {n} 次",
+                f"账号={t.account_id} 座位={t.seat_num} {t.day} "
+                f"{t.start_time}-{t.end_time}: {reason}",
+                level="error",
+            )
+
+    def _clear_fail_streak(self, task_id: int | None) -> None:
+        if task_id is not None:
+            self._fail_streak.pop(task_id, None)
 
     # ---------- bootstrap ----------
     async def bootstrap_today(self) -> None:
@@ -438,6 +455,7 @@ class Scheduler:
             sr = await self._act_with_relogin(client, acc, client.sign, t.reserve_id, "sign")
         except Exception as e:
             await self._error(f"签到异常: {e}", acc.id)
+            await self._track_signleave_failure(t, "签到", f"异常 {type(e).__name__}: {e}")
             return
         await self.store.log_action(
             acc.id, "sign", str(t.reserve_id), str(sr)[:500],
@@ -445,6 +463,7 @@ class Scheduler:
         )
         if sr.get("success"):
             await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
+            self._clear_fail_streak(t.id)
             await self._info(f"签到成功 预约号#{t.reserve_id} 座位={t.seat_num}", acc.id)
             return
         msg = str(sr.get("msg") or "")
@@ -455,8 +474,10 @@ class Scheduler:
             deadline = at_cst(t.day, t.start_time) + timedelta(minutes=60)
             if now_cst() < deadline:
                 await self._warn(f"签到被拒（{msg}）；窗口状态不明，保持重试", acc.id)
+                await self._track_signleave_failure(t, "签到", f"窗口状态不明（{msg}）")
                 return
             await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
+            self._clear_fail_streak(t.id)
             await self._warn(f"签到窗口已关闭（{msg}）；标记已签到，停止重试", acc.id)
             return
         if "不存在" in msg:
@@ -465,9 +486,17 @@ class Scheduler:
                 t.id, TaskStatus.FAILED,
                 last_error=f"签到: 服务端预约已不存在（{msg}）",
             )
+            self._clear_fail_streak(t.id)
             await self._warn(f"签到终止: 预约在服务端已不存在（{msg}），任务标失败", acc.id)
+            await self._notify(
+                "签到终止：预约在服务端已不存在",
+                f"账号={acc.id} 座位={t.seat_num} {t.day} "
+                f"{t.start_time}-{t.end_time} 已标失败",
+                level="error",
+            )
             return
         await self._error(f"签到失败: {msg}（保持进行中，下个周期重试）", acc.id)
+        await self._track_signleave_failure(t, "签到", msg)
 
     async def _run_leave(self, acc: Account, t: Task) -> None:
         """签退 (不 submit/sign)。失败保留在途状态, 由下次 tick 重试。
@@ -480,6 +509,12 @@ class Scheduler:
             # ★ 从未预约成功的任务不应伪装 COMPLETE (虚假完成态会误导审计)
             await self.store.update_task_status(
                 t.id, TaskStatus.FAILED, last_error="签退: 无预约号",
+            )
+            await self._notify(
+                "签退失败：任务无预约号",
+                f"账号={acc.id} 座位={t.seat_num} {t.day} "
+                f"{t.start_time}-{t.end_time} 已标失败",
+                level="error",
             )
             return
         client = self._client_for(acc)
@@ -507,6 +542,7 @@ class Scheduler:
                 )
                 await self.store.update_task_status(
                     t.id, TaskStatus.COMPLETE, last_error="服务端预约已不存在, 幂等收尾")
+                self._clear_fail_streak(t.id)
                 return
             await self._warn(f"签退未成功（{sb_msg}），回退暂离通道", acc.id)
             try:
@@ -514,6 +550,7 @@ class Scheduler:
             except Exception as e:
                 await self._error(f"暂离异常: {e}", acc.id)
                 await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
+                await self._track_signleave_failure(t, "签退", f"暂离通道异常 {type(e).__name__}: {e}")
                 return
         await self.store.log_action(
             acc.id, "signback", str(t.reserve_id), str(sr)[:500],
@@ -522,6 +559,7 @@ class Scheduler:
         msg = str(sr.get("msg") or "")
         if sr.get("success"):
             await self.store.update_task_status(t.id, TaskStatus.COMPLETE, last_error="")
+            self._clear_fail_streak(t.id)
             return
         # 幂等收尾: 预约已在服务端终结, 继续重试无意义 → COMPLETE 停止循环。
         # ("剩余时长小于暂离时长" = 离结束不足 leaveDuration, 预约将自然到期)
@@ -531,8 +569,10 @@ class Scheduler:
         if idempotent:
             await self._info(f"签退幂等收尾（{msg}）→ 已完成", acc.id)
             await self.store.update_task_status(t.id, TaskStatus.COMPLETE, last_error="")
+            self._clear_fail_streak(t.id)
             return
         await self._error(f"签退失败: {msg}（保持进行中，下个周期重试）", acc.id)
+        await self._track_signleave_failure(t, "签退", msg)
         # ★ leave 失败时 **不要** 标 COMPLETE — 留给下次 tick 重试
         await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
 
@@ -560,6 +600,7 @@ class Scheduler:
                 args=[acc.id],
                 id=f"tick_{acc.id}",
                 replace_existing=True,
+                misfire_grace_time=30, coalesce=True,
             )
 
     def start(self) -> None:
@@ -567,19 +608,112 @@ class Scheduler:
             self.sync_jobs,
             "interval", seconds=30,
             id="sync_jobs", replace_existing=True,
+            misfire_grace_time=60, coalesce=True,
         )
         self.scheduler.add_job(
             self._new_day_bootstrap,
             CronTrigger(hour=0, minute=0, second=5, timezone="Asia/Shanghai"),
             id="new_day_bootstrap", replace_existing=True,
+            misfire_grace_time=600, coalesce=True,
         )
         # ★ 每天14:00触发：为明天生成预约任务（超星14:00后开放次日预约窗口）
         self.scheduler.add_job(
             self._afternoon_bootstrap,
             CronTrigger(hour=14, minute=0, second=3, timezone="Asia/Shanghai"),
             id="afternoon_bootstrap", replace_existing=True,
+            misfire_grace_time=3600, coalesce=True,
         )
         self.scheduler.start()
+
+    async def startup_reconcile(self) -> None:
+        """崩溃恢复: 上次进程死亡时卡在瞬态的任务回退到可驱动状态。
+
+        SUBMITTING 无任何周期作业驱赶 (tick 只处理 ACTIVE/SIGNED/LEAVING),
+        不回退会永久悬挂; LEAVING 回退 ACTIVE 后由 tick 重走签退。
+        """
+        n_submit = n_leave = 0
+        for acc in await self.store.list_accounts():
+            for t in await self.store.list_tasks(account_id=acc.id):
+                if t.status == TaskStatus.SUBMITTING:
+                    await self.store.update_task_status(
+                        t.id, TaskStatus.PENDING,
+                        last_error="启动对账: 从『提交中』回退, 待补跑",
+                    )
+                    n_submit += 1
+                elif t.status == TaskStatus.LEAVING:
+                    await self.store.update_task_status(t.id, TaskStatus.ACTIVE, last_error="")
+                    n_leave += 1
+        if n_submit or n_leave:
+            await self._warn(
+                f"启动对账: 提交中→待提交 {n_submit} 条, 签退中→进行中 {n_leave} 条",
+                "scheduler",
+            )
+
+    async def startup_afternoon_catchup(self) -> None:
+        """错过 14:00 批量的补跑: 预约窗口已开且明天仍有未生成/未提交任务时立即批量。
+
+        只补 PENDING (生成后从未提交), 不自动重试 FAILED ——
+        失败任务可能撞账号周违约上限, 自动重试会追加违约记录, 必须人工确认。
+        14:00–14:05 之间不补 (该窗口属于常驻进程的 cron, 避免双跑竞态)。
+        """
+        now = now_cst()
+        if now.hour < 14 or (now.hour == 14 and now.minute < 5):
+            return
+        tomorrow = today_cst() + timedelta(days=1)
+        accounts = await self.store.list_accounts()
+        seats = [s.seat_num for s in await self.store.list_target_seats()]
+        pending: list[Task] = []
+        has_any = False
+        for acc in accounts:
+            tasks = await self.store.list_tasks(account_id=acc.id, day=tomorrow)
+            if tasks:
+                has_any = True
+                pending.extend(t for t in tasks if t.status == TaskStatus.PENDING)
+        if not has_any:
+            await self._info(
+                f"启动补跑: 明日 {tomorrow} 无任何任务 (14:00 批量从未运行) → 生成并提交",
+                "scheduler",
+            )
+            for acc in accounts:
+                await self._bootstrap_for_account(acc, tomorrow, seats)
+            pending = [
+                t for acc in accounts
+                for t in await self.store.list_tasks(account_id=acc.id, day=tomorrow)
+                if t.status == TaskStatus.PENDING
+            ]
+        if not pending:
+            return
+        await self._info(
+            f"启动补跑: 预约窗口已开, 明日 {tomorrow} 有 {len(pending)} 条未提交任务 → 立即批量提交",
+            "scheduler",
+        )
+        for acc in accounts:
+            todo = [
+                t for t in await self.store.list_tasks(account_id=acc.id, day=tomorrow)
+                if t.status == TaskStatus.PENDING
+            ]
+            for t in todo:
+                try:
+                    await self._run_submit(acc, t)
+                except Exception as e:
+                    await self._error(
+                        f"启动补跑: 提交抛出异常 {type(e).__name__}: {e} "
+                        f"任务={t.id} 座位={t.seat_num}",
+                        acc.id,
+                    )
+                await asyncio.sleep(2)
+        still = [
+            t for acc in accounts
+            for t in await self.store.list_tasks(account_id=acc.id, day=tomorrow)
+            if t.status == TaskStatus.PENDING
+        ]
+        if still:
+            await self._notify(
+                f"启动补跑后明日仍有缺口（{tomorrow}）",
+                f"未提交 {len(still)} 条 "
+                f"(账号: {', '.join(sorted({t.account_id for t in still}))})。",
+                level="error",
+            )
 
     async def _tick_account_with_bootstrap(self, acc_id: str) -> None:
         await self._bootstrap_for_account_if_needed(acc_id)

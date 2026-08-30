@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 
 from seatbot.config import load_config, ConfigError
 from seatbot.scheduler import Scheduler
@@ -67,6 +68,14 @@ def _make_store(cfg) -> StateStore:
 
 async def _cmd_run(args) -> int:
     cfg = load_config(args.config)
+    # 启动即备份 (当日已有备份则跳过); 备份失败不阻断启动
+    try:
+        from seatbot.store import backup_database
+        bak = backup_database(cfg.runtime.db_path, str(Path(cfg.runtime.log_dir) / "backup"))
+        if bak:
+            print(f"db backup -> {bak}")
+    except Exception as e:
+        print(f"[WARN] db backup failed (继续启动): {e}")
     store = _make_store(cfg)
     await store.init()
     # seed target_seats from config
@@ -76,8 +85,18 @@ async def _cmd_run(args) -> int:
     print(f"synced {n} account(s); {len(cfg.target_seats)} target seat(s) from config")
     sched = Scheduler(cfg, store)
     sched.start()
-    await sched.bootstrap_today()
-    await sched.sync_jobs()
+
+    # 崩溃恢复 + 错过 14:00 窗口的补跑放后台执行, 不阻塞面板起服
+    async def _startup_recovery() -> None:
+        try:
+            await sched.startup_reconcile()
+            await sched.bootstrap_today()
+            await sched.startup_afternoon_catchup()
+            await sched.sync_jobs()
+        except Exception as e:
+            print(f"[ERROR] startup recovery failed: {type(e).__name__}: {e}")
+
+    asyncio.create_task(_startup_recovery())
     from seatbot.web.app import make_app
     app = make_app(cfg, store, sched)
     import uvicorn
