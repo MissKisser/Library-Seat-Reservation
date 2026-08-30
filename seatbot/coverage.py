@@ -175,7 +175,7 @@ def compute_seat_coverage(
     for sn, s, e in (others_occupied or []):
         oo_by_seat.setdefault(sn, []).append((s, e))
 
-    # 按模式分组: seat_slots 账号走精确矩阵, 其余走 bound/wildcard 扁平逻辑
+    # 按模式分组: seat_slots 账号走精确矩阵, 其余走 bound_seats 扁平逻辑
     ss_accs = [a for a in accounts if a.seat_slots]
     flat_accs = [a for a in accounts if not a.seat_slots]
 
@@ -183,7 +183,7 @@ def compute_seat_coverage(
         cov = _make_blank_coverage(day, open_time, close_time)
         seat_num = seat.seat_num
 
-        # 模式 1: seat_slots 精确矩阵 — 只涂 seat_slots[seat_num] 指定的时段
+        # seat_slots 精确矩阵 — 只涂 seat_slots[seat_num] 指定的时段
         for acc in ss_accs:
             spec = acc.seat_slots.get(seat_num)
             if not spec:
@@ -194,10 +194,9 @@ def compute_seat_coverage(
                 continue
             _paint_ranges(cov, ranges, acc.id)
 
-        # 模式 2: 扁平 slots — 绑定该座位的账号优先, 空绑定的 wildcard 后置
-        bound_accs = [a for a in flat_accs if seat_num in a.bound_seats]
-        wild_accs = [a for a in flat_accs if not a.bound_seats]
-        for acc in bound_accs + wild_accs:
+        # 扁平 slots (遗留) — 只涂显式绑定该座位的账号;
+        # 空绑定账号不参与守护, 不再通配全天
+        for acc in [a for a in flat_accs if seat_num in (a.bound_seats or [])]:
             try:
                 ranges = expand_account_slots(acc.slots, max_hours=24.0)
             except Exception:
