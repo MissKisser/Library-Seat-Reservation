@@ -45,6 +45,47 @@
   </div>
 
   {# 状态 banner #}
+  {% macro coverage_strip(scope) %}
+  <div class="flex flex-col gap-1.5">
+    {# 整点标尺：非整点块占位但隐藏，保证与覆盖条逐块对齐 #}
+    <div class="flex items-end">
+      <div class="shrink-0" style="width:6rem"></div>
+      <div class="flex flex-1 min-w-0">
+        <template x-for="c in ({{ scope }}.rows[0]?.cells || [])" :key="'ruler-{{ scope }}-' + c.start">
+          <div class="flex-1 min-w-0 overflow-hidden whitespace-nowrap text-ink-muted"
+               :style="c.start.endsWith(':00') ? 'font-size:9px;line-height:12px' : 'visibility:hidden;font-size:9px;line-height:12px'"
+               x-text="c.start"></div>
+        </template>
+      </div>
+    </div>
+    <template x-for="row in {{ scope }}.rows" :key="'{{ scope }}-' + row.seat_num">
+      <div class="flex items-center">
+        <div class="shrink-0 truncate pr-2" style="width:6rem">
+          <span class="font-mono text-xs font-bold text-ink" x-text="row.seat_num"></span>
+          <span class="text-xs text-ink-muted ml-1" x-text="row.label"></span>
+        </div>
+        <div class="flex flex-1 min-w-0" style="gap:1px">
+          <template x-for="c in row.cells" :key="'{{ scope }}-' + row.seat_num + '-' + c.start">
+            <div class="flex-1 min-w-0 cursor-pointer flex items-center justify-center"
+                 style="height:1.5rem;border-radius:3px"
+                 :class="[
+                   'cell-' + cellStatus(c),
+                   cellUserMark(c) ? 'cell-user-reserved' : '',
+                   cellOthersMark(c) ? 'cell-others-occupied' : '',
+                   cardHit(c) ? 'cell-actionable' : ''
+                 ]"
+                 :title="row.seat_num + ' ' + c.start + '–' + c.end"
+                 @click="openCard('{{ scope }}', row.seat_num, c, $event)">
+              <span style="font-size:10px;line-height:1" x-show="cellUserMark(c)">👤</span>
+              <span style="font-size:10px;line-height:1" x-show="cellOthersMark(c)">🔒</span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+    <div x-show="{{ scope }}.rows.length === 0" class="text-center text-ink-muted p-4">暂无目标座位</div>
+  </div>
+  {% endmacro %}
   <template x-if="notifications && notifications.length">
     <div class="flex flex-col gap-2">
       <template x-for="n in notifications" :key="n.id">
@@ -88,40 +129,7 @@
         </div>
         <div class="card-body">
           <div class="gantt-wrap">
-            <table class="gantt">
-              <thead><tr>
-                <th class="row-label">座位 \ 时段</th>
-                <template x-for="c in (today.rows[0]?.cells || [])" :key="c.start">
-                  <th class="whitespace-nowrap" x-text="c.start + '–' + c.end"></th>
-                </template>
-              </tr></thead>
-              <tbody>
-                <template x-for="row in today.rows" :key="row.seat_num">
-                  <tr>
-                    <th class="row-label">
-                      <span class="font-mono text-xs text-ink" x-text="row.seat_num"></span>
-                      <span class="text-xs text-ink-muted ml-1" x-text="row.label"></span>
-                    </th>
-                    <template x-for="c in row.cells" :key="row.seat_num + c.start">
-                      <td class="cell"
-                          :class="[
-                            'cell-' + cellStatus(c),
-                            cellUserMark(c) ? 'cell-user-reserved' : '',
-                            cellOthersMark(c) ? 'cell-others-occupied' : '',
-                            cardHit(c) ? 'cell-actionable' : ''
-                          ]"
-                          @click="openCard('today', row.seat_num, c, $event)">
-                        <span class="text-xs" x-show="cellUserMark(c)">👤</span>
-                        <span class="text-xs" x-show="cellOthersMark(c)">🔒</span>
-                      </td>
-                    </template>
-                  </tr>
-                </template>
-                <tr x-show="today.rows.length === 0">
-                  <td colspan="99" class="text-center text-ink-muted p-4">暂无目标座位</td>
-                </tr>
-              </tbody>
-            </table>
+            {{ coverage_strip('today') }}
             <div class="gantt-legend">
               <span><span class="swatch cell-active"></span>已预约</span>
               <span><span class="swatch cell-signed"></span>已签到</span>
@@ -145,40 +153,7 @@
         </div>
         <div class="card-body">
           <div class="gantt-wrap">
-            <table class="gantt">
-              <thead><tr>
-                <th class="row-label">座位 \ 时段</th>
-                <template x-for="c in (tomorrow.rows[0]?.cells || [])" :key="c.start">
-                  <th class="whitespace-nowrap" x-text="c.start + '–' + c.end"></th>
-                </template>
-              </tr></thead>
-              <tbody>
-                <template x-for="row in tomorrow.rows" :key="row.seat_num">
-                  <tr>
-                    <th class="row-label">
-                      <span class="font-mono text-xs text-ink" x-text="row.seat_num"></span>
-                      <span class="text-xs text-ink-muted ml-1" x-text="row.label"></span>
-                    </th>
-                    <template x-for="c in row.cells" :key="row.seat_num + c.start">
-                      <td class="cell"
-                          :class="[
-                            'cell-' + cellStatus(c),
-                            cellUserMark(c) ? 'cell-user-reserved' : '',
-                            cellOthersMark(c) ? 'cell-others-occupied' : '',
-                            cardHit(c) ? 'cell-actionable' : ''
-                          ]"
-                          @click="openCard('tomorrow', row.seat_num, c, $event)">
-                        <span class="text-xs" x-show="cellUserMark(c)">👤</span>
-                        <span class="text-xs" x-show="cellOthersMark(c)">🔒</span>
-                      </td>
-                    </template>
-                  </tr>
-                </template>
-                <tr x-show="tomorrow.rows.length === 0">
-                  <td colspan="99" class="text-center text-ink-muted p-4">暂无目标座位</td>
-                </tr>
-              </tbody>
-            </table>
+            {{ coverage_strip('tomorrow') }}
           </div>
         </div>
       </div>
