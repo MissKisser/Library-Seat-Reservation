@@ -100,10 +100,10 @@
           <button class="btn btn-primary btn-sm" type="submit">应用到全部座位</button>
         </div>
         <div class="checkbox-grid">
-          {% for t in ticks %}
+          {% for t0, t1 in ticks %}
           <label class="checkbox-item">
-            <input type="checkbox" name="blocks" value="{{ t }}">
-            <span class="font-mono text-[11px]">{{ t }}</span>
+            <input type="checkbox" name="blocks" value="{{ t0 }}">
+            <span class="font-mono text-[11px]">{{ t0 }}-{{ t1 }}</span>
           </label>
           {% endfor %}
         </div>
@@ -122,10 +122,10 @@
             </span>
           </div>
           <div class="checkbox-grid">
-            {% for t in ticks %}
+            {% for t0, t1 in ticks %}
             <label class="checkbox-item">
-              <input type="checkbox" name="blocks" value="{{ t }}" {% if t in desired_blocks[s.seat_num] %}checked{% endif %}>
-              <span class="font-mono text-[11px]">{{ t }}</span>
+              <input type="checkbox" name="blocks" value="{{ t0 }}" {% if t0 in desired_blocks[s.seat_num] %}checked{% endif %}>
+              <span class="font-mono text-[11px]">{{ t0 }}-{{ t1 }}</span>
             </label>
             {% endfor %}
           </div>

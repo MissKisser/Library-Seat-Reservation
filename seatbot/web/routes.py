@@ -814,12 +814,13 @@ async def bindings_list(request: Request):
                 cur += timedelta(minutes=30)
         return sorted(set(out))
 
-    ticks: list[str] = []
+    ticks: list[tuple[str, str]] = []
     t = _dt.combine(date.today(), parse_hhmm(lib.open_time))
     close = _dt.combine(date.today(), parse_hhmm(lib.close_time))
     while t < close:
-        ticks.append(t.strftime("%H:%M"))
-        t += timedelta(minutes=30)
+        nxt = t + timedelta(minutes=30)
+        ticks.append((t.strftime("%H:%M"), nxt.strftime("%H:%M")))
+        t = nxt
     from seatbot.bindings import DEFAULT_DESIRED_SLOTS
 
     desired_blocks = {
