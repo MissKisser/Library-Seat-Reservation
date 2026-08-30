@@ -9,6 +9,8 @@ seatbot.db.bak
 logs/
 .playwright-mcp/
 *.png
+!seatbot/web/static/favicon-32.png
+!seatbot/web/static/apple-touch-icon.png
 .pytest_cache/
 .tmp_pytest/
 .gitignore.tmp

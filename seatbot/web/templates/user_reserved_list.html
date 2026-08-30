@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% from "_macros/form.html" import select_field, text_field %}
 {% from "_macros/empty.html" import empty %}
-{% block title %}用户硬预约{% endblock %}
+{% block title %}用户已约时段{% endblock %}
 
 {% block content %}
 <div class="flex flex-col gap-5">
   <div class="page-header">
-    <div><h1 class="page-title">用户硬预约</h1><p class="page-sub">你已在超星手动预约的时段，调度器会跳过不冲突</p></div>
+    <div><h1 class="page-title">用户已约时段</h1><p class="page-sub">你已在超星手动预约的时段，调度器会自动跳过、避免冲突</p></div>
   </div>
 
   {# 构建下拉选项：(value, label) 元组列表，select_field 宏所需格式 #}
@@ -16,7 +16,7 @@
   {% for s in target_seats %}{% set _ = seat_opts.append((s.seat_num, s.seat_num)) %}{% endfor %}
 
   {# 添加表单 #}
-  <div class="card"><div class="card-header"><span class="card-title">登记硬预约</span></div>
+  <div class="card"><div class="card-header"><span class="card-title">登记已约时段</span></div>
     <div class="card-body">
       <form method="post" action="/user-reserved" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
             x-data="{ check(){ const s=document.getElementById('start_time'),e=document.getElementById('end_time'); if(s.value&&e.value&&s.value>=e.value){window.showToast({type:'warn',title:'时段无效',desc:'结束时间需晚于开始时间'});return false;}return true;} }"
@@ -47,12 +47,12 @@
             <td class="text-xs text-ink-secondary">{{ r.note or '—' }}</td>
             <td class="actions">
               <button class="btn btn-ghost btn-sm text-danger"
-                @click="confirmAction({title:'删除硬预约？',desc:'{{ r.account_id }} · {{ r.seat_num }} · {{ r.day }}',confirmText:'删除',danger:true}).then(ok=>{if(ok){const f=document.createElement('form');f.method='post';f.action='/user-reserved/{{ r.id }}/delete';document.body.appendChild(f);f.submit();}})">删除</button>
+                @click="confirmAction({title:'删除该登记？',desc:'{{ r.account_id }} · {{ r.seat_num }} · {{ r.day }}',confirmText:'删除',danger:true}).then(ok=>{if(ok){const f=document.createElement('form');f.method='post';f.action='/user-reserved/{{ r.id }}/delete';document.body.appendChild(f);f.submit();}})">删除</button>
             </td>
           </tr>
           {% else %}
           <tr><td colspan="6">
-            {{ empty(title='暂无硬预约', hint='登记你已在超星手动预约的时段，避免调度器冲突') }}
+            {{ empty(title='暂无已约时段', hint='登记你已在超星手动预约的时段，避免调度器冲突') }}
           </td></tr>
           {% endfor %}
         </tbody>
