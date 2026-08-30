@@ -44,6 +44,20 @@ async def main() -> int:
             fail += int(not good)
             await asyncio.sleep(3)
         print(f"[retry] 完成: ok={ok} fail={fail}", flush=True)
+        if ok and fail == 0:
+            await sched._notify(
+                "缺口已补约（2026-08-31）",
+                "030 15-17 与 031 19-21 重试成功，明日 16 段全满，"
+                "自动签到签退已就绪（王海艳 cron 已随重启注册）。",
+                level="info",
+            )
+        elif fail:
+            await sched._notify(
+                "周一重试仍失败（2026-08-31）",
+                f"成功 {ok} / 失败 {fail}，违约上限可能尚未清零；"
+                f"可稍后在任务看板原账号重试。",
+                level="error",
+            )
     finally:
         for client in list(sched._clients.values()):
             try:
