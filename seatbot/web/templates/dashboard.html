@@ -102,7 +102,7 @@
   </div>
   <div class="banner banner-error" x-show="today.rows.length > 0 && today.gap_count > 0">
     <span class="dot"></span>
-    <span>检测到 <b x-text="today.gap_count"></b> 个时段空缺，护城河有缺口。</span>
+    <span>检测到 <b x-text="today.gap_count"></b> 个时段空缺，覆盖存在缺口。</span>
   </div>
   <div class="banner banner-warn" x-show="today.rows.length > 0 && !today.gap_count && today.occ_err">
     <span class="dot"></span>
@@ -110,7 +110,7 @@
   </div>
   <div class="banner banner-ok" x-show="today.rows.length > 0 && !today.gap_count && !today.occ_err">
     <span class="dot"></span>
-    <span>护城河稳固，全部目标座位已覆盖。</span>
+    <span>覆盖稳固，全部目标座位均在守护中。</span>
   </div>
 
   {# 主区：左列双甘特 + 右列侧栏 #}
@@ -120,7 +120,7 @@
       {# 今天甘特 #}
       <div class="card">
         <div class="card-header">
-          <span class="card-title">护城河（按座位）<span class="text-xs text-ink-muted ml-2 font-normal" x-text="'今天 ' + today.view_day"></span></span>
+          <span class="card-title">覆盖情况（按座位）<span class="text-xs text-ink-muted ml-2 font-normal" x-text="'今天 ' + today.view_day"></span></span>
           <div class="flex items-center gap-2">
             <span class="chip chip-muted tabular" x-text="formatCountdown()"></span>
             <button class="btn btn-secondary btn-sm" type="button" @click="refresh()" :disabled="busy"
@@ -138,7 +138,7 @@
               <span><span class="swatch cell-pending"></span>待执行</span>
               <span><span class="swatch cell-failed"></span>失败</span>
               <span><span class="swatch cell-complete"></span>已完成</span>
-              <span><span class="swatch cell-user-reserved"></span>👤 用户硬预约</span>
+              <span><span class="swatch cell-user-reserved"></span>👤 用户已约</span>
               <span><span class="swatch cell-others-occupied"></span>🔒 他人已占</span>
             </div>
           </div>
@@ -148,7 +148,7 @@
       {# 明天甘特 #}
       <div class="card">
         <div class="card-header">
-          <span class="card-title">护城河（按座位）<span class="text-xs text-ink-muted ml-2 font-normal" x-text="'明天 ' + tomorrow.view_day"></span></span>
+          <span class="card-title">覆盖情况（按座位）<span class="text-xs text-ink-muted ml-2 font-normal" x-text="'明天 ' + tomorrow.view_day"></span></span>
           <span class="chip chip-warn" x-show="tomorrow.occ_err" x-text="'他人占用获取失败：' + (tomorrow.occ_err || '')"></span>
         </div>
         <div class="card-body">

@@ -141,7 +141,7 @@
   const ERR_MAP = [
     [/(timeout|timed?\s*out)/i, '登录超时，请重试'],
     [/(password|passwd|密码|账号或密码|401|unauthorized)/i, '手机号或密码错误'],
-    [/(risk|风控|vc3|auth cookies|cookie)/i, '登录被风控拦截，可能需手动登录'],
+    [/(risk|风控|vc3|auth cookies|cookie)/i, '登录被平台安全策略拦截，可稍后重试'],
     [/(network|connection|econnrefused|ENOTFOUND)/i, '网络连接失败'],
     [/(not found|account not found)/i, '账号不存在'],
   ];
@@ -441,7 +441,7 @@
           this.recentLogs = j.recent_logs || [];
           this.notifications = j.notifications || [];
           this.now = j.now_hhmm || this.now;
-          if (this.boot.target < 100) this.boot.stage = '核对护城河覆盖…';
+          if (this.boot.target < 100) this.boot.stage = '核对座位覆盖…';
         } catch (e) {
           console.warn('dashboard refresh failed:', e);
         } finally {

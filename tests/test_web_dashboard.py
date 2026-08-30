@@ -183,7 +183,7 @@ def test_dashboard_page_renders_both_day_tables(client):
     # 新模板为数据驱动: 首屏 JSON 与 /api/dashboard-data 同源
     assert 'coverageGrid(' in html
     assert '"view_day"' in html
-    assert '护城河' in html
+    assert '覆盖情况' in html
     assert 'cell-card' in html
 
 def test_api_version_returns_local_counter(client):

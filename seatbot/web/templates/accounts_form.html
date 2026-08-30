@@ -115,7 +115,7 @@
       <form method="post" action="/accounts" class="flex flex-col gap-4">
         {{ text_field('phone', '手机号', '', placeholder='13800000000', required=True, pattern='\\d{8,20}') }}
         {{ text_field('password', '密码', '', type='password', required=True) }}
-        <div class="hint">创建时会用该手机号密码<b>真实登录学习通一次</b>，账号 ID 直接使用学习通实名（如 熊金涛）；座位绑定保存后在下一页分配。</div>
+        <div class="hint">保存时系统将<b>实际登录一次</b>校验账号可用性，账号 ID 依据平台实名信息自动生成；座位绑定在下一步分配，同一手机号不可重复导入。</div>
         <div class="flex items-center gap-2 mt-2">
           <button class="btn btn-primary" type="submit">登录并创建账号</button>
           <a class="btn btn-ghost" href="/accounts">取消</a>
