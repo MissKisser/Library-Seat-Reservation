@@ -72,7 +72,9 @@ user_reserved: []
 runtime:
   stagger_seconds: [0, 3]                 # 各账号每分钟 tick 的错峰秒数
   direct_submit_enabled: true             # 跨天预约直连通道开关 (关=未来日期任务直接 FAILED, 不误约当天)
+  notify_webhook: ""                      # 告警外推 (bark/Server酱/企微 webhook URL); 空=只落看板 banner
   log_dir: ./logs
   db_path: ./seatbot.db
-  web_host: 0.0.0.0
+  web_host: 127.0.0.1                     # 默认仅本机访问; 局域网访问改 0.0.0.0 并务必设置 web_token
   web_port: 8080
+  web_token: ""                           # 面板令牌; 非空时所有请求需携带 (header/query/cookie)

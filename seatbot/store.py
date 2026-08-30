@@ -772,3 +772,47 @@ def _row_to_task(row) -> Task:
         created_at=row[9] if len(row) > 9 else 0,
         updated_at=row[10] if len(row) > 10 else 0,
     )
+
+
+def backup_database(db_path: str, backup_dir: str, keep: int = 7):
+    """SQLite 在线备份 (sqlite3 backup API, 服务运行中调用安全)。
+
+    Args:
+        db_path: 源数据库路径。
+        backup_dir: 备份目录 (自动创建)。
+        keep: 保留最近多少份备份, 超出删除最旧。
+
+    Returns:
+        本次写入的备份文件 Path; 当日已有备份 (跳过) 或源库不存在时返回 None。
+    """
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    src = Path(db_path)
+    if not src.exists():
+        return None
+    dest_dir = Path(backup_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone(timedelta(hours=8)))
+    dest = dest_dir / f"seatbot-{now:%Y%m%d}.db"
+    if dest.exists():
+        return None
+    tmp = dest.with_suffix(".db.tmp")
+    src_con = sqlite3.connect(str(src), timeout=30)
+    try:
+        dst_con = sqlite3.connect(str(tmp))
+        try:
+            src_con.backup(dst_con)
+        finally:
+            dst_con.close()
+    finally:
+        src_con.close()
+    tmp.replace(dest)
+    backups = sorted(dest_dir.glob("seatbot-*.db"))
+    for old in backups[:-keep] if len(backups) > keep else []:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return dest

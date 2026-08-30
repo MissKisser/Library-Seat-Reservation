@@ -191,7 +191,7 @@ async def test_run_leave_without_reserve_marks_failed(store, monkeypatch):
     await sched._run_leave(await store.get_account("xiongjt"), t)
     after = await store.get_task(t.id)
     assert after.status == TaskStatus.FAILED
-    assert "no reserve_id" in (after.last_error or "")
+    assert "无预约号" in (after.last_error or "")
 
 
 async def test_run_leave_idempotent_end_completes(store, monkeypatch):

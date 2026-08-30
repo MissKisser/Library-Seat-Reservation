@@ -103,8 +103,11 @@ class RuntimeConfig(BaseModel):
     notify_webhook: str = ""
     log_dir: str = "./logs"
     db_path: str = "./seatbot.db"
-    web_host: str = "0.0.0.0"
+    web_host: str = "127.0.0.1"
     web_port: int = 8080
+    #: 面板访问令牌。非空时所有请求必须携带 (Authorization: Bearer / X-Auth-Token / ?token= / cookie);
+    #: 为空时仅允许本机回环客户端访问, 非回环客户端一律 403。
+    web_token: str = ""
 
 
 class Config(BaseModel):
