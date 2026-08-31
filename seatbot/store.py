@@ -106,6 +106,13 @@ CREATE TABLE IF NOT EXISTS account_cookies (
   updated_at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_user_reserved_seat_day ON user_reserved(seat_num, day);
+
+-- ★ 系统设置键值表（DB 覆盖 YAML；重启仍生效）
+CREATE TABLE IF NOT EXISTS app_settings (
+  key         TEXT PRIMARY KEY,
+  value       TEXT NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
 """
 
 
@@ -232,6 +239,41 @@ class StateStore:
         if not self._db:
             raise RuntimeError("StateStore not initialized; call init() first")
         return self._db
+
+    # ---------- app_settings (DB 覆盖 YAML 的系统设置) ----------
+    async def get_settings_map(self) -> dict[str, str]:
+        cur = await self.db.execute("SELECT key, value FROM app_settings")
+        rows = await cur.fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    async def get_setting(self, key: str) -> str | None:
+        cur = await self.db.execute("SELECT value FROM app_settings WHERE key=?", (key,))
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def set_settings(self, patch: dict[str, str]) -> None:
+        """批量 upsert 键值；空 patch 不做事。"""
+        if not patch:
+            return
+        self._bump()
+        now = int(_time.time() * 1000)
+        for k, v in patch.items():
+            await self.db.execute(
+                "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (k, str(v), now),
+            )
+        await self.db.commit()
+
+    async def delete_setting(self, key: str) -> bool:
+        cur = await self.db.execute("DELETE FROM app_settings WHERE key=?", (key,))
+        await self.db.commit()
+        return cur.rowcount > 0
+
+    async def clear_settings(self) -> int:
+        cur = await self.db.execute("DELETE FROM app_settings")
+        await self.db.commit()
+        return cur.rowcount
 
     # ---------- introspection ----------
     async def list_tables(self) -> list[str]:

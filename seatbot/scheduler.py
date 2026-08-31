@@ -9,6 +9,7 @@ from datetime import date, datetime, time, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.config import Config
 from seatbot.models import Account, Task, TaskStatus
@@ -35,7 +36,7 @@ class NextRelay:
 
 
 class Scheduler:
-    RELAY_LEAD_SECONDS = 300  # 到点前 5 分钟签退; 失败保留下个 tick 重试 signback
+    RELAY_LEAD_SECONDS = 300  # 类级默认值；实例级 relay_lead_seconds 热更新可覆盖
 
     def __init__(
         self,
@@ -48,6 +49,56 @@ class Scheduler:
         self._clients: dict[str, ChaoxingClient] = {}
         self._bootstrap_done_for: set[tuple[str, str, str]] = set()  # (account_id, day, seat_num)
         self._fail_streak: dict[int, int] = {}  # task_id → 签到/签退连续失败次数
+        self.relay_lead_seconds: int = int(getattr(cfg.runtime, "relay_lead_seconds", 300))
+        self.tick_interval_seconds: int = int(getattr(cfg.runtime, "tick_interval_seconds", 30))
+        self.stagger_seconds: list[int] = list(getattr(cfg.runtime, "stagger_seconds", [0, 3]))
+        self.anchor_retry_enabled: bool = bool(getattr(cfg.runtime, "anchor_retry_enabled", True))
+        self.anchor_scan_limit: int = int(getattr(cfg.runtime, "anchor_scan_limit", 12))
+        self.submit_strategy: str = str(getattr(cfg.runtime, "submit_strategy", "direct_first"))
+
+    async def load_runtime_settings(self) -> dict[str, object]:
+        """从 DB app_settings 读取并应用到实例与 cfg（热更新）。"""
+        try:
+            rows = await self.store.get_settings_map()
+        except Exception:
+            rows = {}
+        eff = _settings.effective(rows, self.cfg)
+        try:
+            self.cfg.library.max_reserve_hours = float(eff.get("max_reserve_hours", self.cfg.library.max_reserve_hours))
+            self.cfg.library.daily_reserve_hours_limit = float(eff.get("daily_reserve_hours_limit", self.cfg.library.daily_reserve_hours_limit))
+        except Exception:
+            pass
+        try:
+            self.cfg.runtime.notify_webhook = str(eff.get("notify_webhook", self.cfg.runtime.notify_webhook))
+        except Exception:
+            pass
+        self.relay_lead_seconds = int(eff.get("relay_lead_seconds", self.relay_lead_seconds))
+        self.tick_interval_seconds = int(eff.get("tick_interval_seconds", self.tick_interval_seconds))
+        self.stagger_seconds = list(eff.get("stagger_seconds", self.stagger_seconds))  # type: ignore[arg-type]
+        self.anchor_retry_enabled = bool(eff.get("anchor_retry_enabled", self.anchor_retry_enabled))
+        self.anchor_scan_limit = int(eff.get("anchor_scan_limit", self.anchor_scan_limit))
+        self.submit_strategy = str(eff.get("submit_strategy", self.submit_strategy))
+        try:
+            self._reschedule_tick_interval()
+        except Exception:
+            pass
+        return eff
+
+    def _reschedule_tick_interval(self) -> None:
+        try:
+            job = self.scheduler.get_job("sync_jobs")
+            if job is None:
+                return
+            cur = None
+            try:
+                cur = int(job.trigger.interval.total_seconds())  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            if cur is not None and cur == int(self.tick_interval_seconds):
+                return
+            self.scheduler.reschedule_job("sync_jobs", trigger="interval", seconds=int(self.tick_interval_seconds))
+        except Exception:
+            pass
 
     def _client_for(self, acc: Account) -> ChaoxingClient:
         if acc.id not in self._clients:
@@ -211,8 +262,8 @@ class Scheduler:
                 continue
             t_start = at_cst(t.day, t.start_time)
             t_end = at_cst(t.day, t.end_time)
-            # 1. 到签退时机 (end 前 RELAY_LEAD_SECONDS=5min) → 签退
-            if now >= t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS):
+            # 1. 到签退时机 (end 前 relay_lead_seconds=5min) → 签退
+            if now >= t_end - timedelta(seconds=self.relay_lead_seconds):
                 await self._maybe_relay(t, now)
                 continue
             # 2. 时段进行中且未签 → 签到 (成功后置 SIGNED)
@@ -230,7 +281,7 @@ class Scheduler:
                 t_start = at_cst(t.day, t.start_time)
                 t_end = at_cst(t.day, t.end_time)
                 if t.status in (TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.SUBMITTING, TaskStatus.LEAVING):
-                    fire_at = t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS)
+                    fire_at = t_end - timedelta(seconds=self.relay_lead_seconds)
                 elif t.status in (TaskStatus.PENDING, TaskStatus.READY, TaskStatus.FAILED):
                     fire_at = t_start
                 else:
@@ -262,7 +313,7 @@ class Scheduler:
         sign 由下一段的 pre_sign 窗口 tick_account 触发。
         """
         t_end = at_cst(t.day, t.end_time)
-        lead = t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS)
+        lead = t_end - timedelta(seconds=self.relay_lead_seconds)
         if now < lead:
             return
         acc = await self.store.get_account(t.account_id)
@@ -307,7 +358,7 @@ class Scheduler:
         candidates += adjacent + [f"{i:03d}" for i in range(1, 102, 10)]
         tried: set[str] = set()
         for seat in candidates:
-            if seat == exclude or seat in tried or len(tried) >= 12:
+            if seat == exclude or seat in tried or len(tried) >= self.anchor_scan_limit:
                 continue
             tried.add(seat)
             try:
@@ -338,35 +389,8 @@ class Scheduler:
 
         try:
             if t.day > today_cst():
-                # 跨天任务优先直连通道 (纯 httpx, 无页面交互): 账号存在
-                # 进行中的使用会话时, 任何座位页都不渲染时段格子, 页面
-                # 触发式通道必然失败。直连未成再走页面内改写通道兜底
-                # (其内含会话失效自愈与锚点座位重试)。
-                if not self.cfg.runtime.direct_submit_enabled:
-                    await self._error(
-                        f"配置已禁用直连提交；拒绝用今日页面预约未"
-                        f"来日期 {t.day}（会错约到今天）",
-                        acc.id,
-                    )
-                    await self.store.update_task_status(
-                        t.id, TaskStatus.FAILED,
-                        last_error="已禁用直连提交；未来日期任务已拒绝",
-                    )
-                    return
-                r = await client.submit_direct(
-                    phone=acc.phone,
-                    password=acc.password,
-                    room_id=self.cfg.library.room_id,
-                    seat_num=t.seat_num,
-                    day=t.day.isoformat(),
-                    start_time=t.start_time.strftime("%H:%M"),
-                    end_time=t.end_time.strftime("%H:%M"),
-                )
-                if not r.get("success"):
-                    await self._warn(
-                        f"直连提交未成（{r.get('msg')}），改走页面改写通道",
-                        acc.id,
-                    )
+                strat = self.submit_strategy
+                if strat == "page_rewrite_only":
                     r = await client.submit_via_page_rewrite(
                         phone=acc.phone,
                         password=acc.password,
@@ -376,23 +400,98 @@ class Scheduler:
                         start_time=t.start_time.strftime("%H:%M"),
                         end_time=t.end_time.strftime("%H:%M"),
                     )
-                    if not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
+                    if self.anchor_retry_enabled and not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
                         anchor = await self._pick_anchor_seat(client, t.seat_num)
                         if anchor:
-                            await self._warn(
-                                f"座位 {t.seat_num} 页面无格子, 改用锚点座位 {anchor} 重试",
-                                acc.id,
-                            )
+                            await self._warn(f"座位 {t.seat_num} 页面无格子, 改用锚点 {anchor} 重试", acc.id)
                             r = await client.submit_via_page_rewrite(
-                                phone=acc.phone,
-                                password=acc.password,
-                                room_id=self.cfg.library.room_id,
-                                seat_num=t.seat_num,
+                                phone=acc.phone, password=acc.password,
+                                room_id=self.cfg.library.room_id, seat_num=t.seat_num,
                                 day=t.day.isoformat(),
                                 start_time=t.start_time.strftime("%H:%M"),
                                 end_time=t.end_time.strftime("%H:%M"),
                                 anchor_seat=anchor,
                             )
+                elif strat == "direct_only":
+                    r = await client.submit_direct(
+                        phone=acc.phone, password=acc.password,
+                        room_id=self.cfg.library.room_id, seat_num=t.seat_num,
+                        day=t.day.isoformat(),
+                        start_time=t.start_time.strftime("%H:%M"),
+                        end_time=t.end_time.strftime("%H:%M"),
+                    )
+                elif strat == "page_rewrite_first":
+                    r = await client.submit_via_page_rewrite(
+                        phone=acc.phone, password=acc.password,
+                        room_id=self.cfg.library.room_id, seat_num=t.seat_num,
+                        day=t.day.isoformat(),
+                        start_time=t.start_time.strftime("%H:%M"),
+                        end_time=t.end_time.strftime("%H:%M"),
+                    )
+                    if self.anchor_retry_enabled and not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
+                        anchor = await self._pick_anchor_seat(client, t.seat_num)
+                        if anchor:
+                            await self._warn(f"座位 {t.seat_num} 页面无格子, 改用锚点 {anchor} 重试", acc.id)
+                            r = await client.submit_via_page_rewrite(
+                                phone=acc.phone, password=acc.password,
+                                room_id=self.cfg.library.room_id, seat_num=t.seat_num,
+                                day=t.day.isoformat(),
+                                start_time=t.start_time.strftime("%H:%M"),
+                                end_time=t.end_time.strftime("%H:%M"),
+                                anchor_seat=anchor,
+                            )
+                    if not r.get("success"):
+                        await self._warn(f"模拟点击未成（{r.get('msg')}），回退直连通道", acc.id)
+                        r2 = await client.submit_direct(
+                            phone=acc.phone, password=acc.password,
+                            room_id=self.cfg.library.room_id, seat_num=t.seat_num,
+                            day=t.day.isoformat(),
+                            start_time=t.start_time.strftime("%H:%M"),
+                            end_time=t.end_time.strftime("%H:%M"),
+                        )
+                        if r2.get("success"):
+                            r = r2
+                else:  # direct_first (default, 含旧 direct_submit_enabled=true 的等价行为)
+                    r = await client.submit_direct(
+                        phone=acc.phone,
+                        password=acc.password,
+                        room_id=self.cfg.library.room_id,
+                        seat_num=t.seat_num,
+                        day=t.day.isoformat(),
+                        start_time=t.start_time.strftime("%H:%M"),
+                        end_time=t.end_time.strftime("%H:%M"),
+                    )
+                    if not r.get("success"):
+                        await self._warn(
+                            f"直连提交未成（{r.get('msg')}），改走页面改写通道",
+                            acc.id,
+                        )
+                        r = await client.submit_via_page_rewrite(
+                            phone=acc.phone,
+                            password=acc.password,
+                            room_id=self.cfg.library.room_id,
+                            seat_num=t.seat_num,
+                            day=t.day.isoformat(),
+                            start_time=t.start_time.strftime("%H:%M"),
+                            end_time=t.end_time.strftime("%H:%M"),
+                        )
+                        if self.anchor_retry_enabled and not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
+                            anchor = await self._pick_anchor_seat(client, t.seat_num)
+                            if anchor:
+                                await self._warn(
+                                    f"座位 {t.seat_num} 页面无格子, 改用锚点座位 {anchor} 重试",
+                                    acc.id,
+                                )
+                                r = await client.submit_via_page_rewrite(
+                                    phone=acc.phone,
+                                    password=acc.password,
+                                    room_id=self.cfg.library.room_id,
+                                    seat_num=t.seat_num,
+                                    day=t.day.isoformat(),
+                                    start_time=t.start_time.strftime("%H:%M"),
+                                    end_time=t.end_time.strftime("%H:%M"),
+                                    anchor_seat=anchor,
+                                )
             else:
                 r = await client.submit_in_browser(
                     phone=acc.phone,
@@ -569,16 +668,22 @@ class Scheduler:
             sr = {}
         if not sr.get("success"):
             sb_msg = str(sr.get("msg") or "")
-            # signback 报"预约已不在服务端" = 终态, 直接收尾;
-            # 不能带着这条消息去回退暂离通道 (暂离的返回消息不含终态特征,
-            # 会把可终结的死号任务永远留在重试循环里)
-            if "不存在" in sb_msg:
+            # signback 报终态特征 (预约已不在/已签退/已结束/已取消/剩余不足暂离)
+            # = 服务端预约已终结, 直接收尾; 不能带终态消息去走临近结束守卫或
+            # 暂离回退 (会把可终结的死号任务永远留在重试循环里)
+            sb_terminal = any(
+                k in sb_msg for k in (
+                    "不存在", "已签退", "已结束", "已取消", "剩余时长小于暂离时长",
+                )
+            )
+            if sb_terminal:
                 await self._info(f"签退幂等收尾（{sb_msg}）→ 已完成", acc.id)
                 await self.store.log_action(
                     acc.id, "signback", str(t.reserve_id), str(sr)[:500], False, sb_msg,
                 )
                 await self.store.update_task_status(
-                    t.id, TaskStatus.COMPLETE, last_error="服务端预约已不存在, 幂等收尾")
+                    t.id, TaskStatus.COMPLETE,
+                    last_error=f"服务端预约已终结, 幂等收尾（{sb_msg}）")
                 self._clear_fail_streak(t.id)
                 await self.store.add_notification(
                     "签退完成（预约已收尾）",
@@ -652,7 +757,7 @@ class Scheduler:
         for i, acc in enumerate(accounts):
             if acc.id in existing_ids:
                 continue
-            delay = random.uniform(*self.cfg.runtime.stagger_seconds)
+            delay = random.uniform(*self.stagger_seconds)
             self.scheduler.add_job(
                 self._tick_account_with_bootstrap,
                 "cron", second=f"{int(delay)}",
@@ -665,7 +770,7 @@ class Scheduler:
     def start(self) -> None:
         self.scheduler.add_job(
             self.sync_jobs,
-            "interval", seconds=30,
+            "interval", seconds=self.tick_interval_seconds,
             id="sync_jobs", replace_existing=True,
             misfire_grace_time=60, coalesce=True,
         )
