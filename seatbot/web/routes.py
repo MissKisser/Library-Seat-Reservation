@@ -109,8 +109,8 @@ async def _fetch_others_occupied(
     logged in, or every seat lookup failed; callers should still render
     the dashboard, just without the "others_occupied" overlay.
 
-    Auth: 优先复用 scheduler 的持久化 cookie（内存池 + 落库会话），
-    只有 jar 与持久化均为空才触发一次无头浏览器登录；
+    Auth: 优先复用调度器已保存的登录会话，
+    仅在没有可用会话时才触发一次登录；
     全部座位查询抛异常（会话失效特征）时重登一次并重试。
     """
     if not seat_nums:
@@ -1828,7 +1828,7 @@ async def logs_view(
 
 
 # =========================================================================
-# Settings — 系统配置（DB 覆盖 YAML，热更新）
+# Settings — 系统配置（保存后立即生效）
 # =========================================================================
 async def _effective_and_raw(request: Request) -> tuple[dict, dict[str, str]]:
     store = request.app.state.store
@@ -1841,7 +1841,7 @@ async def _effective_and_raw(request: Request) -> tuple[dict, dict[str, str]]:
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_view(request: Request):
     eff, rows = await _effective_and_raw(request)
-    # 是否有 DB 覆盖（用于“已自定义”角标）
+    # 是否已在页面自定义（用于“已自定义”角标）
     overridden = set(rows.keys())
     return _templates(request).TemplateResponse(
         request, "settings.html",
@@ -1910,7 +1910,7 @@ async def settings_save(request: Request):
         first = next(iter(errors.values()))
         return RedirectResponse(f"/settings?error={quote(first)}", status_code=303)
 
-    # 归一化后落库
+    # 校验通过后保存
     to_store: dict[str, str] = {}
     for k, v in patch.items():
         if k == "submit_strategy":

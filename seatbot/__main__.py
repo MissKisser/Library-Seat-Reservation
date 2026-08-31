@@ -61,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _make_store(cfg) -> StateStore:
-    """Create a StateStore and seed target_seats from config."""
+    """创建状态存储，按配置文件初始化目标座位（已设置的保持不变）。"""
     # v2 不再有全局 target_seat_num;legacy 总是 None
     return StateStore(cfg.runtime.db_path, legacy_target_seat_num=None)
 
@@ -78,13 +78,13 @@ async def _cmd_run(args) -> int:
         print(f"[WARN] db backup failed (继续启动): {e}")
     store = _make_store(cfg)
     await store.init()
-    # seed target_seats from config
+    # 按配置文件初始化目标座位（已在页面设置的保持不变）
     for s in cfg.target_seats:
         await store.seed_target_seat(s.seat_num, label=s.label)
     n = await store.sync_accounts(cfg.accounts)
     print(f"synced {n} account(s); {len(cfg.target_seats)} target seat(s) from config")
     sched = Scheduler(cfg, store)
-    # DB 系统设置覆盖 YAML（热更新真源）
+    # 加载页面已保存的系统设置
     try:
         await sched.load_runtime_settings()
     except Exception as e:
