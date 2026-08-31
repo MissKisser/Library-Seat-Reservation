@@ -49,6 +49,7 @@ class Scheduler:
         self._clients: dict[str, ChaoxingClient] = {}
         self._bootstrap_done_for: set[tuple[str, str, str]] = set()  # (account_id, day, seat_num)
         self._fail_streak: dict[int, int] = {}  # task_id → 签到/签退连续失败次数
+        self._supervise_seen: dict[int, str] = {}  # reserve_id → detected/resolved
         self.relay_lead_seconds: int = int(getattr(cfg.runtime, "relay_lead_seconds", 300))
         self.tick_interval_seconds: int = int(getattr(cfg.runtime, "tick_interval_seconds", 30))
         self.stagger_seconds: list[int] = list(getattr(cfg.runtime, "stagger_seconds", [0, 3]))
@@ -257,6 +258,7 @@ class Scheduler:
             return
         now = now_cst()
         today = today_cst()
+        has_live_seat = False
         for t in await self.store.list_tasks(account_id=acc_id, day=today):
             if t.status not in (TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.LEAVING):
                 continue
@@ -269,8 +271,86 @@ class Scheduler:
             # 2. 时段进行中且未签 → 签到 (成功后置 SIGNED)
             if t.status == TaskStatus.ACTIVE and t_start <= now < t_end:
                 await self._run_sign(acc_cfg, t)
+                has_live_seat = True
                 continue
-            # 3. SIGNED / 未开始的 ACTIVE / LEAVING 未到点 → 不动
+            # 3. SIGNED 在时段内 = 正持有座位; LEAVING 未到点 → 不动
+            if t.status == TaskStatus.SIGNED and t_start <= now < t_end:
+                has_live_seat = True
+        # 4. 持有座位期间轮询监督状态, 被监督则立即自动落座
+        if has_live_seat:
+            await self._check_supervision(acc_cfg)
+
+    async def _check_supervision(self, acc: Account) -> None:
+        """检测当前账号"被监督中"的预约并自动重新签到解除。
+
+        上游无独立"落座确认"端点: reservelist 出现 status=5 即被监督,
+        持该预约号调 sign() 与官方扫码落座等效; 20 分钟窗口内失败可
+        重试, 因此跟随 tick 每轮执行。仅在账号实际持有座位时被
+        tick_account 调用; 会话 cookie 为空时跳过 (登录由签到/签退
+        动作路径负责, 避免每分钟触发浏览器登录风暴)。
+
+        每个监督回合: 首次检测发 warn 通知, 解除成功发 info 通知并
+        将匹配到的本地 ACTIVE 任务置 SIGNED; 解除失败保持下轮重试。
+        """
+        client = await self.client_ready(acc)
+        if not client.cookies():
+            return
+        try:
+            supervised = await client.supervised_reservations()
+        except Exception as e:
+            await self._warn(f"监督检测失败: {e}", acc.id)
+            return
+        if not supervised:
+            self._supervise_seen.clear()
+            return
+        today = today_cst()
+        local_tasks = {
+            t.reserve_id: t
+            for t in await self.store.list_tasks(account_id=acc.id, day=today)
+            if t.reserve_id
+        }
+        for rec in supervised:
+            rid = rec.get("id")
+            if not rid:
+                continue
+            seat = str(rec.get("seatNum") or "?")
+            if self._supervise_seen.get(rid) != "detected":
+                self._supervise_seen[rid] = "detected"
+                await self._notify(
+                    "检测到监督：正在自动落座",
+                    f"账号={acc.id} 座位={seat} 预约号#{rid}，"
+                    f"20 分钟窗口内自动重新签到",
+                    level="warn",
+                )
+            try:
+                sr = await self._act_with_relogin(
+                    client, acc, client.sign, rid, "supervise-sign")
+            except Exception as e:
+                await self._error(
+                    f"监督落座异常: 预约号#{rid} {type(e).__name__}: {e}", acc.id)
+                continue
+            await self.store.log_action(
+                acc.id, "supervise_sign", str(rid), str(sr)[:500],
+                bool(sr.get("success")), str(sr.get("msg")),
+            )
+            if sr.get("success"):
+                self._supervise_seen[rid] = "resolved"
+                await self.store.add_notification(
+                    "监督已解除",
+                    f"账号={acc.id} 座位={seat} 预约号#{rid} 自动落座成功",
+                    level="info",
+                )
+                t = local_tasks.get(rid)
+                if t is not None and t.status == TaskStatus.ACTIVE:
+                    await self.store.update_task_status(
+                        t.id, TaskStatus.SIGNED, last_error="")
+            else:
+                await self._warn(
+                    f"监督落座被拒（{sr.get('msg')}）: 预约号#{rid}，"
+                    f"下个周期重试", acc.id)
+        live = {r.get("id") for r in supervised}
+        for rid in [k for k in self._supervise_seen if k not in live]:
+            del self._supervise_seen[rid]
 
     async def peek_next_relay(self) -> NextRelay | None:
         now = now_cst()

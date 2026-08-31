@@ -806,7 +806,12 @@ class ChaoxingClient:
 
     # ---------- reservation records ----------
     #: reservelist 状态码 → 官方含义（详见 docs/api/reservelist.md）
-    RESERVE_STATUS = {0: "待履约", 1: "使用中", 2: "已履约", 7: "已取消", 8: "违约"}
+    RESERVE_STATUS = {
+        0: "待履约", 1: "使用中", 2: "已履约", 3: "暂离中",
+        5: "被监督中", 7: "已取消", 8: "违约",
+    }
+    #: 被监督中（他人发起监督后进入，20 分钟内需确认落座否则记违约）
+    RESERVE_STATUS_SUPERVISED = 5
 
     async def reserve_list(
         self,
@@ -835,6 +840,24 @@ class ChaoxingClient:
                 f"reservelist rejected: {payload.get('msg') or payload!r}"
             )
         return (payload.get("data") or {}).get("reserveList") or []
+
+    async def supervised_reservations(self) -> list[dict]:
+        """查询当前登录账号处于**被监督中**（status=5）的预约记录。
+
+        依据: reservelist 状态表 status=5 即"被监督中"（他人监督后进入,
+        官方流程要求 20 分钟内扫码落座, 否则记违约）。解除方式是持该
+        预约号调 sign()（与扫码落座等效, 参考 XXT_Library_Web 的
+        Check_Service 同款处理）。
+
+        Returns: reserveList 中 status=5 的条目原样列表, 每条含
+                 id / roomId / seatNum / startTime / endTime 等。
+        只读查询, 无预约/违约副作用。
+        """
+        records = await self.reserve_list()
+        return [
+            r for r in records
+            if r.get("status") == self.RESERVE_STATUS_SUPERVISED
+        ]
 
     # ---------- occupancy lookup ----------
     async def get_used_times(
