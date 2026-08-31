@@ -84,6 +84,11 @@ async def _cmd_run(args) -> int:
     n = await store.sync_accounts(cfg.accounts)
     print(f"synced {n} account(s); {len(cfg.target_seats)} target seat(s) from config")
     sched = Scheduler(cfg, store)
+    # DB 系统设置覆盖 YAML（热更新真源）
+    try:
+        await sched.load_runtime_settings()
+    except Exception as e:
+        print(f"[WARN] load runtime settings failed: {e}")
     sched.start()
 
     # 崩溃恢复 + 错过 14:00 窗口的补跑放后台执行, 不阻塞面板起服

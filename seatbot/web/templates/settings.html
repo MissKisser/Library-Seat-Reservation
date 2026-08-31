@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}系统设置{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-5 max-w-[880px]">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">系统设置</h1>
+      <p class="page-sub">YAML 为种子，数据库为真源；保存后立即生效，无需重启</p>
+    </div>
+    <form method="post" action="/settings/reset" onsubmit="return confirm('重置为默认值（清空自定义设置）？')">
+      <button class="btn btn-ghost btn-sm" type="submit">重置为默认</button>
+    </form>
+  </div>
+
+  {% if saved %}<div class="banner banner-ok"><span class="dot"></span><span>已保存，立即生效。</span></div>{% endif %}
+  {% if reset_done %}<div class="banner banner-ok"><span class="dot"></span><span>已重置为默认值。</span></div>{% endif %}
+  {% if error %}<div class="banner banner-error"><span class="dot"></span><span>{{ error }}</span></div>{% endif %}
+
+  <form method="post" action="/settings" class="flex flex-col gap-5">
+
+    {# 1. 预约通道：四档策略 + 对比表 #}
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">预约通道</span>
+        <span class="chip chip-muted">提交策略</span>
+      </div>
+      <div class="card-body flex flex-col gap-4">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
+          {% for key in ["direct_first", "direct_only", "page_rewrite_first", "page_rewrite_only"] %}
+          {% set h = strategy_help[key] %}
+          <label class="group flex gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors
+                        {% if eff.submit_strategy == key %}border-accent bg-accent-soft{% else %}border-edge-subtle hover:border-edge-strong bg-app-surface{% endif %}">
+            <input type="radio" name="submit_strategy" value="{{ key }}" {% if eff.submit_strategy == key %}checked{% endif %} class="mt-0.5">
+            <span class="flex-1 min-w-0">
+              <span class="flex items-center gap-2">
+                <span class="text-sm font-semibold text-ink">{{ h.label }}</span>
+                {% if h.badge %}<span class="chip {% if '推荐' in h.badge %}chip-success{% elif '兼容' in h.badge %}chip-muted{% else %}chip-warn{% endif %}" style="font-size:10px;padding:1px 6px">{{ h.badge }}</span>{% endif %}
+                {% if key in overridden %}<span class="chip chip-target" style="font-size:10px;padding:1px 6px">已自定义</span>{% endif %}
+              </span>
+              <span class="block text-xs text-ink-secondary mt-1 leading-snug">{{ h.desc }}</span>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+
+        <div class="rounded-xl border border-edge-subtle overflow-hidden">
+          <div class="px-3.5 py-2.5 bg-app-table-header flex items-center gap-2">
+            <span class="text-xs font-bold text-ink">两者区别</span>
+            <span class="text-xs text-ink-muted">直连 API vs 模拟手动点击</span>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="table !text-xs">
+              <thead>
+                <tr>
+                  <th style="width:92px">对比项</th>
+                  <th>直连 API</th>
+                  <th>模拟手动点击</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in compare %}
+                <tr>
+                  <td class="font-medium text-ink-secondary whitespace-nowrap">{{ row.dim }}</td>
+                  <td class="text-ink-secondary leading-snug">{{ row.direct }}</td>
+                  <td class="text-ink-secondary leading-snug">{{ row.page }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="px-3.5 py-2 bg-app-muted/40 text-xs text-ink-muted leading-snug">
+            直连在账号“使用中无格子”时仍可提交（种子在 HTML 中），是 2026-08-31 后默认主通道；模拟点击用于会话失效自愈或直连被风控时的兜底。
+            {% if eff.submit_strategy == "direct_first" %}当前为<span class="text-accent font-semibold">直连优先</span>（推荐）。{% endif %}
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2.5 p-2.5 rounded-xl border border-edge-subtle bg-app-muted/30 cursor-pointer">
+          <input type="checkbox" name="anchor_retry_enabled" value="1" {% if eff.anchor_retry_enabled %}checked{% endif %}>
+          <span class="text-sm text-ink">启用锚点重试</span>
+          <span class="text-xs text-ink-muted">页面无格子时用相邻空闲座位页作锚点（直连主通道下已很少触发）</span>
+          <span class="ml-auto flex items-center gap-2">
+            <span class="text-xs text-ink-muted">扫描上限</span>
+            <input name="anchor_scan_limit" type="number" min="4" max="20" step="1" value="{{ eff.anchor_scan_limit }}" class="input h-7 w-[84px] text-xs">
+          </span>
+        </label>
+      </div>
+    </div>
+
+    {# 2. 调度与风控 #}
+    <div class="card">
+      <div class="card-header"><span class="card-title">调度与风控</span></div>
+      <div class="card-body grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="form-field">
+          <label for="relay_lead_seconds">签退提前量<span class="req">*</span></label>
+          <select id="relay_lead_seconds" name="relay_lead_seconds" class="select">
+            {% for v in relay_options %}
+            <option value="{{ v }}" {% if eff.relay_lead_seconds == v %}selected{% endif %}>{{ (v // 60) }} 分钟{% if v == 300 %}（默认）{% endif %}</option>
+            {% endfor %}
+          </select>
+          <div class="hint">到点前多久签退；太早浪费时长，太晚易撞暂离 20min 门槛</div>
+          {% if "relay_lead_seconds" in overridden %}<div class="text-xs text-target">已自定义</div>{% endif %}
+        </div>
+        <div class="form-field">
+          <label for="tick_interval_seconds">轮询间隔<span class="req">*</span></label>
+          <select id="tick_interval_seconds" name="tick_interval_seconds" class="select">
+            {% for v in tick_options %}
+            <option value="{{ v }}" {% if eff.tick_interval_seconds == v %}selected{% endif %}>{{ v }} 秒{% if v == 30 %}（默认）{% endif %}</option>
+            {% endfor %}
+          </select>
+          <div class="hint">ACTIVE/SIGNED/LEAVING 任务的轮询周期；改后热更新</div>
+          {% if "tick_interval_seconds" in overridden %}<div class="text-xs text-target">已自定义</div>{% endif %}
+        </div>
+        <div class="form-field">
+          <label for="stagger_seconds">多账号错峰<span class="req">*</span></label>
+          <input id="stagger_seconds" name="stagger_seconds" type="text" class="input" placeholder="0,3"
+                 value="{% if eff.stagger_seconds is string %}{{ eff.stagger_seconds }}{% else %}{{ eff.stagger_seconds[0] }},{{ eff.stagger_seconds[1] }}{% endif %}">
+          <div class="hint">格式 0,3；同秒并发风控，范围 0–30</div>
+          {% if "stagger_seconds" in overridden %}<div class="text-xs text-target">已自定义</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    {# 3. 馆舍与限额 #}
+    <div class="card">
+      <div class="card-header"><span class="card-title">馆舍与限额</span><span class="text-xs text-ink-muted">与超星一致，改动即影响排程校验</span></div>
+      <div class="card-body grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="form-field">
+          <label for="max_reserve_hours">单段上限（小时）<span class="req">*</span></label>
+          <input id="max_reserve_hours" name="max_reserve_hours" type="number" min="0.5" max="12" step="0.5" class="input" value="{{ eff.max_reserve_hours }}">
+          <div class="hint">服务端 max_reserve_hours，默认 2.0</div>
+          {% if "max_reserve_hours" in overridden %}<div class="text-xs text-target">已自定义</div>{% endif %}
+        </div>
+        <div class="form-field">
+          <label for="daily_reserve_hours_limit">每日限额（小时）<span class="req">*</span></label>
+          <input id="daily_reserve_hours_limit" name="daily_reserve_hours_limit" type="number" min="0.5" max="12" step="0.5" class="input" value="{{ eff.daily_reserve_hours_limit }}">
+          <div class="hint">每账号每天累计上限，默认 5.0；单段不应超过此值</div>
+          {% if "daily_reserve_hours_limit" in overridden %}<div class="text-xs text-target">已自定义</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    {# 4. 通知 #}
+    <div class="card">
+      <div class="card-header"><span class="card-title">通知</span></div>
+      <div class="card-body">
+        <div class="form-field">
+          <label for="notify_webhook">外推 Webhook</label>
+          <input id="notify_webhook" name="notify_webhook" type="url" class="input" placeholder="https://…（留空=仅看板）" value="{{ eff.notify_webhook }}">
+          <div class="hint">触发时 POST JSON {"{"}"title","content"{"}"}；Server酱/Bark/企业微信均可</div>
+          {% if "notify_webhook" in overridden %}<div class="text-xs text-target">已自定义</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <button class="btn btn-primary" type="submit">保存设置</button>
+      <span class="text-xs text-ink-muted">保存后立即生效，无需重启</span>
+    </div>
+  </form>
+</div>
+{% endblock %}

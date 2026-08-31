@@ -16,6 +16,7 @@ from seatbot.bindings import (
     account_margins, auto_assign, candidate_accounts,
     desired_slots_of, validate_matrix,
 )
+from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
 from seatbot.models import Account, Task, TaskStatus
@@ -1824,3 +1825,124 @@ async def logs_view(
                     filter_account=account_id, filter_level=level,
                     active_page="logs"),
     )
+
+
+# =========================================================================
+# Settings — 系统配置（DB 覆盖 YAML，热更新）
+# =========================================================================
+async def _effective_and_raw(request: Request) -> tuple[dict, dict[str, str]]:
+    store = request.app.state.store
+    cfg = request.app.state.cfg
+    rows = await store.get_settings_map()
+    eff = _settings.effective(rows, cfg)
+    return eff, rows
+
+
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_view(request: Request):
+    eff, rows = await _effective_and_raw(request)
+    # 是否有 DB 覆盖（用于“已自定义”角标）
+    overridden = set(rows.keys())
+    return _templates(request).TemplateResponse(
+        request, "settings.html",
+        await _ctx(request,
+            eff=eff,
+            rows=rows,
+            overridden=overridden,
+            compare=_settings.SUBMIT_CHANNEL_COMPARE,
+            strategy_help=_settings.SUBMIT_STRATEGY_HELP,
+            strategy_labels=_settings.SUBMIT_STRATEGY_LABELS,
+            relay_options=_settings.RELAY_LEAD_OPTIONS,
+            tick_options=_settings.TICK_INTERVAL_OPTIONS,
+            defaults=_settings.DEFAULTS,
+            saved=request.query_params.get("saved"),
+            reset_done=request.query_params.get("reset"),
+            error=request.query_params.get("error"),
+            active_page="settings"),
+    )
+
+
+@router.post("/settings")
+async def settings_save(request: Request):
+    store = request.app.state.store
+    sched = getattr(request.app.state, "sched", None)
+    form = await request.form()
+    # 收集可写键
+    patch_raw: dict[str, object] = {}
+    patch_raw["submit_strategy"] = (form.get("submit_strategy") or "").strip()
+    patch_raw["relay_lead_seconds"] = (form.get("relay_lead_seconds") or "").strip()
+    patch_raw["stagger_seconds"] = (form.get("stagger_seconds") or "").strip()
+    patch_raw["tick_interval_seconds"] = (form.get("tick_interval_seconds") or "").strip()
+    # checkbox: 未勾选时 form 无该键
+    patch_raw["anchor_retry_enabled"] = "true" if form.get("anchor_retry_enabled") else "false"
+    patch_raw["anchor_scan_limit"] = (form.get("anchor_scan_limit") or "").strip()
+    patch_raw["max_reserve_hours"] = (form.get("max_reserve_hours") or "").strip()
+    patch_raw["daily_reserve_hours_limit"] = (form.get("daily_reserve_hours_limit") or "").strip()
+    patch_raw["notify_webhook"] = (form.get("notify_webhook") or "").strip()
+
+    # 滤掉空字符串的“未填”键（notify_webhook 允许空以清空）
+    patch: dict[str, object] = {}
+    for k, v in patch_raw.items():
+        if k == "notify_webhook":
+            patch[k] = v
+        elif isinstance(v, str) and v == "":
+            continue
+        else:
+            patch[k] = v
+
+    errors = _settings.validate_all(patch)
+    # 交叉：单段不应超过日限额（用有效值二次校验）
+    if not errors:
+        try:
+            eff, rows = await _effective_and_raw(request)
+            mh_raw = patch.get("max_reserve_hours", eff.get("max_reserve_hours"))
+            dh_raw = patch.get("daily_reserve_hours_limit", eff.get("daily_reserve_hours_limit"))
+            mh = float(str(mh_raw).strip()) if isinstance(mh_raw, str) else float(mh_raw)  # type: ignore[arg-type]
+            dh = float(str(dh_raw).strip()) if isinstance(dh_raw, str) else float(dh_raw)  # type: ignore[arg-type]
+            if mh > dh:
+                errors["max_reserve_hours"] = "单段上限不应超过每日限额"
+        except Exception:
+            pass
+
+    if errors:
+        # 回显错误：用 303 带参重定向，错误摘要进 query（前端同时展示字段级错误需回填，此处先用 banner）
+        from urllib.parse import quote
+        first = next(iter(errors.values()))
+        return RedirectResponse(f"/settings?error={quote(first)}", status_code=303)
+
+    # 归一化后落库
+    to_store: dict[str, str] = {}
+    for k, v in patch.items():
+        if k == "submit_strategy":
+            v = _settings.normalize_submit_strategy(v)
+        elif k == "stagger_seconds":
+            v = _settings.normalize_stagger(v)  # type: ignore[arg-type]
+            v = _settings.coerce_for_storage(k, v)
+            to_store[k] = v
+            continue
+        elif k == "anchor_retry_enabled":
+            # 已是 "true"/"false"
+            pass
+        to_store[k] = _settings.coerce_for_storage(k, v)
+
+    await store.set_settings(to_store)
+    if sched is not None:
+        try:
+            await sched.load_runtime_settings()
+        except Exception:
+            pass
+    return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@router.post("/settings/reset")
+async def settings_reset(request: Request):
+    store = request.app.state.store
+    sched = getattr(request.app.state, "sched", None)
+    await store.clear_settings()
+    if sched is not None:
+        try:
+            await sched.load_runtime_settings()
+        except Exception:
+            pass
+    return RedirectResponse("/settings?reset=1", status_code=303)
+

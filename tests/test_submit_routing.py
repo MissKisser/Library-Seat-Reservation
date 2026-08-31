@@ -3,8 +3,8 @@
 覆盖:
   - 未来日期任务 → submit_direct 直连优先, 成功即不再走页面/浏览器通道
   - 直连失败 → 回退 submit_via_page_rewrite; 仍"无格子"且无锚点 → FAILED
+  - page_rewrite_only → 仅页面通道, 绝不直连; direct_only → 仅直连, 失败即 FAILED
   - 今天任务 → submit_in_browser (浏览器通道)
-  - direct_submit_enabled=False + 未来任务 → 直接 FAILED, 任何通道都不走
   - 提交成功但占用核验为空 → 保留 ACTIVE + ERROR 日志 (人工复核)
 """
 from __future__ import annotations
@@ -152,14 +152,33 @@ async def test_today_routes_to_browser(tmp_path):
     assert after.status == TaskStatus.ACTIVE
 
 
-async def test_disabled_switch_fails_future_task_without_any_submit(tmp_path):
+async def test_page_rewrite_only_never_touches_direct(tmp_path):
     store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
-    sched = Scheduler(make_cfg(direct_submit_enabled=False), store)
-    client = RoutingClient()
+    sched = Scheduler(make_cfg(submit_strategy="page_rewrite_only"), store)
+    client = RoutingClient(used_times=[("09:00", "11:00")])
     sched._clients["xiongjt"] = client
     acc = await store.get_account("xiongjt")
     await sched._run_submit(acc, t)
-    assert client.calls == []          # 两条通道都不许走 (回退浏览器=错约当天)
+    assert client.calls == ["page_rewrite", "getused"]
+    after = await store.get_task(t.id)
+    assert after.status == TaskStatus.ACTIVE and after.reserve_id == 999001
+
+
+async def test_direct_only_never_falls_back(tmp_path):
+    store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
+    sched = Scheduler(make_cfg(submit_strategy="direct_only"), store)
+    client = RoutingClient(
+        direct_result={
+            "success": False, "reserve_id": None,
+            "msg": "submit_enc seed not found on seat page",
+            "raw": None, "channel": "direct",
+        },
+        used_times=[],   # 不触达核验
+    )
+    sched._clients["xiongjt"] = client
+    acc = await store.get_account("xiongjt")
+    await sched._run_submit(acc, t)
+    assert client.calls == ["direct"]   # 失败即终, 不得回退任何通道
     after = await store.get_task(t.id)
     assert after.status == TaskStatus.FAILED
 

@@ -97,7 +97,15 @@ class RuntimeConfig(BaseModel):
     # ★ 跨天预约通道开关 (2026-08-26 §8 回滚开关; B1=页面内改写放行):
     #   true  = 未来日期任务走 submit_via_page_rewrite (真实页面提交, 网络层改写 day/时段)
     #   false = 未来日期任务直接 FAILED, 绝不回退浏览器通道 (会错约到当天)
+    #   兼容保留；新代码以 submit_strategy 为准（见 seatbot/settings.py）。
     direct_submit_enabled: bool = True
+    # ★ 提交策略（四档，DB app_settings 同名键可覆盖 YAML）：
+    #   direct_first / direct_only / page_rewrite_first / page_rewrite_only
+    submit_strategy: str = "direct_first"
+    relay_lead_seconds: int = 300
+    tick_interval_seconds: int = 30
+    anchor_retry_enabled: bool = True
+    anchor_scan_limit: int = 12
     #: 通知外推 webhook (Server酱/bark/企业微信等); 空 = 只落库在看板展示。
     #: 触发时 POST JSON {"title": ..., "content": ...}
     notify_webhook: str = ""
@@ -108,6 +116,35 @@ class RuntimeConfig(BaseModel):
     #: 面板访问令牌。非空时所有请求必须携带 (Authorization: Bearer / X-Auth-Token / ?token= / cookie);
     #: 为空时仅允许本机回环客户端访问, 非回环客户端一律 403。
     web_token: str = ""
+
+    @field_validator("submit_strategy")
+    @classmethod
+    def _strategy_format(cls, v: str) -> str:
+        from seatbot.settings import SUBMIT_STRATEGIES
+        if v in SUBMIT_STRATEGIES:
+            return v
+        raise ValueError(f"submit_strategy must be one of {', '.join(SUBMIT_STRATEGIES)}")
+
+    @field_validator("relay_lead_seconds")
+    @classmethod
+    def _relay_lead_format(cls, v: int) -> int:
+        if not (30 <= int(v) <= 900):
+            raise ValueError("relay_lead_seconds must be 30–900")
+        return int(v)
+
+    @field_validator("tick_interval_seconds")
+    @classmethod
+    def _tick_interval_format(cls, v: int) -> int:
+        if not (5 <= int(v) <= 300):
+            raise ValueError("tick_interval_seconds must be 5–300")
+        return int(v)
+
+    @field_validator("anchor_scan_limit")
+    @classmethod
+    def _anchor_limit_format(cls, v: int) -> int:
+        if not (4 <= int(v) <= 20):
+            raise ValueError("anchor_scan_limit must be 4–20")
+        return int(v)
 
 
 class Config(BaseModel):
