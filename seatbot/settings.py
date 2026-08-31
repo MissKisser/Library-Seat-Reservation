@@ -1,6 +1,6 @@
-"""DB-backed runtime settings: YAML 为种子，DB app_settings 为真源。
+"""系统设置：已在页面保存过的以页面设置为准，未设置的沿用配置文件。
 
-有效值 = DB 覆盖 YAML 默认；所有校验与默认值收敛于此，供
+有效值以页面设置为准，配置文件仅提供初始值；所有校验与默认值收敛于此，供
 config / store / scheduler / web 共用，避免散落硬编码枚举。
 """
 from __future__ import annotations
@@ -86,7 +86,7 @@ DEFAULTS: dict[str, object] = {
     "tick_interval_seconds": 30,
     "anchor_retry_enabled": True,
     "anchor_scan_limit": 12,
-    # 库约束（覆盖 LibraryConfig 的同名字段，重启/热更新即生效）
+    # 馆舍限额（可在页面调整，未调整时沿用馆舍配置）
     "max_reserve_hours": 2.0,
     "daily_reserve_hours_limit": 5.0,
     "notify_webhook": "",
@@ -126,7 +126,7 @@ def normalize_stagger(v: object) -> list[int]:
 
 
 def coerce_for_storage(key: str, value: object) -> str:
-    """统一落库字符串形态；list/dict 转 JSON，其余转 str。"""
+    """统一保存为文本格式；list/dict 转 JSON，其余转 str。"""
     if key == "stagger_seconds" and isinstance(value, list):
         return json.dumps(value, ensure_ascii=False)
     if isinstance(value, bool):
@@ -230,14 +230,14 @@ def validate_all(patch: dict[str, object]) -> dict[str, str]:
 
 
 def effective(settings_rows: dict[str, str], cfg) -> dict[str, object]:
-    """合并：DB 行覆盖 YAML 配置；未覆盖的用 cfg/DEFAULTS。
+    """合并有效配置：已在页面保存过的以页面设置为准，未设置的沿用配置文件。
 
-    cfg: seatbot.config.Config 实例；取 library/runtime 的同名字段作种子。
+    cfg: seatbot.config.Config 实例；取 library/runtime 的同名字段作初始值。
     """
     out: dict[str, object] = {}
-    # 先用 DEFAULTS 兜底
+    # 先用默认值兜底
     out.update(DEFAULTS)
-    # 再用 YAML 配置覆盖
+    # 再用配置文件覆盖
     try:
         out["max_reserve_hours"] = float(cfg.library.max_reserve_hours)
         out["daily_reserve_hours_limit"] = float(cfg.library.daily_reserve_hours_limit)
@@ -255,16 +255,16 @@ def effective(settings_rows: dict[str, str], cfg) -> dict[str, object]:
                 out[k] = v
         except Exception:
             pass
-    # 旧 bool 兼容：direct_submit_enabled=false → page_rewrite_only
+    # 旧配置兼容：direct_submit_enabled=false → page_rewrite_only
     try:
         legacy = getattr(cfg.runtime, "direct_submit_enabled", None)
         if legacy is not None and "submit_strategy" not in settings_rows:
-            # 仅当 DB 未显式覆盖时，YAML 的旧 bool 才生效
+            # 仅当页面未显式设置时，配置文件的旧开关才生效
             if legacy is False and out.get("submit_strategy") == "direct_first":
                 out["submit_strategy"] = "page_rewrite_only"
     except Exception:
         pass
-    # 最后 DB 覆盖
+    # 最后以页面已保存的设置为准
     for k, raw in settings_rows.items():
         if k not in DEFAULTS:
             continue

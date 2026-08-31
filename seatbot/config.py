@@ -23,7 +23,7 @@ SlotSpec = str | list[str]
 
 
 class SeatSeed(BaseModel):
-    """Seed entry for target_seats table. Web is the source of truth at runtime."""
+    """目标座位的初始配置，运行时以页面设置为准。"""
     seat_num: str
     label: str = ""
 
@@ -94,19 +94,16 @@ class AccountConfig(BaseModel):
 
 class RuntimeConfig(BaseModel):
     stagger_seconds: list[int] = Field(default_factory=lambda: [0, 3])
-    # ★ 跨天预约通道开关 (2026-08-26 §8 回滚开关; B1=页面内改写放行):
-    #   true  = 未来日期任务走 submit_via_page_rewrite (真实页面提交, 网络层改写 day/时段)
-    #   false = 未来日期任务直接 FAILED, 绝不回退浏览器通道 (会错约到当天)
-    #   兼容保留；新代码以 submit_strategy 为准（见 seatbot/settings.py）。
+    # 兼容保留；新代码以 submit_strategy 为准（见 seatbot/settings.py）。
     direct_submit_enabled: bool = True
-    # ★ 提交策略（四档，DB app_settings 同名键可覆盖 YAML）：
+    # 提交策略（四档，可在系统设置页调整，未调整时沿用此处配置）：
     #   direct_first / direct_only / page_rewrite_first / page_rewrite_only
     submit_strategy: str = "direct_first"
     relay_lead_seconds: int = 300
     tick_interval_seconds: int = 30
     anchor_retry_enabled: bool = True
     anchor_scan_limit: int = 12
-    #: 通知外推 webhook (Server酱/bark/企业微信等); 空 = 只落库在看板展示。
+    #: 通知外推 webhook；未设置时仅在看板展示。
     #: 触发时 POST JSON {"title": ..., "content": ...}
     notify_webhook: str = ""
     log_dir: str = "./logs"
@@ -149,10 +146,10 @@ class RuntimeConfig(BaseModel):
 
 class Config(BaseModel):
     library: LibraryConfig
-    # ★ v2: target_seats (seed for DB table)
+    # 目标座位的初始配置
     target_seats: list[SeatSeed] = Field(default_factory=list)
-    accounts: list[AccountConfig] = []  # optional; web panel is the primary source
-    # ★ v2+: 用户亲述已预约的段 (scheduler 跳过)
+    accounts: list[AccountConfig] = []  # 可选；主要通过页面管理
+    # 用户已预约的时段（调度器会跳过，避免重复预约）
     user_reserved: list[UserReservedSeed] = Field(default_factory=list)
     runtime: RuntimeConfig
 
@@ -164,9 +161,8 @@ class Config(BaseModel):
         seats = [s.seat_num for s in self.target_seats]
         if len(seats) != len(set(seats)):
             raise ValueError("target_seats seat_num must be unique")
-        # NOTE: empty lists are allowed. Web panel is the primary way
-        # to manage accounts/seats (database is the source of truth).
-        # Config is only a seed file.
+        # 空列表是允许的，页面是主要的账号/座位管理方式。
+        # 配置文件仅提供初始值。
         return self
 
 

@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS account_cookies (
 );
 CREATE INDEX IF NOT EXISTS idx_user_reserved_seat_day ON user_reserved(seat_num, day);
 
--- ★ 系统设置键值表（DB 覆盖 YAML；重启仍生效）
+-- 系统设置表（已保存的设置会持久保留）
 CREATE TABLE IF NOT EXISTS app_settings (
   key         TEXT PRIMARY KEY,
   value       TEXT NOT NULL,
@@ -240,7 +240,7 @@ class StateStore:
             raise RuntimeError("StateStore not initialized; call init() first")
         return self._db
 
-    # ---------- app_settings (DB 覆盖 YAML 的系统设置) ----------
+    # ---------- app_settings（系统设置，页面已保存的为准） ----------
     async def get_settings_map(self) -> dict[str, str]:
         cur = await self.db.execute("SELECT key, value FROM app_settings")
         rows = await cur.fetchall()
@@ -422,11 +422,11 @@ class StateStore:
         return out
 
     async def sync_accounts(self, accounts) -> int:
-        """启动时从 config 同步账号（DB 为业务真源）。
+        """启动时同步账号，已在页面管理的账号以页面为准。
 
         - 新账号：整行插入（含 slots/seat_slots/bound_seats）；
-        - 已有账号：仅刷新凭据 phone/password，不覆盖业务矩阵；
-        - 已删除（status='disabled'）的账号：跳过，绝不复活。
+        - 已有账号：仅刷新凭据 phone/password，不覆盖座位绑定；
+        - 已删除（status='disabled'）的账号：跳过，不再恢复。
 
         Returns: 实际处理的账号数。
         """
@@ -467,7 +467,7 @@ class StateStore:
         return n
 
     async def delete_account(self, acc_id: str) -> None:
-        """软删除账号（status='disabled'），防止启动时被 config 种子复活。"""
+        """软删除账号，已删除的账号不会因配置文件再次出现。"""
         self._bump()
         await self.db.execute(
             "UPDATE accounts SET status='disabled', updated_at=? WHERE id=?",
@@ -546,7 +546,7 @@ class StateStore:
         self, seat_num: str, *, label: str = "",
         desired_slots: list[str] | None = None,
     ) -> None:
-        """启动种子：仅插入不存在的座位，绝不复活已被删除（enabled=0）的行。"""
+        """按配置文件初始化目标座位：仅插入不存在的，已删除的不再恢复。"""
         await self.db.execute(
             """INSERT INTO target_seats
                    (seat_num, label, enabled, created_at, updated_at, desired_slots_json)
@@ -572,7 +572,7 @@ class StateStore:
         return cur.rowcount > 0
 
     async def delete_target_seat(self, seat_num: str) -> None:
-        """软删除目标座位（置 enabled=0），防止下次启动被 config 种子复活。"""
+        """软删除目标座位，已删除的座位不会因配置文件再次出现。"""
         self._bump()
         await self.db.execute(
             "UPDATE target_seats SET enabled=0, updated_at=? WHERE seat_num=?",

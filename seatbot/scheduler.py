@@ -36,7 +36,7 @@ class NextRelay:
 
 
 class Scheduler:
-    RELAY_LEAD_SECONDS = 300  # 类级默认值；实例级 relay_lead_seconds 热更新可覆盖
+    RELAY_LEAD_SECONDS = 300  # 类级默认值；可在系统设置页调整
 
     def __init__(
         self,
@@ -57,7 +57,7 @@ class Scheduler:
         self.submit_strategy: str = str(getattr(cfg.runtime, "submit_strategy", "direct_first"))
 
     async def load_runtime_settings(self) -> dict[str, object]:
-        """从 DB app_settings 读取并应用到实例与 cfg（热更新）。"""
+        """读取页面已保存的设置并应用到调度器。"""
         try:
             rows = await self.store.get_settings_map()
         except Exception:
@@ -143,7 +143,7 @@ class Scheduler:
         print(f"[ERROR] {acc or '-'} {msg}")
 
     async def _notify(self, title: str, body: str = "", level: str = "warn") -> None:
-        """用户需要看到的事件: 落库(看板 banner) + 可选 webhook 外推。"""
+        """用户需要看到的事件: 保存到看板并按需推送到外部通知。"""
         await self.store.add_notification(title, body, level)
         print(f"[NOTIFY] {title} {body}")
         url = (self.cfg.runtime.notify_webhook or "").strip()
