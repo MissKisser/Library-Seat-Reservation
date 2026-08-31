@@ -79,6 +79,16 @@ SUBMIT_CHANNEL_COMPARE: list[dict[str, str]] = [
 RELAY_LEAD_OPTIONS: list[int] = [60, 180, 300, 600]
 TICK_INTERVAL_OPTIONS: list[int] = [15, 30, 60]
 
+# 守护时段模式：uniform=全局统一（每天相同时段，界面保持单套）；
+# weekly=按天自定义（界面显示周一至周日分别勾选）。仅是界面与录入约定，
+# 数据层恒为 7 键 dict，执行链路恒按天取值。
+SCHEDULE_MODES: tuple[str, ...] = ("uniform", "weekly")
+
+SCHEDULE_MODE_LABELS: dict[str, str] = {
+    "uniform": "全局统一",
+    "weekly": "按天自定义",
+}
+
 DEFAULTS: dict[str, object] = {
     "submit_strategy": "direct_first",
     "relay_lead_seconds": 300,
@@ -91,7 +101,17 @@ DEFAULTS: dict[str, object] = {
     "daily_reserve_hours_limit": 5.0,
     "notify_webhook": "",
     "reconcile_interval_seconds": 300,
+    "schedule_mode": "uniform",
 }
+
+
+def normalize_schedule_mode(v: object) -> str:
+    """校验守护时段模式取值。"""
+    s = str(v).strip().lower() if v is not None else ""
+    if s in SCHEDULE_MODES:
+        return s
+    raise ValueError(f"schedule_mode 须为 {', '.join(SCHEDULE_MODES)}，得 {v!r}")
+
 
 
 def normalize_submit_strategy(v: object) -> str:
@@ -173,6 +193,8 @@ def parse_stored(key: str, raw: str | None, fallback: object) -> object:
             return float(str(raw).strip())
         if key == "notify_webhook":
             return str(raw).strip()
+        if key == "schedule_mode":
+            return normalize_schedule_mode(raw)
     except Exception:
         return fallback
     return raw
@@ -218,6 +240,8 @@ def validate_all(patch: dict[str, object]) -> dict[str, str]:
                 s = str(v).strip()
                 if s and not (s.startswith("http://") or s.startswith("https://")):
                     raise ValueError("须为 http(s) URL 或留空")
+            elif k == "schedule_mode":
+                normalize_schedule_mode(v)
         except Exception as e:
             errors[k] = str(e) if str(e) else "格式错误"
     # 交叉校验：单段上限不应超过日限额

@@ -243,10 +243,10 @@
     };
   };
 
-  /* ===== 账号表单：座位×时段矩阵编辑器（按星期几独立 / 全周相同） ===== */
-  /* opts = {seats, initial: {seat: {mon..sun: ["HH:MM-HH:MM"]}}, others: [{id, seatSlots}],
-   *         open, close, maxHours}
-   * 内部状态 perDay[wd][seat] = [{s,e}]；全周相同模式以周一为源、写回时铺满 7 天；
+  /* ===== 账号表单：座位×时段矩阵编辑器（模式由服务端全局设置驱动） ===== */
+  /* opts = {seats, mode: 'uniform'|'weekly', initial: {seat: {mon..sun: ["HH:MM-HH:MM"]}},
+   *         others: [{id, seatSlots}], open, close, maxHours}
+   * 内部状态 perDay[wd][seat] = [{s,e}]；全局统一模式以周一为源、写回时铺满 7 天；
    * sync() 序列化为规范形态 {seat: {mon..sun: [...]}}，全天空的座位不出现在 JSON 里。 */
   window.matrixEditor = function (opts) {
     const WDS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -282,9 +282,6 @@
         });
       });
     });
-    const sameAllWeek = WDS.every(wd =>
-      JSON.stringify(perDay[wd]) === JSON.stringify(perDay.mon));
-
     /* ★ perDay 必须挂进返回的 state 才有 Alpine 深层响应式；
      * 放闭包里会导致增删时段不触发重渲染。以下所有方法经 this.perDay 访问。 */
     return {
@@ -292,12 +289,13 @@
       wds: WDS,
       wdLabels: WD_LABELS,
       activeDay: 'mon',
-      uniformMode: sameAllWeek,
+      mode: opts.mode === 'weekly' ? 'weekly' : 'uniform',
       perDay,
       ticks,
       maxHours: opts.maxHours,
       others: opts.others || [],
 
+      get uniformMode() { return this.mode !== 'weekly'; },
       dayLabel(wd) { return WD_LABELS[wd]; },
       get rows() {
         const day = this.uniformMode ? 'mon' : this.activeDay;
@@ -336,19 +334,6 @@
       _replicate(seat) {
         const src = this.perDay.mon[seat];
         WDS.slice(1).forEach(wd => { this.perDay[wd][seat] = src.map(x => ({ ...x })); });
-      },
-      onUniformChange() {
-        if (!this.uniformMode) {
-          /* 统一 → 按天：把当前统一内容铺满 7 天 */
-          WDS.forEach(wd => this.seats.forEach(seat => {
-            this.perDay[wd][seat] = this.perDay.mon[seat].map(x => ({ ...x }));
-          }));
-        } else {
-          /* 按天 → 统一：以正在查看的天为准收敛到周一 */
-          this.seats.forEach(seat => {
-            this.perDay.mon[seat] = this.perDay[this.activeDay][seat].map(x => ({ ...x }));
-          });
-        }
       },
       copyDayToAll() {
         const src = this.activeDay;

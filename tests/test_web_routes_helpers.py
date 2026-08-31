@@ -166,3 +166,22 @@ def test_pick_read_account_ignores_deleted_account_recency():
 
 def test_pick_read_account_none_when_no_credentials():
     assert pick_read_account([_acc("a", phone="", pw="")]) is None
+
+
+# ---------- schedule_mode（守护时段模式） ----------
+
+def test_schedule_mode_default_is_uniform():
+    from seatbot.settings import DEFAULTS
+    assert DEFAULTS["schedule_mode"] == "uniform"
+
+
+def test_validate_all_accepts_both_modes():
+    from seatbot.settings import validate_all
+    assert validate_all({"schedule_mode": "uniform"}) == {}
+    assert validate_all({"schedule_mode": "weekly"}) == {}
+
+
+def test_validate_all_rejects_unknown_mode():
+    from seatbot.settings import validate_all
+    errors = validate_all({"schedule_mode": "daily"})
+    assert "schedule_mode" in errors
