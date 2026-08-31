@@ -92,7 +92,7 @@ DEFAULTS: dict[str, object] = {
     "notify_webhook": "",
     "reconcile_enabled": True,
     "reconcile_interval_minutes": 30,
- }
+}
 
 
 def normalize_submit_strategy(v: object) -> str:

@@ -92,6 +92,22 @@ class Scheduler:
             pass
         return eff
 
+    def _reschedule_tick_interval(self) -> None:
+        try:
+            job = self.scheduler.get_job("sync_jobs")
+            if job is None:
+                return
+            cur = None
+            try:
+                cur = int(job.trigger.interval.total_seconds())  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            if cur is not None and cur == int(self.tick_interval_seconds):
+                return
+            self.scheduler.reschedule_job("sync_jobs", trigger="interval", seconds=int(self.tick_interval_seconds))
+        except Exception:
+            pass
+
     def _client_for(self, acc: Account) -> ChaoxingClient:
         if acc.id not in self._clients:
             self._clients[acc.id] = ChaoxingClient()
@@ -824,7 +840,7 @@ class Scheduler:
         # ★ leave 失败时 **不要** 标 COMPLETE — 留给下次 tick 重试
         await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
 
-     # ---------- cron wiring ----------
+    # ---------- cron wiring ----------
     async def reconcile_tick(self) -> None:
         """每分钟：实况核对节拍器——判断是否到期，到期跑一轮 sweep。
 
