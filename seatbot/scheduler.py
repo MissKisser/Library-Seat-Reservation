@@ -57,8 +57,7 @@ class Scheduler:
         self.anchor_retry_enabled: bool = bool(getattr(cfg.runtime, "anchor_retry_enabled", True))
         self.anchor_scan_limit: int = int(getattr(cfg.runtime, "anchor_scan_limit", 12))
         self.submit_strategy: str = str(getattr(cfg.runtime, "submit_strategy", "direct_first"))
-        self.reconcile_enabled: bool = bool(getattr(cfg.runtime, "reconcile_enabled", True))
-        self.reconcile_interval_minutes: int = int(getattr(cfg.runtime, "reconcile_interval_minutes", 30))
+        self.reconcile_interval_seconds: int = int(getattr(cfg.runtime, "reconcile_interval_seconds", 90))
         self._reconcile_last_at: datetime | None = None
         self._reconcile_running: bool = False
         self._reconcile_flagged: set[int] = set()  # 已告警未恢复的任务 id
@@ -84,8 +83,7 @@ class Scheduler:
         self.anchor_retry_enabled = bool(eff.get("anchor_retry_enabled", self.anchor_retry_enabled))
         self.anchor_scan_limit = int(eff.get("anchor_scan_limit", self.anchor_scan_limit))
         self.submit_strategy = str(eff.get("submit_strategy", self.submit_strategy))
-        self.reconcile_enabled = bool(eff.get("reconcile_enabled", self.reconcile_enabled))
-        self.reconcile_interval_minutes = int(eff.get("reconcile_interval_minutes", self.reconcile_interval_minutes))
+        self.reconcile_interval_seconds = int(eff.get("reconcile_interval_seconds", self.reconcile_interval_seconds))
         try:
             self._reschedule_tick_interval()
         except Exception:
@@ -844,18 +842,17 @@ class Scheduler:
     async def reconcile_tick(self) -> None:
         """每分钟：实况核对节拍器——判断是否到期，到期跑一轮 sweep。
 
-        到期 = 距上次 ≥ 间隔；另有任务将在 30 分钟内开段时，距上次
-        ≥ 5min 即提前核对（签到窗口前强制核一次）。开关与间隔
-        经 load_runtime_settings 热生效，无需重注册 job。
+        到期 = 距上次 ≥ 间隔（秒级可配）；另有任务将在 30 分钟内开段
+        （签到窗口前）且距上次 ≥ 5min 时提前核对。间隔经
+        load_runtime_settings 热生效，无需重注册 job。
         """
-        if not self.reconcile_enabled or self._reconcile_running:
+        if self._reconcile_running:
             return
         now = now_cst()
         last = self._reconcile_last_at
-        if last is not None:
-            if now - last < timedelta(minutes=max(5, self.reconcile_interval_minutes)):
-                if now - last < timedelta(minutes=5) or not await self._pre_sign_due(now):
-                    return
+        if last is not None and now - last < timedelta(seconds=self.reconcile_interval_seconds):
+            if now - last < timedelta(minutes=5) or not await self._pre_sign_due(now):
+                return
         self._reconcile_running = True
         try:
             await self.reconcile_sweep()

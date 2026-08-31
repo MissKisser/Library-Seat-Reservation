@@ -90,17 +90,6 @@ def test_sweep_flags_then_restores_missing_reservation(tmp_path, monkeypatch):
         assert (await sched.reconcile_sweep(write=False))["checked"] == 1
         await store.close()
 
-def test_sweep_skips_when_disabled(tmp_path, monkeypatch):
-    async def main():
-        store = StateStore(str(tmp_path / "t.db"))
-        await store.init()
-        sched = Scheduler(_make_cfg(), store)
-        sched.reconcile_enabled = False
-        assert await sched.reconcile_tick() is None
-        assert sched._reconcile_last_at is None
-        await store.close()
-    asyncio.run(main())
-
 
 def test_sweep_heals_stale_session_and_retries(tmp_path, monkeypatch):
     async def main():
