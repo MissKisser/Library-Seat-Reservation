@@ -15,6 +15,7 @@ class SeatTarget:
     label: str = ""          # 可选昵称, e.g. '靠窗主座'
     enabled: bool = True
     created_at: int = 0
+    updated_at: int = 0
     # 该座位期望被守护的时段；None = 使用 DEFAULT_DESIRED_SLOTS；
     # list = 全周统一；dict[星期键, list] = 按天
     desired_slots: list[str] | dict[str, list[str]] | None = None
