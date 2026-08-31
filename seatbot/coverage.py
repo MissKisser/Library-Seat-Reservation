@@ -14,7 +14,7 @@ from typing import Iterable
 
 from seatbot.models import Account, SeatTarget
 from seatbot.utils.timeutil import expand_account_slots, parse_hhmm
-
+from seatbot.utils.weekly import slots_for_weekday, weekday_key
 
 CELL_MINUTES = 30
 
@@ -183,13 +183,15 @@ def compute_seat_coverage(
         cov = _make_blank_coverage(day, open_time, close_time)
         seat_num = seat.seat_num
 
-        # seat_slots 精确矩阵 — 只涂 seat_slots[seat_num] 指定的时段
+        # seat_slots 精确矩阵 — 只涂该天星期键指定的时段
+        wd = weekday_key(day)
         for acc in ss_accs:
             spec = acc.seat_slots.get(seat_num)
             if not spec:
                 continue
             try:
-                ranges = expand_account_slots(spec, max_hours=24.0)
+                day_val = slots_for_weekday(spec, wd)
+                ranges = expand_account_slots(day_val, max_hours=24.0)
             except Exception:
                 continue
             _paint_ranges(cov, ranges, acc.id)

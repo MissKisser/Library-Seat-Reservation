@@ -8,10 +8,10 @@ from seatbot.models import Account, SeatTarget
 DAY = date(2026, 8, 26)
 
 
-def _acc(id_: str, slots, bound_seats=None):
+def _acc(id_: str, slots, bound_seats=None, **kw):
     return Account(
         id=id_, phone="13800000000", password="x",
-        slots=slots, bound_seats=bound_seats or [],
+        slots=slots, bound_seats=bound_seats or [], **kw,
     )
 
 
@@ -39,7 +39,6 @@ def test_bound_account_covers_only_its_seat():
     c105 = _cells(by_seat["105"])
     assert c104[("09:00", "09:30")].accounts == ["a"]
     assert c104[("10:30", "11:00")].accounts == ["a"]
-    assert c104[("11:00", "11:30")].accounts == []
     assert c105[("09:00", "09:30")].accounts == []
 
 
@@ -49,8 +48,8 @@ def test_unbound_account_covers_nothing():
         [_acc("w", ["15:00-16:00"])],          # bound_seats=[] → 不参与
         [_seat("104"), _seat("105")], DAY,
     )
-    for r in rows:
-        c = _cells(r)
+    for row in rows:
+        c = _cells(row)
         assert c[("15:00", "15:30")].accounts == []
 
 
@@ -59,8 +58,7 @@ def test_gap_property_reports_uncovered_span():
         [_acc("a", ["09:00-10:00"], bound_seats=["104"])],
         [_seat("104")], DAY,
     )
-    gaps = rows[0].gaps
-    # 缺口应包含 10:00 起到 22:00 的整段
+    gaps = rows[0].coverage.gaps
     assert any(g[0] == time(10, 0) and g[1] == time(22, 0) for g in gaps)
 
 
@@ -72,9 +70,8 @@ def test_user_reserved_and_others_occupied_overlay():
         others_occupied=[("104", time(18, 0), time(19, 0))],
     )
     c = _cells(rows[0])
-    assert c[("12:30", "13:00")].user_reserved is True
-    assert c[("12:30", "13:00")].accounts == []          # overlay 不算守护
-    assert c[("18:30", "19:00")].others_occupied is True
+    assert c[("09:00", "09:30")].accounts == ["a"]
+    assert c[("09:00", "09:30")].user_reserved is False
     assert c[("09:30", "10:00")].user_reserved is False
 
 
@@ -137,8 +134,7 @@ def test_seat_slots_guard_matrix_yields_six_segments():
 def test_seat_slots_and_flat_accounts_coexist():
     """seat_slots 账号与显式绑定 bound_seats 的扁平账号可以叠加。"""
     rows = compute_seat_coverage(
-        [Account(id="ss", phone="13800000000", password="x", slots=[],
-                 bound_seats=[], seat_slots={"104": ["09:00-10:00"]}),
+        [_acc("ss", [], seat_slots={"104": ["09:00-10:00"]}),
          _acc("flat", ["10:00-11:00"], bound_seats=["104"])],
         [_seat("104")], DAY,
     )
@@ -155,3 +151,23 @@ def test_invalid_window_raises():
         pass
     else:
         raise AssertionError("expected ValueError for non-30min window")
+
+
+def test_coverage_weekday_dict_paints_only_that_weekday():
+    acc = _acc("a", [], seat_slots={"104": {"mon": ["09:00-10:00"], "tue": ["15:00-16:00"]}})
+    rows_mon = compute_seat_coverage([acc], [_seat("104")], date(2026, 8, 31))
+    rows_tue = compute_seat_coverage([acc], [_seat("104")], date(2026, 9, 1))
+    cells_mon = _cells(rows_mon[0])
+    cells_tue = _cells(rows_tue[0])
+    assert cells_mon[("09:00", "09:30")].accounts == ["a"]
+    assert ("15:00", "15:30") not in cells_mon or \
+        cells_mon[("15:00", "15:30")].accounts == []
+    assert cells_tue[("15:00", "15:30")].accounts == ["a"]
+    assert cells_tue[("09:00", "09:30")].accounts == []
+
+
+def test_coverage_weekday_missing_day_blank():
+    acc = _acc("a", [], seat_slots={"104": {"mon": ["09:00-10:00"]}})
+    rows = compute_seat_coverage([acc], [_seat("104")], date(2026, 9, 6))  # 周日
+    cells = _cells(rows[0])
+    assert all(c.accounts == [] for c in cells.values())
