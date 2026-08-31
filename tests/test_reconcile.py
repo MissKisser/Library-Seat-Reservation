@@ -1,9 +1,12 @@
 """实况核对判定函数单测（纯同步，不发任何网络请求）。"""
 from __future__ import annotations
 
+import asyncio
+from datetime import date
 from types import SimpleNamespace
 
 from seatbot.reconcile import classify_task, pick_read_account
+from seatbot.store import StateStore
 
 
 def test_fully_covered_is_consistent():
@@ -47,3 +50,18 @@ def test_pick_read_account_ignores_deleted_account_recency():
 
 def test_pick_read_account_none_when_no_credentials():
     assert pick_read_account([SimpleNamespace(id="x", phone="", password="")]) is None
+
+
+def test_reconcile_results_roundtrip_and_cap(tmp_path):
+    async def main():
+        s = StateStore(str(tmp_path / "t.db"))
+        await s.init()
+        for i in range(5):
+            await s.save_reconcile_result(
+                date(2026, 9, 1), "030", i % 2 == 0, f'{{"n":{i}}}')
+        rows = await s.list_reconcile_results(limit=3)
+        assert len(rows) == 3
+        assert rows[0]["detail"] == '{"n":4}'      # 新→旧
+        assert rows[0]["ok"] is True and rows[1]["ok"] is False
+        await s.close()
+    asyncio.run(main())
