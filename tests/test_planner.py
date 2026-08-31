@@ -86,3 +86,54 @@ def test_seat_slots_rejects_overlong_range():
     )
     with pytest.raises(PlannerError, match="拆"):
         planner.expand_for_day(date(2026, 8, 25))
+def test_seat_slots_weekday_dict_per_day():
+    # ★ 星期维度: 按那天的星期键取时段; 缺天 = 不产任务
+    acc = make_account(
+        [], seat_slots={"104": {"mon": ["09:00-11:00"], "tue": ["15:00-17:00"]}},
+        bound_seats=["104"],
+    )
+    planner = ReservationPlanner(
+        acc, bound_seats=acc.bound_seats, fallback_seats=["104"],
+        max_reserve_hours=2.0,
+    )
+    mon = planner.expand_for_day(date(2026, 8, 31))   # 周一
+    tue = planner.expand_for_day(date(2026, 9, 1))    # 周二
+    sun = planner.expand_for_day(date(2026, 9, 6))    # 周日（缺天）
+    assert [(t.start_time, t.end_time) for t in mon] == [(time(9, 0), time(11, 0))]
+    assert [(t.start_time, t.end_time) for t in tue] == [(time(15, 0), time(17, 0))]
+    assert sun == []
+
+
+def test_seat_slots_weekday_full_day_value():
+    acc = make_account(
+        [], seat_slots={"104": {"sun": "full"}}, bound_seats=["104"],
+    )
+    planner = ReservationPlanner(
+        acc, bound_seats=acc.bound_seats, fallback_seats=["104"],
+        max_reserve_hours=2.0,
+    )
+    tasks = planner.expand_for_day(date(2026, 9, 6))  # 周日
+    assert len(tasks) == 7
+    assert tasks[0].start_time == time(8, 0)
+
+
+def test_seat_slots_list_form_still_uniform_all_days():
+    acc = make_account([], seat_slots={"104": ["09:00-11:00"]}, bound_seats=["104"])
+    planner = ReservationPlanner(
+        acc, bound_seats=acc.bound_seats, fallback_seats=["104"],
+        max_reserve_hours=2.0,
+    )
+    assert len(planner.expand_for_day(date(2026, 8, 31))) == 1
+    assert len(planner.expand_for_day(date(2026, 9, 6))) == 1
+
+
+def test_seat_slots_weekday_overlong_rejected_per_day():
+    acc = make_account(
+        [], seat_slots={"104": {"wed": ["09:00-12:00"]}}, bound_seats=["104"],
+    )
+    planner = ReservationPlanner(
+        acc, bound_seats=acc.bound_seats, fallback_seats=["104"],
+        max_reserve_hours=2.0,
+    )
+    with pytest.raises(PlannerError, match="拆"):
+        planner.expand_for_day(date(2026, 9, 2))  # 周三

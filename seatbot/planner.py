@@ -13,7 +13,7 @@ from datetime import date, datetime
 
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.utils.timeutil import expand_account_slots, parse_range
-
+from seatbot.utils.weekly import slots_for_weekday, weekday_key
 
 class PlannerError(Exception):
     pass
@@ -65,27 +65,35 @@ class ReservationPlanner:
         """
         out: list[Task] = []
 
-        # 模式 1: per-seat slots 矩阵
-        # 如果 account.seat_slots 非空,只生成 seat_slots 里指定的 (seat, slot) 组合
+        # 模式 1: per-seat slots 矩阵（按那天的星期键取时段）
         if self.account.seat_slots:
-            for seat_num, slots in self.account.seat_slots.items():
-                if slots == "full":
+            wd = weekday_key(day)
+            for seat_num, spec in self.account.seat_slots.items():
+                day_spec = slots_for_weekday(spec, wd)
+                if day_spec == "full":
                     # per-seat "full" 展开成当日所有 2h 段
                     from seatbot.utils.timeutil import expand_full_day
                     chunks = expand_full_day(
- "08:00", "22:00", max_hours=self.max_reserve_hours
+                        "08:00", "22:00", max_hours=self.max_reserve_hours
                     )
-                elif isinstance(slots, list):
-                    _reject_overlong_ranges(slots, self.max_reserve_hours, self.account.id)
+                elif isinstance(day_spec, list):
+                    if not day_spec:
+                        # 该天未配置时段 → 该座位当天不产任务
+                        continue
+                    _reject_overlong_ranges(
+                        day_spec, self.max_reserve_hours, self.account.id)
                     try:
-                        chunks = expand_account_slots(slots, self.max_reserve_hours)
+                        chunks = expand_account_slots(
+                            day_spec, self.max_reserve_hours)
                     except Exception as e:
                         raise PlannerError(
-                            f"failed to expand seat_slots for {self.account.id} seat={seat_num}: {e}"
+                            f"failed to expand seat_slots for "
+                            f"{self.account.id} seat={seat_num} day={wd}: {e}"
                         ) from e
                 else:
                     raise PlannerError(
-                        f"seat_slots[{seat_num}] must be 'full' or list[str], got {type(slots).__name__}"
+                        f"seat_slots[{seat_num}][{wd}] must be 'full' or "
+                        f"list[str], got {type(day_spec).__name__}"
                     )
                 if not chunks:
                     raise PlannerError(
@@ -102,7 +110,6 @@ class ReservationPlanner:
                         status=TaskStatus.PENDING,
                     ))
             return out
-
         # 模式 2: 传统笛卡尔积 (slots × bound_seats); 未绑定账号不参与守护
         if not self.bound_seats:
             return []
