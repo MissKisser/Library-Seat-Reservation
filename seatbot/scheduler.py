@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -56,9 +57,13 @@ class Scheduler:
         self.anchor_retry_enabled: bool = bool(getattr(cfg.runtime, "anchor_retry_enabled", True))
         self.anchor_scan_limit: int = int(getattr(cfg.runtime, "anchor_scan_limit", 12))
         self.submit_strategy: str = str(getattr(cfg.runtime, "submit_strategy", "direct_first"))
+        self.reconcile_enabled: bool = bool(getattr(cfg.runtime, "reconcile_enabled", True))
+        self.reconcile_interval_minutes: int = int(getattr(cfg.runtime, "reconcile_interval_minutes", 30))
+        self._reconcile_last_at: datetime | None = None
+        self._reconcile_running: bool = False
+        self._reconcile_flagged: set[int] = set()  # 已告警未恢复的任务 id
 
     async def load_runtime_settings(self) -> dict[str, object]:
-        """读取页面已保存的设置并应用到调度器。"""
         try:
             rows = await self.store.get_settings_map()
         except Exception:
@@ -79,27 +84,13 @@ class Scheduler:
         self.anchor_retry_enabled = bool(eff.get("anchor_retry_enabled", self.anchor_retry_enabled))
         self.anchor_scan_limit = int(eff.get("anchor_scan_limit", self.anchor_scan_limit))
         self.submit_strategy = str(eff.get("submit_strategy", self.submit_strategy))
+        self.reconcile_enabled = bool(eff.get("reconcile_enabled", self.reconcile_enabled))
+        self.reconcile_interval_minutes = int(eff.get("reconcile_interval_minutes", self.reconcile_interval_minutes))
         try:
             self._reschedule_tick_interval()
         except Exception:
             pass
         return eff
-
-    def _reschedule_tick_interval(self) -> None:
-        try:
-            job = self.scheduler.get_job("sync_jobs")
-            if job is None:
-                return
-            cur = None
-            try:
-                cur = int(job.trigger.interval.total_seconds())  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            if cur is not None and cur == int(self.tick_interval_seconds):
-                return
-            self.scheduler.reschedule_job("sync_jobs", trigger="interval", seconds=int(self.tick_interval_seconds))
-        except Exception:
-            pass
 
     def _client_for(self, acc: Account) -> ChaoxingClient:
         if acc.id not in self._clients:
@@ -833,7 +824,152 @@ class Scheduler:
         # ★ leave 失败时 **不要** 标 COMPLETE — 留给下次 tick 重试
         await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
 
-    # ---------- cron wiring ----------
+     # ---------- cron wiring ----------
+    async def reconcile_tick(self) -> None:
+        """每分钟：实况核对节拍器——判断是否到期，到期跑一轮 sweep。
+
+        到期 = 距上次 ≥ 间隔；另有任务将在 30 分钟内开段时，距上次
+        ≥ 5min 即提前核对（签到窗口前强制核一次）。开关与间隔
+        经 load_runtime_settings 热生效，无需重注册 job。
+        """
+        if not self.reconcile_enabled or self._reconcile_running:
+            return
+        now = now_cst()
+        last = self._reconcile_last_at
+        if last is not None:
+            if now - last < timedelta(minutes=max(5, self.reconcile_interval_minutes)):
+                if now - last < timedelta(minutes=5) or not await self._pre_sign_due(now):
+                    return
+        self._reconcile_running = True
+        try:
+            await self.reconcile_sweep()
+        finally:
+            self._reconcile_running = False
+
+    async def _pre_sign_due(self, now: datetime) -> bool:
+        """今天是否有进行前任务将在 30 分钟内开始（签到窗口前核对）。"""
+        for t in await self.store.list_tasks(day=today_cst()):
+            if t.status not in (TaskStatus.ACTIVE, TaskStatus.SUBMITTING):
+                continue
+            lead = at_cst(t.day, t.start_time) - now
+            if timedelta(0) < lead <= timedelta(minutes=30):
+                return True
+        return False
+
+    async def reconcile_sweep(self, write: bool = True) -> dict:
+        """一轮实况核对：今天+明天非终态任务 vs 服务端真实占用。
+
+        按 (day, seat) 分组查询，一轮至多 2×目标座位数 个只读请求；
+        账号动态选取（会话最新者优先），全部分组查询失败且非刚登录时
+        重置会话重登一次再试（与 Web 占用查询的自愈策略一致）。
+        write=True 时失守沿写带标记的 last_error 并告警一次，恢复沿
+        只清自己写的标记；不改任务状态。两种模式都落 reconcile_results
+        快照。返回 {"checked", "mismatch", "fetch_ok"}。
+        """
+        from seatbot.reconcile import classify_task, pick_read_account
+
+        days = [today_cst(), today_cst() + timedelta(days=1)]
+        live = (TaskStatus.ACTIVE, TaskStatus.SIGNED,
+                TaskStatus.SUBMITTING, TaskStatus.LEAVING)
+        tasks = [t for d in days
+                 for t in await self.store.list_tasks(day=d)
+                 if t.status in live]
+        acc = pick_read_account(
+            await self.store.list_accounts(),
+            await self.store.cookie_recency(),
+        )
+        self._reconcile_last_at = now_cst()
+        if acc is None or not tasks:
+            return {"checked": 0, "mismatch": 0, "fetch_ok": True}
+
+        client = await self.client_ready(acc)
+        just_logged_in = False
+        if not client.cookies():
+            if not await self.login_and_persist(acc, client, "实况核对登录"):
+                await self._warn("实况核对: 无可用登录会话，本轮跳过", acc.id)
+                return {"checked": 0, "mismatch": 0, "fetch_ok": False}
+            just_logged_in = True
+
+        groups: dict[tuple[date, str], list[Task]] = {}
+        for t in tasks:
+            groups.setdefault((t.day, t.seat_num), []).append(t)
+
+        out = await self._sweep_once(acc, client, groups, write)
+        if not just_logged_in and not out["fetch_ok"] and out["checked"] == 0:
+            # 全部分组查询失败 = 会话失效特征: 重置会话重登一次再试
+            client.reset_session()
+            if await self.login_and_persist(acc, client, "实况核对重登"):
+                out = await self._sweep_once(acc, client, groups, write)
+        return out
+
+    async def _sweep_once(self, acc: Account, client,
+                          groups: dict[tuple[date, str], list[Task]],
+                          write: bool) -> dict:
+        """执行一轮全部分组查询；异常分组记失败快照，不写任何任务字段。"""
+        from seatbot.reconcile import classify_task
+
+        checked = mismatch = 0
+        fetch_ok = True
+        for (day, seat_num), group in groups.items():
+            try:
+                used = await client.get_used_times(
+                    self.cfg.library.room_id, seat_num, day.isoformat(),
+                )
+            except Exception as e:
+                fetch_ok = False
+                await self._warn(
+                    f"实况核对: {day} 座位={seat_num} 查询失败 "
+                    f"{type(e).__name__}: {e}", acc.id)
+                await self.store.save_reconcile_result(
+                    day, seat_num, False,
+                    json.dumps({"error": str(e)[:200]}, ensure_ascii=False))
+                continue
+            rows: list[dict] = []
+            for t in group:
+                ratio, bad = classify_task(
+                    t.start_time.strftime("%H:%M"),
+                    t.end_time.strftime("%H:%M"), used)
+                checked += 1
+                if bad:
+                    mismatch += 1
+                rows.append({
+                    "id": t.id, "account": t.account_id,
+                    "win": f"{t.start_time:%H:%M}-{t.end_time:%H:%M}",
+                    "status": t.status.value,
+                    "ratio": round(ratio, 2), "bad": bad,
+                })
+                if write:
+                    await self._apply_verdict(acc, t, ratio, bad)
+            await self.store.save_reconcile_result(
+                day, seat_num, all(not r["bad"] for r in rows),
+                json.dumps({"server": used, "tasks": rows},
+                           ensure_ascii=False))
+        return {"checked": checked, "mismatch": mismatch, "fetch_ok": fetch_ok}
+
+    async def _apply_verdict(self, acc: Account, t: Task,
+                             ratio: float, bad: bool) -> None:
+        """失守沿：标记 last_error + 告警一次；恢复沿：只清自己写的标记。"""
+        from seatbot.reconcile import RECONCILE_ERROR_PREFIX
+
+        if bad and t.id not in self._reconcile_flagged:
+            self._reconcile_flagged.add(t.id)
+            await self.store.update_task_status(
+                t.id, t.status,
+                last_error=f"{RECONCILE_ERROR_PREFIX}"
+                           f"服务端该时段未见完整占用（覆盖 {ratio:.0%}）")
+            await self._notify(
+                "实况核对：预约在服务端未生效",
+                f"任务={t.id} {t.account_id} {t.seat_num} {t.day} "
+                f"{t.start_time:%H:%M}-{t.end_time:%H:%M} 覆盖 {ratio:.0%}",
+                level="error")
+        elif not bad and t.id in self._reconcile_flagged:
+            self._reconcile_flagged.discard(t.id)
+            fresh = await self.store.get_task(t.id)
+            if fresh and (fresh.last_error or "").startswith(RECONCILE_ERROR_PREFIX):
+                await self.store.update_task_status(t.id, fresh.status, last_error="")
+            await self._info(
+                f"实况核对: 恢复一致 任务={t.id} {t.seat_num} {t.day}", acc.id)
+
     async def sync_jobs(self) -> None:
         accounts = await self.store.list_accounts()
         wanted_ids = {a.id for a in accounts}
@@ -879,6 +1015,14 @@ class Scheduler:
             CronTrigger(hour=14, minute=0, second=3, timezone="Asia/Shanghai"),
             id="afternoon_bootstrap", replace_existing=True,
             misfire_grace_time=3600, coalesce=True,
+        )
+
+        # 实况核对节拍器：每分钟醒来判断是否到期，间隔/开关热读配置
+        self.scheduler.add_job(
+            self.reconcile_tick,
+            CronTrigger(second=45, timezone="Asia/Shanghai"),
+            id="reconcile_tick", replace_existing=True,
+            misfire_grace_time=30, coalesce=True,
         )
         self.scheduler.start()
 
