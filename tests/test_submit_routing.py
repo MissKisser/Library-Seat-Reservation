@@ -1,10 +1,11 @@
-"""_run_submit 日期分流测试 (2026-08-26 跨天修复 B1 页面内改写通道)。
+"""_run_submit 日期分流测试。
 
 覆盖:
-  - 未来日期任务 → submit_via_page_rewrite, 绝不 submit_in_browser (会错约当天)
+  - 未来日期任务 → submit_direct 直连优先, 成功即不再走页面/浏览器通道
+  - 直连失败 → 回退 submit_via_page_rewrite; 仍"无格子"且无锚点 → FAILED
   - 今天任务 → submit_in_browser (浏览器通道)
-  - direct_submit_enabled=False + 未来任务 → 直接 FAILED, 两条通道都不走
-  - 改写通道成功但占用核验为空 → 保留 ACTIVE + ERROR 日志 (人工复核)
+  - direct_submit_enabled=False + 未来任务 → 直接 FAILED, 任何通道都不走
+  - 提交成功但占用核验为空 → 保留 ACTIVE + ERROR 日志 (人工复核)
 """
 from __future__ import annotations
 
@@ -20,12 +21,16 @@ from seatbot.utils.timeutil import today_cst
 
 
 class RoutingClient:
-    """替身: 记录走哪条通道, 可脚本化返回。"""
+    """替身: 记录走哪条通道, 可分通道脚本化返回。"""
 
-    def __init__(self, submit_result=None, used_times=None):
+    def __init__(self, direct_result=None, rewrite_result=None, used_times=None):
         self.calls: list[str] = []
-        self.submit_result = submit_result or {
+        default = {
             "success": True, "reserve_id": 999001, "msg": None, "raw": {},
+        }
+        self.direct_result = direct_result or {**default, "channel": "direct"}
+        self.rewrite_result = rewrite_result or {
+            **default, "channel": "page-rewrite",
         }
         self.used_times = used_times if used_times is not None else []
 
@@ -35,13 +40,17 @@ class RoutingClient:
     async def login(self, phone, password):
         pass
 
+    async def submit_direct(self, **kw):
+        self.calls.append("direct")
+        return dict(self.direct_result)
+
     async def submit_via_page_rewrite(self, **kw):
         self.calls.append("page_rewrite")
-        return dict(self.submit_result)
+        return dict(self.rewrite_result)
 
     async def submit_in_browser(self, **kw):
         self.calls.append("browser")
-        return dict(self.submit_result)
+        return dict(self.direct_result)
 
     async def get_used_times(self, room_id, seat_num, day):
         self.calls.append("getused")
@@ -82,9 +91,53 @@ async def test_future_day_routes_to_direct(tmp_path):
     sched._clients["xiongjt"] = client
     acc = await store.get_account("xiongjt")
     await sched._run_submit(acc, t)
-    assert client.calls == ["page_rewrite", "getused"]
+    assert client.calls == ["direct", "getused"]
     after = await store.get_task(t.id)
     assert after.status == TaskStatus.ACTIVE and after.reserve_id == 999001
+
+
+async def test_direct_failure_falls_back_to_page_rewrite(tmp_path):
+    store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
+    sched = Scheduler(make_cfg(), store)
+    client = RoutingClient(
+        direct_result={
+            "success": False, "reserve_id": None,
+            "msg": "submit_enc seed not found on seat page",
+            "raw": None, "channel": "direct",
+        },
+        used_times=[("09:00", "11:00")],
+    )
+    sched._clients["xiongjt"] = client
+    acc = await store.get_account("xiongjt")
+    await sched._run_submit(acc, t)
+    assert client.calls == ["direct", "page_rewrite", "getused"]
+    after = await store.get_task(t.id)
+    assert after.status == TaskStatus.ACTIVE and after.reserve_id == 999001
+
+
+async def test_all_channels_fail_without_anchor_marks_failed(tmp_path):
+    store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
+    sched = Scheduler(make_cfg(), store)
+    client = RoutingClient(
+        direct_result={
+            "success": False, "reserve_id": None, "msg": "submit rejected",
+            "raw": None, "channel": "direct",
+        },
+        rewrite_result={
+            "success": False, "reserve_id": None,
+            "msg": "today-page has no selectable cell; cannot trigger form",
+            "raw": None, "channel": "page-rewrite",
+        },
+        used_times=[],   # 锚点筛选: 无占用记录的候选一律不放行 → 无锚点
+    )
+    sched._clients["xiongjt"] = client
+    acc = await store.get_account("xiongjt")
+    await sched._run_submit(acc, t)
+    assert client.calls[:2] == ["direct", "page_rewrite"]
+    assert client.calls.count("page_rewrite") == 1   # 无锚点 → 不再三试
+    after = await store.get_task(t.id)
+    assert after.status == TaskStatus.FAILED
+    assert "no selectable cell" in (after.last_error or "")
 
 
 async def test_today_routes_to_browser(tmp_path):

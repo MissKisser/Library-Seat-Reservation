@@ -35,7 +35,7 @@ class NextRelay:
 
 
 class Scheduler:
-    RELAY_LEAD_SECONDS = -60  # leave 推迟到 end_time 之后 60s (用户要求"到点再签退", 加 60s 缓冲避免服务端拒绝)
+    RELAY_LEAD_SECONDS = 300  # 到点前 5 分钟签退; 失败保留下个 tick 重试 signback
 
     def __init__(
         self,
@@ -211,7 +211,7 @@ class Scheduler:
                 continue
             t_start = at_cst(t.day, t.start_time)
             t_end = at_cst(t.day, t.end_time)
-            # 1. 到 leave 时机 (RELAY_LEAD_SECONDS=-60 → end+60s) → 签退
+            # 1. 到签退时机 (end 前 RELAY_LEAD_SECONDS=5min) → 签退
             if now >= t_end - timedelta(seconds=self.RELAY_LEAD_SECONDS):
                 await self._maybe_relay(t, now)
                 continue
@@ -338,9 +338,10 @@ class Scheduler:
 
         try:
             if t.day > today_cst():
-                # ★ 跨天任务走页面内改写通道 (2026-08-26 B1):
-                # 座位页只渲染今天 (R1); abort+httpx 重放被 303 风控全拒
-                # (14:00 实测 0/6) — 改由真实页面发提交, 网络层仅改写字段。
+                # 跨天任务优先直连通道 (纯 httpx, 无页面交互): 账号存在
+                # 进行中的使用会话时, 任何座位页都不渲染时段格子, 页面
+                # 触发式通道必然失败。直连未成再走页面内改写通道兜底
+                # (其内含会话失效自愈与锚点座位重试)。
                 if not self.cfg.runtime.direct_submit_enabled:
                     await self._error(
                         f"配置已禁用直连提交；拒绝用今日页面预约未"
@@ -352,7 +353,7 @@ class Scheduler:
                         last_error="已禁用直连提交；未来日期任务已拒绝",
                     )
                     return
-                r = await client.submit_via_page_rewrite(
+                r = await client.submit_direct(
                     phone=acc.phone,
                     password=acc.password,
                     room_id=self.cfg.library.room_id,
@@ -361,23 +362,37 @@ class Scheduler:
                     start_time=t.start_time.strftime("%H:%M"),
                     end_time=t.end_time.strftime("%H:%M"),
                 )
-                if not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
-                    anchor = await self._pick_anchor_seat(client, t.seat_num)
-                    if anchor:
-                        await self._warn(
-                            f"座位 {t.seat_num} 页面无格子, 改用锚点座位 {anchor} 重试",
-                            acc.id,
-                        )
-                        r = await client.submit_via_page_rewrite(
-                            phone=acc.phone,
-                            password=acc.password,
-                            room_id=self.cfg.library.room_id,
-                            seat_num=t.seat_num,
-                            day=t.day.isoformat(),
-                            start_time=t.start_time.strftime("%H:%M"),
-                            end_time=t.end_time.strftime("%H:%M"),
-                            anchor_seat=anchor,
-                        )
+                if not r.get("success"):
+                    await self._warn(
+                        f"直连提交未成（{r.get('msg')}），改走页面改写通道",
+                        acc.id,
+                    )
+                    r = await client.submit_via_page_rewrite(
+                        phone=acc.phone,
+                        password=acc.password,
+                        room_id=self.cfg.library.room_id,
+                        seat_num=t.seat_num,
+                        day=t.day.isoformat(),
+                        start_time=t.start_time.strftime("%H:%M"),
+                        end_time=t.end_time.strftime("%H:%M"),
+                    )
+                    if not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
+                        anchor = await self._pick_anchor_seat(client, t.seat_num)
+                        if anchor:
+                            await self._warn(
+                                f"座位 {t.seat_num} 页面无格子, 改用锚点座位 {anchor} 重试",
+                                acc.id,
+                            )
+                            r = await client.submit_via_page_rewrite(
+                                phone=acc.phone,
+                                password=acc.password,
+                                room_id=self.cfg.library.room_id,
+                                seat_num=t.seat_num,
+                                day=t.day.isoformat(),
+                                start_time=t.start_time.strftime("%H:%M"),
+                                end_time=t.end_time.strftime("%H:%M"),
+                                anchor_seat=anchor,
+                            )
             else:
                 r = await client.submit_in_browser(
                     phone=acc.phone,
@@ -526,8 +541,9 @@ class Scheduler:
     async def _run_leave(self, acc: Account, t: Task) -> None:
         """签退 (不 submit/sign)。失败保留在途状态, 由下次 tick 重试。
 
-        ★ 2026-08-25: /leave 实为"暂离"(要求剩余 ≥20min, 接力时点必不满足);
-        真正的签退端点是 /signback (退座)。优先 signback, 失败回退 leave。
+        真正的签退端点是 /signback (退座, 时段进行中任意时刻可用), 优先调用;
+        /leave 是"暂离", 硬性要求剩余 ≥20min, 仅在剩余充足时作为回退通道 —
+        临近结束回退暂离必然失败, 且其"剩余不足"消息会命中幂等收尾, 掐断重试。
         """
         if not t.reserve_id:
             await self._warn(f"跳过签退: 无预约号 座位={t.seat_num} {t.chunk_key()}", acc.id)
@@ -564,6 +580,18 @@ class Scheduler:
                 await self.store.update_task_status(
                     t.id, TaskStatus.COMPLETE, last_error="服务端预约已不存在, 幂等收尾")
                 self._clear_fail_streak(t.id)
+                await self.store.add_notification(
+                    "签退完成（预约已收尾）",
+                    f"账号={acc.id} 座位={t.seat_num} 预约号#{t.reserve_id}（{sb_msg}）",
+                    level="info",
+                )
+                return
+            # 暂离要求剩余 ≥20min; 剩余不足时不回退, 保持 ACTIVE 下个 tick 重试 signback
+            t_end = at_cst(t.day, t.end_time)
+            if t_end - now_cst() < timedelta(minutes=20):
+                await self._warn(f"签退未成功（{sb_msg}），临近结束不走暂离，下个周期重试", acc.id)
+                await self.store.update_task_status(t.id, TaskStatus.ACTIVE)
+                await self._track_signleave_failure(t, "签退", sb_msg)
                 return
             await self._warn(f"签退未成功（{sb_msg}），回退暂离通道", acc.id)
             try:
@@ -581,6 +609,11 @@ class Scheduler:
         if sr.get("success"):
             await self.store.update_task_status(t.id, TaskStatus.COMPLETE, last_error="")
             self._clear_fail_streak(t.id)
+            await self.store.add_notification(
+                "签退成功",
+                f"账号={acc.id} 座位={t.seat_num} 预约号#{t.reserve_id}",
+                level="info",
+            )
             return
         # 幂等收尾: 预约已在服务端终结, 继续重试无意义 → COMPLETE 停止循环。
         # ("剩余时长小于暂离时长" = 离结束不足 leaveDuration, 预约将自然到期)
@@ -591,6 +624,11 @@ class Scheduler:
             await self._info(f"签退幂等收尾（{msg}）→ 已完成", acc.id)
             await self.store.update_task_status(t.id, TaskStatus.COMPLETE, last_error="")
             self._clear_fail_streak(t.id)
+            await self.store.add_notification(
+                "签退完成（预约已收尾）",
+                f"账号={acc.id} 座位={t.seat_num} 预约号#{t.reserve_id}（{msg}）",
+                level="info",
+            )
             return
         await self._error(f"签退失败: {msg}（保持进行中，下个周期重试）", acc.id)
         await self._track_signleave_failure(t, "签退", msg)
@@ -850,12 +888,28 @@ class Scheduler:
             f"下午批量预约完成: 成功={submitted} 失败={failed} 日期={tomorrow}",
             "scheduler",
         )
-        if failed:
+        # ★ 批量结果进看板: 全部约上 → info「全部成功」; 有未约 → error 并列出失败项
+        unresolved = [
+            t for t in final_tasks
+            if not (t.status == TaskStatus.ACTIVE and t.reserve_id)
+        ]
+        if submitted > 0 and not unresolved:
+            await self.store.add_notification(
+                "明日预约全部成功",
+                f"{tomorrow} 共 {submitted} 段已全部约上",
+                level="info",
+            )
+        elif unresolved:
+            items = [
+                f"{t.seat_num} {t.start_time}-{t.end_time} {t.account_id}: "
+                f"{(t.last_error or '未预约').replace(chr(10), ' ')[:40]}"
+                for t in unresolved[:6]
+            ]
             await self._notify(
-                f"明日批量预约存在缺口（{tomorrow}）",
-                f"成功 {submitted} / 失败 {failed}。"
-                f"失败任务可在任务看板用「改绑重试」换账号，"
-                f"或在绑定页调整矩阵后等下个周期。",
+                "明日预约存在失败项",
+                f"{tomorrow} 成功 {submitted} / 未约 {len(unresolved)}："
+                f"{'；'.join(items)}{'…' if len(unresolved) > 6 else ''}。"
+                f"可在任务看板用「改绑重试」换账号，或调整矩阵后等下个周期。",
                 level="error",
             )
 

@@ -1,7 +1,9 @@
 """Async HTTP client for the Chaoxing (超星) library seat system."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 import httpx
@@ -474,6 +476,96 @@ class ChaoxingClient:
                     continue
         return False
 
+    async def submit_direct(
+        self,
+        phone: str,
+        password: str,
+        room_id: int,
+        seat_num: str,
+        day: str,            # 'YYYY-MM-DD' — 目标日期 (可为未来日期)
+        start_time: str,     # 'HH:MM'
+        end_time: str,       # 'HH:MM'
+    ) -> dict[str, Any]:
+        """直连提交通道: 不做任何页面交互, 纯 httpx 构造并提交预约表单。
+
+        账号存在进行中的使用会话时, 座位页不渲染时段格子 (呈现"使用中"
+        面板), 页面触发式通道无从点格。本通道仅从座位页 HTML 读取服务端
+        渲染的 enc 种子 (#submit_enc), 按页面提交算法对全部字段重算 enc
+        后直接 POST /submit, 不依赖格子 DOM; 种子获取与提交共用同一
+        httpx 会话 (种子内嵌 uid, 须与提交方同会话)。
+
+        Returns: {success, reserve_id, msg, raw, channel}。
+        """
+        result: dict[str, Any] = {
+            "success": False, "reserve_id": None, "msg": None,
+            "raw": None, "channel": "direct",
+        }
+
+        if not self.cookies():
+            await self.login(phone, password)
+
+        page_url = (
+            f"{self.OFFICE_BASE}/front/apps/seat/code"
+            f"?id={room_id}&seatNum={seat_num}"
+        )
+        try:
+            page_html = (await self._client.get(page_url)).text
+        except Exception as e:
+            result["msg"] = f"seat page fetch failed: {e}"
+            return result
+
+        seed = None
+        for pattern in (
+            r"""id=["']submit_enc["'][^>]*value=["']([^"']+)["']""",
+            r"""value=["']([^"']+)["'][^>]*id=["']submit_enc["']""",
+        ):
+            m = re.search(pattern, page_html)
+            if m:
+                seed = m.group(1)
+                break
+        if not seed:
+            result["msg"] = "submit_enc seed not found on seat page"
+            return result
+
+        # 字段集 = 页面 doSubmit 的 paramObj 九件套; enc = md5(按 key 排序的
+        # "[k=v]" 拼接 + "[种子]"), 服务端用种子校验全部字段。
+        fields = {
+            "roomId": str(room_id),
+            "day": day,
+            "startTime": start_time,
+            "endTime": end_time,
+            "seatNum": seat_num,
+            "captcha": "",
+            "type": "1",
+            "verifyData": "1",
+            "wyToken": "",
+        }
+        concat = "".join(f"[{k}={fields[k]}]" for k in sorted(fields))
+        fields["enc"] = hashlib.md5(
+            (concat + f"[{seed}]").encode("utf-8")
+        ).hexdigest()
+
+        try:
+            payload = await self._post_form(
+                f"{self.OFFICE_BASE}/data/apps/seat/submit",
+                fields,
+                referer=page_url,
+            )
+        except Exception as e:
+            result["msg"] = f"submit request failed: {e}"
+            return result
+
+        result["raw"] = payload
+        if payload.get("success"):
+            rid = ((payload.get("data") or {}).get("seatReserve") or {}).get("id")
+            result["success"] = bool(rid)
+            result["reserve_id"] = rid
+            if not rid:
+                result["msg"] = "submit ok but no reserve_id"
+        else:
+            result["msg"] = payload.get("msg") or "submit rejected"
+        return result
+
     async def submit_via_page_rewrite(
         self,
         phone: str,
@@ -501,6 +593,7 @@ class ChaoxingClient:
 
         result: dict[str, Any] = {
             "success": False, "reserve_id": None, "msg": None, "raw": None,
+            "channel": "page-rewrite",
         }
 
         if not self.cookies():
