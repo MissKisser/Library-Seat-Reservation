@@ -69,10 +69,15 @@ class _StubSched(Scheduler):
         self._fail_streak = {}
         self._supervise_seen = {}
         self.relay_lead_seconds = 300
+        self.logins = 0
         self._client = client
 
     async def client_ready(self, acc):
         return self._client
+
+    async def login_and_persist(self, acc, client, label="登录"):
+        self.logins += 1
+        return True
 
     async def _act_with_relogin(self, client, acc, fn, reserve_id, label):
         return await fn(reserve_id)
@@ -170,6 +175,33 @@ def test_client_supervised_reservations_filters_status_5(monkeypatch):
     monkeypatch.setattr(client, "reserve_list", fake_reserve_list)
     out = asyncio.run(client.supervised_reservations())
     assert [r["id"] for r in out] == [2]
+
+
+def test_session_expiry_relogins_and_retries():
+    from seatbot.client import ChaoxingError
+
+    store = _FakeStore()
+    client = _FakeClient([])
+    client.resets = 0
+    polls = {"n": 0}
+
+    async def supervised_reservations():
+        polls["n"] += 1
+        if polls["n"] == 1:
+            raise ChaoxingError("reservelist rejected: 您当前未登录，请重新登录")
+        return [_rec(1001)]
+
+    client.supervised_reservations = supervised_reservations
+
+    def reset_session():
+        client.resets += 1
+
+    client.reset_session = reset_session
+    sched = _StubSched(client, store)
+    asyncio.run(sched._check_supervision(_acc()))
+    assert client.resets == 1
+    assert sched.logins == 1
+    assert client.sign_calls == [1001]
 
 
 def test_tick_account_polls_supervision_only_while_holding_seat(monkeypatch):
