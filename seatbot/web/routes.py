@@ -516,8 +516,12 @@ async def _build_dashboard_data(request: Request, *, fresh: bool = False) -> dic
 
 @router.get("/api/dashboard-data")
 async def api_dashboard_data(request: Request):
-    """Dashboard 局部刷新用的 JSON 视图 (前端按数据版本变化时才拉取)。"""
-    return JSONResponse(await _build_dashboard_data(request))
+    """Dashboard 局部刷新用的 JSON 视图 (前端按数据版本变化时才拉取)。
+
+    ?fresh=1 绕过 90s 占用缓存强制拉取（手动刷新按钮），服务端 30s 节流。
+    """
+    fresh = request.query_params.get("fresh") == "1"
+    return JSONResponse(await _build_dashboard_data(request, fresh=fresh))
 
 
 @router.post("/api/notifications/dismiss-all")

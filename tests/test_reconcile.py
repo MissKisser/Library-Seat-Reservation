@@ -199,6 +199,30 @@ def test_reconcile_results_roundtrip_and_cap(tmp_path):
 
 
 
+def test_dashboard_endpoint_forwards_fresh_flag(monkeypatch):
+    """端点必须把 ?fresh=1 透传给 _build_dashboard_data（按钮链路的关键一环）。"""
+    import asyncio
+
+    import seatbot.web.routes as R
+
+    captured: dict = {}
+
+    async def fake_build(request, *, fresh=False):
+        captured["fresh"] = fresh
+        return {}
+
+    monkeypatch.setattr(R, "_build_dashboard_data", fake_build)
+
+    class FakeReq:
+        def __init__(self, params):
+            self.query_params = params
+
+    asyncio.run(R.api_dashboard_data(FakeReq({"fresh": "1"})))
+    assert captured["fresh"] is True
+    asyncio.run(R.api_dashboard_data(FakeReq({})))
+    assert captured["fresh"] is False
+
+
 def test_dashboard_fresh_bypass_and_throttle(monkeypatch):
     import asyncio
     import time as _t
