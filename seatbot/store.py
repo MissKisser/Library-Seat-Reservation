@@ -10,7 +10,7 @@ from typing import Any
 import aiosqlite
 
 from seatbot.models import Account, SeatTarget, Task, TaskStatus
-
+from seatbot.utils.weekly import normalize_weekly
 
 # v2 schema:
 #  - accounts:        + bound_seats_json
@@ -227,6 +227,41 @@ class StateStore:
             await self.db.execute(
                 "ALTER TABLE target_seats ADD COLUMN desired_slots_json TEXT"
             )
+        # 6. 星期维度形态归一: seat_slots / desired_slots 的 list 值展开为 7 键 dict（幂等）
+        cur = await self.db.execute("SELECT id, seat_slots_json FROM accounts")
+        for rid, raw in await cur.fetchall():
+            try:
+                data = json.loads(raw or "{}") or {}
+            except Exception:
+                continue
+            if not isinstance(data, dict) or not data:
+                continue
+            new = {}
+            dirty = False
+            for seat, val in data.items():
+                norm = normalize_weekly(val, allow_full=True)
+                new[seat] = norm
+                if norm != val:
+                    dirty = True
+            if dirty:
+                await self.db.execute(
+                    "UPDATE accounts SET seat_slots_json=? WHERE id=?",
+                    (json.dumps(new), rid),
+                )
+        cur = await self.db.execute(
+            "SELECT seat_num, desired_slots_json FROM target_seats "
+            "WHERE desired_slots_json IS NOT NULL")
+        for sid, raw in await cur.fetchall():
+            try:
+                val = json.loads(raw)
+            except Exception:
+                continue
+            norm = normalize_weekly(val, allow_full=False)
+            if norm is not None and norm != val:
+                await self.db.execute(
+                    "UPDATE target_seats SET desired_slots_json=? WHERE seat_num=?",
+                    (json.dumps(norm), sid),
+                )
         await self.db.commit()
 
     async def close(self) -> None:
@@ -362,7 +397,10 @@ class StateStore:
                    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
                 (
                     acc.id, acc.phone, acc.password, slots_json,
-                    json.dumps(acc.seat_slots or {}),
+                    json.dumps({
+                        seat: (normalize_weekly(val, allow_full=True) or {})
+                        for seat, val in (acc.seat_slots or {}).items()
+                    } if acc.seat_slots else {}),
                     bound_json,
                     now, now,
                 ),
@@ -374,7 +412,10 @@ class StateStore:
                    WHERE id=?""",
                 (
                     acc.phone, acc.password, slots_json,
-                    json.dumps(acc.seat_slots or {}),
+                    json.dumps({
+                        seat: (normalize_weekly(val, allow_full=True) or {})
+                        for seat, val in (acc.seat_slots or {}).items()
+                    } if acc.seat_slots else {}),
                     bound_json, now, acc.id,
                 ),
             )
@@ -538,35 +579,38 @@ class StateStore:
                ON CONFLICT(seat_num) DO UPDATE SET
                    label=excluded.label, enabled=1, updated_at=excluded.updated_at""",
             (seat_num.zfill(3), label, now, now,
-             json.dumps(desired_slots) if desired_slots is not None else None),
+             (lambda n: json.dumps(n) if n is not None else None)(
+                 normalize_weekly(desired_slots, allow_full=False))),
         )
-        await self.db.commit()
 
     async def seed_target_seat(
         self, seat_num: str, *, label: str = "",
         desired_slots: list[str] | None = None,
     ) -> None:
         """按配置文件初始化目标座位：仅插入不存在的，已删除的不再恢复。"""
+        now = int(_time.time() * 1000)
         await self.db.execute(
             """INSERT INTO target_seats
                    (seat_num, label, enabled, created_at, updated_at, desired_slots_json)
                VALUES (?, ?, 1, ?, ?, ?)
                ON CONFLICT(seat_num) DO NOTHING""",
-            (seat_num.zfill(3), label,
-             int(_time.time() * 1000), int(_time.time() * 1000),
-             json.dumps(desired_slots) if desired_slots is not None else None),
+            (seat_num.zfill(3), label, now, now,
+             (lambda n: json.dumps(n) if n is not None else None)(
+                 normalize_weekly(desired_slots, allow_full=False))),
         )
         await self.db.commit()
 
     async def set_target_seat_desired(
-        self, seat_num: str, slots: list[str]
+        self, seat_num: str, slots: list[str] | dict[str, list[str]] | None,
     ) -> bool:
-        """更新座位期望时段；座位不存在时返回 False。"""
+        """更新座位期望时段（list=全周统一 / dict=按天 / None=恢复默认）；不存在返回 False。"""
         self._bump()
+        norm = normalize_weekly(slots, allow_full=False)
         cur = await self.db.execute(
             "UPDATE target_seats SET desired_slots_json=?, updated_at=? "
             "WHERE seat_num=? AND enabled=1",
-            (json.dumps(slots), int(_time.time() * 1000), seat_num.zfill(3)),
+            (json.dumps(norm) if norm is not None else None,
+             int(_time.time() * 1000), seat_num.zfill(3)),
         )
         await self.db.commit()
         return cur.rowcount > 0

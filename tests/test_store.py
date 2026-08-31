@@ -191,3 +191,66 @@ def test_dismiss_all_notifications(tmp_path):
     deleted, rows = asyncio.run(run())
     assert deleted == 2
     assert rows == []
+
+
+def test_weekly_form_migration_normalizes_legacy_lists(tmp_path):
+    """存量 list 形态启动后归一为 7 键 dict；幂等。"""
+    import json
+
+    async def run():
+        db = tmp_path / "weekly_mig.db"
+        s = StateStore(str(db))
+        await s.init()
+        try:
+            # 直接写入旧形态模拟存量数据
+            await s.db.execute(
+                "INSERT INTO accounts (id, phone, password, slots_json, seat_slots_json,"
+                " bound_seats_json, status, created_at, updated_at)"
+                " VALUES ('old', '138', 'p', 'full', ?, '[]', 'active', 0, 0)",
+                (json.dumps({"030": ["09:00-11:00"]}),),
+            )
+            await s.db.execute(
+                "INSERT INTO target_seats (seat_num, label, enabled, created_at,"
+                " updated_at, desired_slots_json) VALUES ('030', '', 1, 0, 0, ?)",
+                (json.dumps(["10:00-12:00"]),),
+            )
+            await s.db.commit()
+            await s.close()
+
+            s2 = StateStore(str(db))
+            await s2.init()   # 迁移发生点
+            try:
+                acc = await s2.get_account("old")
+                assert acc.seat_slots["030"]["mon"] == ["09:00-11:00"]
+                assert acc.seat_slots["030"]["sun"] == ["09:00-11:00"]
+                seats = await s2.list_target_seats()
+                assert seats[0].desired_slots["tue"] == ["10:00-12:00"]
+            finally:
+                await s2.close()
+        finally:
+            if s._db:
+                await s.close()
+
+    asyncio.run(run())
+
+
+def test_set_target_seat_desired_accepts_dict_and_none(tmp_path):
+    import json
+
+    async def run():
+        s = StateStore(str(tmp_path / "weekly_desired.db"))
+        await s.init()
+        try:
+            await s.add_target_seat("030")
+            await s.set_target_seat_desired(
+                "030", {"mon": ["09:00-11:00"], "sun": []})
+            seats = await s.list_target_seats()
+            assert seats[0].desired_slots["mon"] == ["09:00-11:00"]
+            assert seats[0].desired_slots["tue"] == []
+            await s.set_target_seat_desired("030", None)
+            seats = await s.list_target_seats()
+            assert seats[0].desired_slots is None
+        finally:
+            await s.close()
+
+    asyncio.run(run())
