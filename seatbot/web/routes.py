@@ -437,10 +437,16 @@ async def dashboard(request: Request):
     def _empty_shell(day: date) -> dict:
         return {"view_day": day.isoformat(), "rows": [], "gap_count": 0, "occ_err": None}
 
-    # 启动动画的时段徽章: 取全部座 位期望时段的并集 (紧凑显示 08–09 样式)
+    # 启动动画的时段徽章: 取 view_day 那天的期望时段（今天或明天的星期键）
     boot_slots: list[str] = []
+    view_wd_today = weekday_key(today)
+    view_wd_tomorrow = weekday_key(tomorrow)
     for s in target_seats:
-        for r in desired_slots_of(s):
+        for r in desired_slots_of(s, view_wd_today):
+            label = r.split("-")[0][:2] + "–" + r.split("-")[1][:2]
+            if label not in boot_slots:
+                boot_slots.append(label)
+        for r in desired_slots_of(s, view_wd_tomorrow):
             label = r.split("-")[0][:2] + "–" + r.split("-")[1][:2]
             if label not in boot_slots:
                 boot_slots.append(label)
@@ -1045,8 +1051,6 @@ async def bindings_auto(request: Request):
     if not seats or not accounts:
         return RedirectResponse(
             f"/bindings?error={quote('没有目标座位或守护账号')}", status_code=303)
-    desired = {s.seat_num: desired_slots_of(s) for s in seats}
-    before = _count_bindings({a.id: (a.seat_slots or {}) for a in accounts})
     matrices, unfillable = auto_assign(
         accounts, desired,
         max_seg_hours=lib.max_reserve_hours,
