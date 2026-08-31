@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% from "_macros/shell.html" import shell %}
+{% block content %}
+{% call shell(active='audit', title='实况核对', subtitle='服务端真实占用 vs 本地任务') %}
+<div class="space-y-4">
+  <div class="card p-4 flex items-center justify-between gap-3 flex-wrap">
+    <div class="text-xs text-ink-muted">
+      最近 {{ rows|length }} 轮快照（新→旧）。「立即核对」会向平台发起
+      <span class="text-ink font-medium">至多 目标座位数 × 2 个只读查询</span>。
+      {% if not sched_ready %}调度器未运行，无法立即核对。{% endif %}
+    </div>
+    <form method="post" action="/audit/check">
+      <button class="btn btn-primary btn-sm" type="submit" {% if not sched_ready %}disabled{% endif %}>立即核对</button>
+    </form>
+  </div>
+  {% if checked %}<div class="chip chip-success">核对完成</div>{% endif %}
+  {% if error %}<div class="chip chip-danger">核对未执行{% if error == 'nosched' %}：调度器未运行{% else %}：请查看调度日志{% endif %}</div>{% endif %}
+  {% if not rows %}
+  <div class="card p-8 text-center text-sm text-ink-muted">尚无核对记录；启用实况核对或点击「立即核对」生成第一轮快照。</div>
+  {% endif %}
+  {% for r in rows %}
+  <div class="card p-4 space-y-2">
+    <div class="flex items-center gap-2 text-xs flex-wrap">
+      <span class="chip {{ 'chip-success' if r.ok else 'chip-danger' }}">{{ '一致' if r.ok else '存在失守' }}</span>
+      <span class="font-medium">{{ r.day }} · 座位 {{ r.seat_num }}</span>
+      <span class="text-ink-muted">{{ r.ts_hm }}</span>
+      <span class="text-ink-muted">服务端占用：{{ r.server_text or '无' }}</span>
+    </div>
+    {% if r.error %}<div class="text-xs text-ink-muted">查询失败：{{ r.error }}</div>{% endif %}
+    {% if r.tasks %}
+    <table class="w-full text-xs">
+      <thead><tr class="text-ink-muted text-left">
+        <th class="py-1 pr-3 font-normal">任务</th><th class="py-1 pr-3 font-normal">账号</th>
+        <th class="py-1 pr-3 font-normal">时段</th><th class="py-1 pr-3 font-normal">本地状态</th>
+        <th class="py-1 pr-3 font-normal">覆盖</th><th class="py-1 font-normal">结论</th>
+      </tr></thead>
+      <tbody>
+        {% for t in r.tasks %}
+        <tr class="border-t border-base-200">
+          <td class="py-1 pr-3">#{{ t.id }}</td>
+          <td class="py-1 pr-3">{{ t.account }}</td>
+          <td class="py-1 pr-3">{{ t.win }}</td>
+          <td class="py-1 pr-3">{{ t.status }}</td>
+          <td class="py-1 pr-3">{{ (t.ratio * 100) | round(0) | int }}%</td>
+          <td class="py-1"><span class="chip {{ 'chip-success' if not t.bad else 'chip-danger' }}">{{ '一致' if not t.bad else '失守' }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endcall %}
+{% endblock %}

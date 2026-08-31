@@ -57,11 +57,11 @@
         {{ nav_link('/accounts', '守护账号', active, 'accounts', accounts_count, icon=_icons['users']) }}
         {{ nav_link('/user-reserved', '用户已约', active, 'user-reserved', icon=_icons['user-check']) }}
         <div class="sidebar-group-label"><span class="group-label-text">运维</span></div>
-        {{ nav_link('/tasks', '任务', active, 'tasks', icon=_icons['tasks']) }}
-        {{ nav_link('/reservations', '预约记录', active, 'reservations', icon=_icons['calendar']) }}
-        {{ nav_link('/logs', '日志', active, 'logs', icon=_icons['logs']) }}
-        {{ nav_link('/settings', '系统设置', active, 'settings', icon=_icons['settings']) }}
-      </nav>
+ +        {{ nav_link('/tasks', '任务', active, 'tasks', icon=_icons['tasks']) }}
+        {{ nav_link('/audit', '实况核对', active, 'audit', icon=_icons['logs']) }}
+         {{ nav_link('/reservations', '预约记录', active, 'reservations', icon=_icons['calendar']) }}
+         {{ nav_link('/logs', '日志', active, 'logs', icon=_icons['logs']) }}
+         {{ nav_link('/settings', '系统设置', active, 'settings', icon=_icons['settings']) }}
     </aside>
     <main class="app-content">
       {{ caller() }}
