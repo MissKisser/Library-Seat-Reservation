@@ -129,12 +129,10 @@
         <div class="card-header">
           <span class="card-title">覆盖情况（按座位）<span class="text-xs text-ink-muted ml-2 font-normal" x-text="'今天 ' + today.view_day"></span></span>
           <div class="flex items-center gap-2">
-            <span class="chip chip-muted tabular" x-text="formatCountdown()"></span>
-            <button class="btn btn-secondary btn-sm" type="button" @click="refresh()" :disabled="busy"
-                    x-text="busy ? '刷新中…' : '立即刷新'"></button>
+            <button class="btn btn-secondary btn-sm" type="button" @click="refresh(true)" :disabled="busy"
+                    x-text="busy ? '刷新中…' : '立即刷新'"
+                    title="跳过占用缓存直接查询平台实况（30 秒内仅强制一次，每次至多 4 个只读查询）"></button>
           </div>
-        </div>
-        <div class="card-body">
           <div class="gantt-wrap">
             {{ coverage_strip('today') }}
             <div class="gantt-legend">

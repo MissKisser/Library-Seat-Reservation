@@ -67,6 +67,9 @@ class FakeStore:
         self.notifications = []
         return n
 
+    async def cookie_recency(self):
+        return {}
+
 
 class _StubCfg:
     class library:
