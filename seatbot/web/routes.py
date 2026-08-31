@@ -90,7 +90,6 @@ def _matrix_set_day(
 
     兼容旧形态（直接 list 值）与新形态（{wd: list} 嵌套）。
     """
-    import copy
     result: dict = {}
     for k, v in matrix.items():
         if isinstance(v, dict):
@@ -98,7 +97,8 @@ def _matrix_set_day(
         else:
             result[k] = list(v) if v else []
     if seat in result and isinstance(result[seat], dict):
-        cur = result[seat]
+        cur = {wk: result[seat].get(wk, []) for wk in WEEKDAY_KEYS}
+        result[seat] = cur
     else:
         cur = {wk: [] for wk in WEEKDAY_KEYS}
         if seat in result:
@@ -110,28 +110,27 @@ def _matrix_set_day(
                     cur[wk] = list(old)
         result[seat] = cur
     result[seat][wd] = list(slots)
+    if not any(result[seat][wk] for wk in WEEKDAY_KEYS):
+        del result[seat]
     return result
 
 
-def _fmt_weekly(
-    raw: dict[str, dict[str, list[str] | str]] | None,
-) -> dict[str, str]:
-    """将 seat_slots dict 格式化为人类可读字符串（用于提示消息）。"""
-    if not raw:
-        return {}
-    out: dict[str, str] = {}
-    for seat, spec in raw.items():
-        if not spec:
-            out[seat] = ""
-            continue
-        if isinstance(spec, dict):
-            parts = [
-                f"{WEEKDAY_LABELS.get(wk, wk)}:{','.join(v or ['空'])}"
-                for wk, v in spec.items() if v
-            ]
-            out[seat] = "; ".join(parts) if parts else ""
-        else:
-            out[seat] = ", ".join(spec or [])
+def _fmt_weekly(val) -> list[str]:
+    """把某座位的星期形态时段值压成展示摘要列表（"周一 09:00-11:00"）。
+
+    兼容旧 list 形态（显示为"每天 …"）与 "full"；空值返回 []。
+    """
+    if val is None:
+        return []
+    if isinstance(val, str):
+        return [f"每天 {val}"]
+    if isinstance(val, list):
+        return [f"每天 {'、'.join(val)}"] if val else []
+    out: list[str] = []
+    for wd in WEEKDAY_KEYS:
+        day_val = slots_for_weekday(val, wd)
+        if isinstance(day_val, list) and day_val:
+            out.append(f"{WEEKDAY_LABELS[wd]} {'、'.join(day_val)}")
     return out
 
 
@@ -799,7 +798,7 @@ async def targets_replace(
             await store.upsert_account(acc)
             report["accounts"].append({
                 "id": acc.id,
-                "slots": (acc.seat_slots or {}).get(new_sn) or [],
+                "slots": _fmt_weekly((acc.seat_slots or {}).get(new_sn)),
             })
 
     # 2) 清理旧座位在途任务（今天及未来）
@@ -864,7 +863,15 @@ async def targets_replace(
         rebook_days.append(tomorrow)
     for day in rebook_days:
         for acc in await store.list_accounts():
-            ranges = (acc.seat_slots or {}).get(new_sn) or []
+            lib_ = request.app.state.cfg.library
+            day_val = slots_for_weekday(
+                (acc.seat_slots or {}).get(new_sn), weekday_key(day))
+            if day_val == "full":
+                ranges = [f"{lib_.open_time}-{lib_.close_time}"]
+            elif isinstance(day_val, list):
+                ranges = day_val
+            else:
+                ranges = []
             if not ranges:
                 continue
             acc_tasks = await store.list_tasks(account_id=acc.id, day=day)
@@ -1037,20 +1044,23 @@ async def bindings_list(request: Request):
 
 @router.post("/bindings/auto")
 async def bindings_auto(request: Request):
-    """自动绑定：为所有未覆盖的 (座位, 期望时段) 挑账号，保留既有绑定。"""
+    """自动绑定：为所有未覆盖的 (星期几, 座位, 期望时段) 挑账号，保留既有绑定。"""
     from urllib.parse import quote
 
-    # desired_slots_of() 现在返回 list|dict|None；auto_assign 需要 {seat: {wd: [...]}} 形态
-    desired = {}
-    for s in seats:
-        seat_slots = {}
-        for wd in WEEKDAY_KEYS:
-            seat_slots[wd] = desired_slots_of(s, wd)
-        desired[s.seat_num] = seat_slots
-    before = _count_bindings({a.id: (a.seat_slots or {}) for a in accounts})
+    store = request.app.state.store
+    lib = request.app.state.cfg.library
+    seats = await store.list_target_seats()
+    accounts = await store.list_accounts()
     if not seats or not accounts:
         return RedirectResponse(
             f"/bindings?error={quote('没有目标座位或守护账号')}", status_code=303)
+    # desired_slots_of() 按星期几返回；auto_assign 需要 {seat: {wd: [...]}} 形态
+    desired = {}
+    for s in seats:
+        desired[s.seat_num] = {
+            wd: desired_slots_of(s, wd) for wd in WEEKDAY_KEYS
+        }
+    before = _count_bindings({a.id: (a.seat_slots or {}) for a in accounts})
     matrices, unfillable = auto_assign(
         accounts, desired,
         max_seg_hours=lib.max_reserve_hours,
@@ -1699,6 +1709,7 @@ async def task_reassign(
             f"{quote(f'{account_id} 不满足接手条件（余量不足/时段冲突/该座位已绑）')}",
             status_code=303)
 
+    old_acc = await store.get_account(t.account_id)
     rng = f"{t.start_time.strftime('%H:%M')}-{t.end_time.strftime('%H:%M')}"
     wd = weekday_key(t.day)
     new_matrix = _matrix_set_day(dict(new_acc.seat_slots or {}), t.seat_num, wd, [rng])

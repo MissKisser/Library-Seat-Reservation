@@ -582,6 +582,7 @@ class StateStore:
              (lambda n: json.dumps(n) if n is not None else None)(
                  normalize_weekly(desired_slots, allow_full=False))),
         )
+        await self.db.commit()
 
     async def seed_target_seat(
         self, seat_num: str, *, label: str = "",
