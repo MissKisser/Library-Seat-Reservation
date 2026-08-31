@@ -62,7 +62,7 @@
         <div class="form-field">
           <label for="reconcile_interval_seconds">核对间隔（秒）<span class="req">*</span></label>
           <input id="reconcile_interval_seconds" name="reconcile_interval_seconds" type="number" min="60" max="86400" step="30" value="{{ eff.reconcile_interval_seconds }}" class="input h-7 w-[84px] text-xs">
-          <div class="hint">60–86400 秒；实况核对常开，自动核验今天+明天的预约是否在服务端真实存在，失守仅告警并标记差异，不改动预约本身（每轮 ≤ 4 个只读请求）</div>
+          <div class="hint">60–86400 秒，默认 300（5 分钟）；仅在开放时段（08:00–22:00）内核对，失守仅告警并标记差异，不改动预约本身（每轮 ≤ 4 个只读请求）</div>
         </div>
       </div>
     </div>

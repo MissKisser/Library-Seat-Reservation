@@ -62,7 +62,7 @@ def test_storage_roundtrip_typed_values():
 def test_reconcile_settings_defaults_and_roundtrip():
     cfg = _cfg()
     eff = _settings.effective({}, cfg)
-    assert eff["reconcile_interval_seconds"] == 90
+    assert eff["reconcile_interval_seconds"] == 300
     # DB 覆盖往返
     raw = _settings.coerce_for_storage("reconcile_interval_seconds", 600)
     assert _settings.parse_stored("reconcile_interval_seconds", raw, 90) == 600

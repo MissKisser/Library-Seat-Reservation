@@ -144,6 +144,33 @@ def test_sweep_heals_stale_session_and_retries(tmp_path, monkeypatch):
     asyncio.run(main())
 
 
+def test_tick_only_runs_during_open_hours(tmp_path, monkeypatch):
+    import seatbot.scheduler as S
+    from seatbot.utils.timeutil import at_cst
+
+    async def main():
+        store = StateStore(str(tmp_path / "t.db"))
+        await store.init()
+        sched = Scheduler(_make_cfg(), store)
+        calls = {"n": 0}
+
+        async def fake_sweep():
+            calls["n"] += 1
+
+        monkeypatch.setattr(sched, "reconcile_sweep", fake_sweep)
+        # 闭馆时段（23:30）静默
+        monkeypatch.setattr(S, "now_cst", lambda: at_cst(today_cst(), time(23, 30)))
+        await sched.reconcile_tick()
+        assert calls["n"] == 0
+        assert sched._reconcile_last_at is None
+        # 开放时段（09:00）首次到期即核对
+        monkeypatch.setattr(S, "now_cst", lambda: at_cst(today_cst(), time(9, 0)))
+        await sched.reconcile_tick()
+        assert calls["n"] == 1
+        await store.close()
+    asyncio.run(main())
+
+
 def test_adjacent_server_windows_merge():
     ratio, bad = classify_task("14:00", "16:00", [("13:00", "15:00"), ("15:00", "17:00")])
     assert ratio == 1.0 and not bad
