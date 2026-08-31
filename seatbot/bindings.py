@@ -172,9 +172,8 @@ def candidate_accounts(
             continue
         if used_hours(a.seat_slots, weekday) + dur > daily_limit_hours + 1e-9:
             continue
-        if any(s < end and e > start
-               for ws, s, e, _ in matrix_windows(a.seat_slots, weekday)
-               if ws == seat):
+        if any(start < e and s < end
+               for _seat, s, e, _h in matrix_windows(a.seat_slots, weekday)):
             continue
         out.append({
             "id": a.id,
@@ -282,8 +281,12 @@ def auto_assign(
         f"{WEEKDAY_LABELS[wd]}{seat} {want}：无可用账号（余量不足或时段冲突）"
         for wd, seat, want, _, _, _ in jobs if (wd, seat, want) not in filled
     ]
-    # 规范 7 键：已分配的有值，未分配的空数组
+    # 规范 7 键：已分配的有值；回溯试过但最终未分配的座位条目（全空）直接移除
     for aid in matrices:
         for seat in list(matrices[aid].keys()):
-            matrices[aid][seat] = {w: matrices[aid][seat].get(w, []) for w in WEEKDAY_KEYS}
+            day_map = {w: matrices[aid][seat].get(w, []) for w in WEEKDAY_KEYS}
+            if any(day_map[w] for w in WEEKDAY_KEYS):
+                matrices[aid][seat] = day_map
+            else:
+                del matrices[aid][seat]
     return matrices, bad + unfillable
