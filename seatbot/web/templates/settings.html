@@ -53,11 +53,29 @@
             <input name="anchor_scan_limit" type="number" min="4" max="20" step="1" value="{{ eff.anchor_scan_limit }}" class="input h-7 w-[84px] text-xs">
           </span>
         </label>
+       </div>
+     </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">实况核对</span></div>
+      <div class="card-body grid grid-cols-1 md:grid-cols-2 gap-4">
+        <label class="flex items-center justify-between gap-3 py-2 cursor-pointer">
+          <span>
+            <span class="block text-sm font-medium">启用实况核对</span>
+            <span class="block text-xs text-ink-muted mt-1 leading-snug">低频只读核验今天+明天的预约是否在服务端真实存在，失守仅告警并标黄差异，不改动预约本身</span>
+          </span>
+          <input type="checkbox" name="reconcile_enabled" value="1" {% if eff.reconcile_enabled %}checked{% endif %} class="mt-0.5">
+        </label>
+        <div class="form-field">
+          <label for="reconcile_interval_minutes">核对间隔（分钟）<span class="req">*</span></label>
+          <input id="reconcile_interval_minutes" name="reconcile_interval_minutes" type="number" min="5" max="360" step="5" value="{{ eff.reconcile_interval_minutes }}" class="input h-7 w-[84px] text-xs">
+          <div class="hint">5–360 分钟；越短越早发现失守，但占用查询请求增多（每轮 ≤ 4 个只读请求）</div>
+        </div>
       </div>
     </div>
 
-    {# 2. 调度与风控 #}
-    <div class="card">
+     {# 2. 调度与风控 #}
+     <div class="card">
       <div class="card-header"><span class="card-title">调度与风控</span></div>
       <div class="card-body grid grid-cols-1 md:grid-cols-3 gap-4">
         <div class="form-field">
