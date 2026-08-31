@@ -177,6 +177,25 @@ def test_client_supervised_reservations_filters_status_5(monkeypatch):
     assert [r["id"] for r in out] == [2]
 
 
+def test_client_supervise_posts_id_and_object_id(monkeypatch):
+    from seatbot.client import ChaoxingClient
+
+    client = ChaoxingClient()
+    posted: dict = {}
+
+    async def fake_post_form(url, data, *, referer=None):
+        posted.update(data)
+        posted["_url"] = url
+        return {"success": True, "msg": "监督成功"}
+
+    monkeypatch.setattr(client, "_post_form", fake_post_form)
+    out = asyncio.run(client.supervise(189743872))
+    assert out["success"] is True
+    assert posted["id"] == 189743872
+    assert posted["objectId"] == ""
+    assert posted["_url"].endswith("/data/apps/seat/supervise")
+
+
 def test_session_expiry_relogins_and_retries():
     from seatbot.client import ChaoxingError
 
