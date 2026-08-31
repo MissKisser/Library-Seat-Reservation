@@ -946,6 +946,33 @@ async def targets_replace(
 # Bindings — 座位绑定矩阵管理（余量 / 自动绑定 / 手动绑定）
 # =========================================================================
 
+async def _schedule_mode(request: Request) -> str:
+    """读取守护时段模式（uniform=全局统一 / weekly=按天自定义）。"""
+    try:
+        eff, _rows = await _effective_and_raw(request)
+        return _settings.normalize_schedule_mode(
+            eff.get("schedule_mode") or "uniform")
+    except Exception:
+        return "uniform"
+
+
+@router.post("/bindings/mode")
+async def bindings_mode(request: Request, mode: str = Form(...)):
+    """切换守护时段模式；仅改变界面与录入方式，数据层恒为 7 键 dict。"""
+    from urllib.parse import quote
+
+    try:
+        m = _settings.normalize_schedule_mode(mode)
+    except ValueError as exc:
+        return RedirectResponse(
+            f"/bindings?error={quote(str(exc))}", status_code=303)
+    store = request.app.state.store
+    await store.set_settings({"schedule_mode": m})
+    label = _settings.SCHEDULE_MODE_LABELS[m]
+    return RedirectResponse(
+        f"/bindings?msg={quote(f'已切换为「{label}」模式')}", status_code=303)
+
+
 def _count_bindings(matrices: dict[str, dict[str, dict[str, list[str]]]]) -> int:
     """统计一批矩阵里的绑定总数（支持新星期嵌套形态）。"""
     total = 0
@@ -1026,9 +1053,18 @@ async def bindings_list(request: Request):
         s.seat_num: not s.desired_slots for s in seats
     }
     margins = account_margins(accounts, daily_limit_hours=limit)
+    mode = await _schedule_mode(request)
+    diverged = {
+        s.seat_num: any(
+            desired_slots_of(s, wd) != desired_slots_of(s, "mon")
+            for wd in WEEKDAY_KEYS)
+        for s in seats
+    }
     ctx = await _ctx(request, active_page="bindings")
     ctx.update(
         weekday_cols=weekday_cols,
+        mode=mode, mode_labels=_settings.SCHEDULE_MODE_LABELS,
+        diverged=diverged,
         seats=seats, desired=desired, seat_bindings=seat_bindings,
         uncovered=uncovered, margins=margins,
         desired_blocks=desired_blocks, using_default=using_default,
@@ -1095,9 +1131,12 @@ async def bindings_manual(
     seat_num: str = Form(...),
     start: str = Form(...),
     end: str = Form(...),
-    weekday: str = Form("mon"),
+    weekday: str = Form(""),
 ):
-    """手动绑定/切换：设置某账号在某座位某天的时段。"""
+    """手动绑定/切换：设置某账号在某座位的时段。
+
+    weekday 给定 = 仅写该天（按天自定义模式）；为空 = 全周统一（铺满 7 天）。
+    """
     from urllib.parse import quote
 
     store = request.app.state.store
@@ -1105,8 +1144,8 @@ async def bindings_manual(
     acc = await store.get_account(account_id)
     if not acc:
         raise HTTPException(404, f"account {account_id} not found")
-    wd = weekday.strip().lower()
-    if wd not in WEEKDAY_KEYS:
+    wd = (weekday or "").strip().lower()
+    if wd and wd not in WEEKDAY_KEYS:
         return RedirectResponse(
             f"/bindings?error={quote(f'非法星期: {weekday!r}')}", status_code=303)
     sn = seat_num.strip().zfill(3)
@@ -1120,7 +1159,10 @@ async def bindings_manual(
     except (ValueError, TypeError) as exc:
         return RedirectResponse(
             f"/bindings?error={quote(f'时间格式错误: {exc}')}", status_code=303)
-    matrix = _matrix_set_day(dict(acc.seat_slots or {}), sn, wd, [rng])
+    matrix = _matrix_set_day(dict(acc.seat_slots or {}), sn, wd or "mon", [rng])
+    if not wd:
+        # 全局统一：铺满 7 天
+        matrix[sn] = {w: [rng] for w in WEEKDAY_KEYS}
     try:
         validate_matrix(
             matrix, max_seg_hours=lib.max_reserve_hours,
@@ -1132,8 +1174,9 @@ async def bindings_manual(
     acc.seat_slots = matrix
     acc.bound_seats = sorted(matrix.keys())
     await store.upsert_account(acc)
+    day_part = f" {WEEKDAY_LABELS[wd]}" if wd else "（全周统一）"
     return RedirectResponse(
-        f"/bindings?msg={quote(f'已绑定 {account_id} → {sn} {WEEKDAY_LABELS[wd]} {rng}')}",
+        f"/bindings?msg={quote(f'已绑定 {account_id} → {sn}{day_part} {rng}')}",
         status_code=303)
 
 
@@ -1177,6 +1220,8 @@ async def bindings_delete(
 async def bindings_desired(
     request: Request,
     seat_num: str = Form(...),
+    mode: str = Form(""),
+    blocks: list[str] = Form(default=[]),
     blocks_mon: list[str] = Form(default=[]),
     blocks_tue: list[str] = Form(default=[]),
     blocks_wed: list[str] = Form(default=[]),
@@ -1185,16 +1230,19 @@ async def bindings_desired(
     blocks_sat: list[str] = Form(default=[]),
     blocks_sun: list[str] = Form(default=[]),
 ):
-    """编辑期望守护时段（按星期几，30 分钟块复选，连续块自动合并）。
+    """编辑期望守护时段（30 分钟块复选，连续块自动合并；按模式区分录入形态）。
 
-    seat_num 为 "__ALL__" 时把同组块应用到所有已启用座位；
-    7 天全不勾 = 清空自定义恢复默认三段；部分天勾选时未勾的天 = 该天不检查缺口。
+    mode=uniform（全局统一）：单组 blocks 块铺满 7 天；
+    mode=weekly（按天自定义）：blocks_mon..blocks_sun 分别对应各天，
+    未勾的天 = 该天不检查缺口。7 天全不勾 = 清空自定义恢复默认三段。
+    seat_num 为 "__ALL__" 时把同组块应用到所有已启用座位。
     """
     from urllib.parse import quote
 
     store = request.app.state.store
     lib = request.app.state.cfg.library
     seats = await store.list_target_seats()
+    desired_mode = "weekly" if (mode or "").strip().lower() == "weekly" else "uniform"
     sn_raw = seat_num.strip()
     if sn_raw == "__ALL__":
         targets = [s.seat_num for s in seats]
@@ -1244,16 +1292,24 @@ async def bindings_desired(
         return ranges, None
 
     per_day: dict[str, list[str]] = {}
-    raw_blocks = {
-        "mon": blocks_mon, "tue": blocks_tue, "wed": blocks_wed,
-        "thu": blocks_thu, "fri": blocks_fri, "sat": blocks_sat, "sun": blocks_sun,
-    }
-    for wd in WEEKDAY_KEYS:
-        ranges, err = _merge(raw_blocks[wd])
+    if desired_mode == "uniform":
+        # 全局统一：单组勾选块铺满 7 天
+        ranges, err = _merge(blocks)
         if err:
             return RedirectResponse(
                 f"/bindings?error={quote(err)}", status_code=303)
-        per_day[wd] = ranges
+        per_day = {wd: list(ranges) for wd in WEEKDAY_KEYS}
+    else:
+        raw_blocks = {
+            "mon": blocks_mon, "tue": blocks_tue, "wed": blocks_wed,
+            "thu": blocks_thu, "fri": blocks_fri, "sat": blocks_sat, "sun": blocks_sun,
+        }
+        for wd in WEEKDAY_KEYS:
+            ranges, err = _merge(raw_blocks[wd])
+            if err:
+                return RedirectResponse(
+                    f"/bindings?error={quote(err)}", status_code=303)
+            per_day[wd] = ranges
 
     for sn in targets:
         if all(not per_day[wd] for wd in WEEKDAY_KEYS):
@@ -1262,7 +1318,12 @@ async def bindings_desired(
             await store.set_target_seat_desired(sn, per_day)
     scope = "所有座位" if sn_raw == "__ALL__" else "、".join(targets)
     filled = sum(1 for wd in WEEKDAY_KEYS if per_day[wd])
-    msg = f"已更新 {scope} 的期望时段（{filled}/7 天有守护块）"
+    if desired_mode == "uniform":
+        msg = (f"已更新 {scope} 的期望时段（{'、'.join(per_day['mon'])}，"
+               f"全周统一）" if per_day["mon"]
+               else f"{scope} 已清空自定义期望时段（恢复默认三段）")
+    else:
+        msg = f"已更新 {scope} 的期望时段（{filled}/7 天有守护块）"
     return RedirectResponse(f"/bindings?msg={quote(msg)}", status_code=303)
 
 
@@ -1360,6 +1421,7 @@ async def _matrix_ctx(request: Request, store, account: Account | None) -> dict:
     target_seats = await store.list_target_seats()
     ctx = await _ctx(request, account=account, error=None, active_page="accounts")
     ctx["matrix_seats"] = [s.seat_num for s in target_seats]
+    ctx["matrix_mode"] = await _schedule_mode(request)
     ctx["matrix_initial"] = (account.seat_slots if account and account.seat_slots else {})
     ctx["matrix_others"] = [
         {"id": a.id, "seatSlots": a.seat_slots or {}}
@@ -2022,6 +2084,7 @@ async def settings_save(request: Request):
     patch_raw["daily_reserve_hours_limit"] = (form.get("daily_reserve_hours_limit") or "").strip()
     patch_raw["notify_webhook"] = (form.get("notify_webhook") or "").strip()
     patch_raw["reconcile_interval_seconds"] = (form.get("reconcile_interval_seconds") or "").strip()
+    patch_raw["schedule_mode"] = (form.get("schedule_mode") or "").strip()
 
     # 滤掉空字符串的“未填”键（notify_webhook 允许空以清空）
     patch: dict[str, object] = {}

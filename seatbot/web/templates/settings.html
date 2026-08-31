@@ -57,6 +57,23 @@
      </div>
 
     <div class="card">
+      <div class="card-header">
+        <span class="card-title">守护时段模式</span>
+        <span class="chip chip-muted">绑定矩阵</span>
+      </div>
+      <div class="card-body">
+        <div class="form-field">
+          <label for="schedule_mode">时段配置方式<span class="req">*</span></label>
+          <select id="schedule_mode" name="schedule_mode" class="select">
+            <option value="uniform" {% if eff.schedule_mode == 'uniform' %}selected{% endif %}>全局统一 —— 每天相同时段（界面保持单套）</option>
+            <option value="weekly" {% if eff.schedule_mode == 'weekly' %}selected{% endif %}>按天自定义 —— 周一至周日分别勾选</option>
+          </select>
+          <div class="hint">仅改变「绑定矩阵」页与账号表单的录入方式，数据与预约执行不受影响；切换后到绑定矩阵页查看效果。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-header"><span class="card-title">实况核对</span></div>
       <div class="card-body">
         <div class="form-field">
