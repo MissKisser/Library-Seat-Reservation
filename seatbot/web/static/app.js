@@ -506,7 +506,6 @@
         this.countdown = Math.max(0, this.countdown - 1);
         if (this.countdown === 0) this.probe();
       },
-      formatCountdown() { return this.busy ? '刷新中…' : '下次检查 ' + this.countdown + 's'; },
 
       /* 版本探针: 纯本地轻请求; 版本没变就不拉覆盖数据、不打超星 */
       async probe() {
@@ -584,11 +583,11 @@
         finally { this.dismissAllBusy = false; }
       },
 
-      async refresh() {
+      async refresh(fresh = false) {
         if (this.card) { this.countdown = 10; return; }
         this.busy = true;
         try {
-          const r = await fetch('/api/dashboard-data', { cache: 'no-store' });
+          const r = await fetch('/api/dashboard-data' + (fresh ? '?fresh=1' : ''), { cache: 'no-store' });
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const j = await r.json();
           this.today = j.today || this.today;

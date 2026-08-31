@@ -25,6 +25,9 @@ from seatbot.coverage import compute_seat_coverage
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.reconcile import pick_read_account
 from seatbot.scheduler import NextRelay
+from seatbot.utils.timeutil import (
+    at_cst, now_cst, parse_hhmm, parse_range, today_cst,
+)
 
 
 router = APIRouter()
@@ -165,7 +168,11 @@ async def _fetch_others_occupied(
     except Exception:
         accounts = []
 
-    acc = pick_read_account(accounts, await store.cookie_recency())
+    try:
+        recency = await store.cookie_recency()
+    except AttributeError:
+        recency = {}
+    acc = pick_read_account(accounts, recency)
     if acc is None:
         return [], "无可用账号"
 
@@ -275,7 +282,7 @@ async def _collect_own_intervals(store, day: date) -> list[tuple[str, _time, _ti
 async def _collect_day_bundle(
     request: Request, store, cfg,
     accounts: list[Account], target_seats: list[SeatTarget],
-    view_day: date,
+    view_day: date, *, fresh: bool = False,
 ) -> dict:
     """构建单日覆盖图所需的全部数据。
 
@@ -287,7 +294,7 @@ async def _collect_day_bundle(
     """
     user_reserved = await _collect_user_reserved(store, view_day)
     others_occupied, occ_err = await _fetch_others_occupied_cached(
-        request, store, view_day, [s.seat_num for s in target_seats],
+        request, store, view_day, [s.seat_num for s in target_seats], fresh=fresh,
     )
     own_intervals = await _collect_own_intervals(store, view_day)
     # user_reserved 的占用也是“自己人”，同样不应标为他人
@@ -460,7 +467,7 @@ async def dashboard(request: Request):
 # =========================================================================
 # Dashboard data — 局部刷新用的 JSON endpoint
 # =========================================================================
-async def _build_dashboard_data(request: Request) -> dict:
+async def _build_dashboard_data(request: Request, *, fresh: bool = False) -> dict:
     """Collect everything dashboard.html renders, as JSON-ready dict.
 
     与 dashboard() 共用 _collect_day_bundle 链路，避免双份逻辑漂移。
@@ -474,10 +481,10 @@ async def _build_dashboard_data(request: Request) -> dict:
     today = today_cst()
     tomorrow = today + timedelta(days=1)
     bundle_today = await _collect_day_bundle(
-        request, store, cfg, accounts, target_seats, today,
+        request, store, cfg, accounts, target_seats, today, fresh=fresh,
     )
     bundle_tomorrow = await _collect_day_bundle(
-        request, store, cfg, accounts, target_seats, tomorrow,
+        request, store, cfg, accounts, target_seats, tomorrow, fresh=fresh,
     )
 
     recent_logs = await store.list_logs(limit=8)
@@ -533,20 +540,30 @@ async def api_notification_dismiss(request: Request, nid: int):
 # 他人占用查询缓存: (day, seats) -> (monotonic_ts, ok, payload)
 # 命中即不触超星; 成功结果 TTL 90s, 失败结果 TTL 30s (尽快重试)
 _OCC_CACHE: dict = {}
+_LAST_FRESH_AT: float = 0.0  # 上次绕缓强制拉取的时刻 (monotonic)，30s 节流
 
 
 async def _fetch_others_occupied_cached(
     request: Request, store, day: date, seat_nums: list[str],
+    *, fresh: bool = False,
 ) -> tuple[list[tuple[str, _time, time]], str | None]:
-    """带 TTL 的他人占用查询包装, 把超星请求频率与页面刷新解耦。"""
-    import time as _time_mod
+    """带 TTL 的他人占用查询包装, 把超星请求频率与页面刷新解耦。
+
+    fresh=True 时绕过 TTL 强制拉取（手动刷新按钮），30s 内仅放行一次，
+    其余回落缓存，防止连点打爆超星。
+    """
+    global _LAST_FRESH_AT
+    import time as _time_mod  # noqa: WPS433
     key = (day.isoformat(), tuple(seat_nums))
     now = _time_mod.monotonic()
-    hit = _OCC_CACHE.get(key)
-    if hit is not None:
-        ts, ok, payload = hit
-        if (now - ts) < (90 if ok else 30):
-            return payload
+    if fresh and (now - _LAST_FRESH_AT) >= 30:
+        _LAST_FRESH_AT = now
+    else:
+        hit = _OCC_CACHE.get(key)
+        if hit is not None:
+            ts, ok, payload = hit
+            if (now - ts) < (90 if ok else 30):
+                return payload
     payload = await _fetch_others_occupied(request, store, day, seat_nums)
     _OCC_CACHE[key] = (now, payload[1] is None, payload)
     return payload
@@ -2003,7 +2020,7 @@ async def settings_save(request: Request):
     patch_raw["reconcile_enabled"] = "true" if form.get("reconcile_enabled") else "false"
     patch_raw["reconcile_interval_minutes"] = (form.get("reconcile_interval_minutes") or "").strip()
 
-    # 滤掉空字符串的"未填"键（notify_webhook 允许空以清空）
+    # 滤掉空字符串的“未填”键（notify_webhook 允许空以清空）
     patch: dict[str, object] = {}
     for k, v in patch_raw.items():
         if k == "notify_webhook":

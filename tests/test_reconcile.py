@@ -196,3 +196,43 @@ def test_reconcile_results_roundtrip_and_cap(tmp_path):
         assert rows[0]["ok"] is True and rows[1]["ok"] is False
         await s.close()
     asyncio.run(main())
+
+
+
+def test_dashboard_fresh_bypass_and_throttle(monkeypatch):
+    import asyncio
+    import time as _t
+    from datetime import date as _date
+    from datetime import time as _dtime
+
+    import seatbot.web.routes as R
+
+    key = ("2026-09-01", ("030",))
+    R._OCC_CACHE.clear()
+    R._OCC_CACHE[key] = (
+        _t.monotonic(), True,
+        ([("030", _dtime(14, 0), _dtime(16, 0))], None),
+    )
+    R._LAST_FRESH_AT = 0.0
+    calls: list = []
+
+    async def fake_fetch(request, store, day, seat_nums):
+        calls.append(day)
+        return [], None
+
+    monkeypatch.setattr(R, "_fetch_others_occupied", fake_fetch)
+
+    async def main():
+        # fresh 缺省: 90s TTL 命中, 不发请求
+        await R._fetch_others_occupied_cached(
+            None, None, _date(2026, 9, 1), ["030"])
+        # fresh=True: 绕过缓存强制拉取并记录节流时间戳
+        await R._fetch_others_occupied_cached(
+            None, None, _date(2026, 9, 1), ["030"], fresh=True)
+        # 30s 节流: 刚强制过, 再点也回落缓存
+        await R._fetch_others_occupied_cached(
+            None, None, _date(2026, 9, 1), ["030"], fresh=True)
+        return calls
+
+    assert asyncio.run(main()) == [_date(2026, 9, 1)]
+    R._OCC_CACHE.clear()
