@@ -124,7 +124,7 @@
     {% if mode == 'weekly' %}
     <div class="card-header"><span class="card-title">期望时段编辑（按星期几，30 分钟块勾选，连续块自动合并为一段）</span></div>
     <div class="card-body flex flex-col gap-4">
-      <div class="hint -mt-1">勾选 = 该天要守护的半小时块；连续勾选合并为一段（单段 ≤{{ '%g'|format(max_seg) }}h，超长会被拒绝）；<b>7 天全不勾提交 = 清空自定义、恢复默认三段</b>。</div>
+      <div class="hint -mt-1">点击药丸选中/取消；<b>每个药丸 = 从该时刻开始的 30 分钟块</b>，连续选中的自动合并为一段（单段 ≤{{ '%g'|format(max_seg) }}h，超长会被拒绝）；<b>7 天全不选提交 = 清空自定义、恢复默认三段</b>；勾了任意一天，未选的天 = 该天不检查缺口。</div>
 
       {# 统一编辑：应用到所有座位 #}
       <form method="post" action="/bindings/desired" class="border border-edge-subtle rounded-xl p-3" x-data="dayTabs()">
@@ -143,16 +143,16 @@
           </div>
         </div>
         {% for wd, wlbl in weekday_cols %}
-        <div x-show="active === '{{ wd }}'" class="checkbox-grid">
+        <div x-show="active === '{{ wd }}'" class="pill-grid">
           {% for t0, t1 in ticks %}
-          <label class="checkbox-item">
+          <label class="pill-tick">
             <input type="checkbox" name="blocks_{{ wd }}" value="{{ t0 }}">
-            <span class="font-mono text-[11px]">{{ t0 }}-{{ t1 }}</span>
+            <span>{{ t0 }}</span>
           </label>
           {% endfor %}
         </div>
         {% endfor %}
-        <div class="hint mt-2">7 天全不勾提交 = 恢复默认三段；勾了任意一天，未勾的天 = 该天不检查缺口。</div>
+        <div class="hint mt-2">7 天全不选提交 = 恢复默认三段；选了任意一天，未选的天 = 该天不检查缺口。</div>
       </form>
 
       {# 单座编辑 #}
@@ -176,12 +176,12 @@
             </div>
           </div>
           {% for wd, wlbl in weekday_cols %}
-          <div x-show="active === '{{ wd }}'" class="checkbox-grid">
+          <div x-show="active === '{{ wd }}'" class="pill-grid">
             {% for t0, t1 in ticks %}
-            <label class="checkbox-item">
+            <label class="pill-tick">
               <input type="checkbox" name="blocks_{{ wd }}" value="{{ t0 }}"
                      {% if t0 in desired_blocks[s.seat_num][wd] %}checked{% endif %}>
-              <span class="font-mono text-[11px]">{{ t0 }}-{{ t1 }}</span>
+              <span>{{ t0 }}</span>
             </label>
             {% endfor %}
           </div>
@@ -201,7 +201,7 @@
     {% else %}
     <div class="card-header"><span class="card-title">期望时段编辑（30 分钟块勾选，连续块自动合并为一段）</span></div>
     <div class="card-body flex flex-col gap-4">
-      <div class="hint -mt-1">勾选 = 每天要守护的半小时块（周一至周日统一生效）；连续勾选合并为一段（单段 ≤{{ '%g'|format(max_seg) }}h，超长会被拒绝）；<b>全不勾提交 = 清空自定义、恢复默认三段</b>。需要各天不同？切右上角「按天自定义」。</div>
+      <div class="hint -mt-1">点击药丸选中/取消（每个药丸 = 从该时刻开始的 30 分钟块，周一至周日统一生效）；连续选中的自动合并为一段（单段 ≤{{ '%g'|format(max_seg) }}h，超长会被拒绝）；<b>全不选提交 = 清空自定义、恢复默认三段</b>。需要各天不同？切右上角「按天自定义」。</div>
 
       {# 统一编辑：应用到所有座位 #}
       <form method="post" action="/bindings/desired" class="border border-edge-subtle rounded-xl p-3">
@@ -211,11 +211,11 @@
           <span class="text-[13px] font-bold">统一应用到所有座位（{{ seats|length }} 个）</span>
           <button class="btn btn-primary btn-sm" type="submit">应用到全部座位</button>
         </div>
-        <div class="checkbox-grid">
+        <div class="pill-grid">
           {% for t0, t1 in ticks %}
-          <label class="checkbox-item">
+          <label class="pill-tick">
             <input type="checkbox" name="blocks" value="{{ t0 }}">
-            <span class="font-mono text-[11px]">{{ t0 }}-{{ t1 }}</span>
+            <span>{{ t0 }}</span>
           </label>
           {% endfor %}
         </div>
@@ -234,11 +234,11 @@
               {{ '默认三段' if using_default[s.seat_num] else '自定义' }}
             </span>
           </div>
-          <div class="checkbox-grid">
+          <div class="pill-grid">
             {% for t0, t1 in ticks %}
-            <label class="checkbox-item">
+            <label class="pill-tick">
               <input type="checkbox" name="blocks" value="{{ t0 }}" {% if t0 in desired_blocks[s.seat_num]['mon'] %}checked{% endif %}>
-              <span class="font-mono text-[11px]">{{ t0 }}-{{ t1 }}</span>
+              <span>{{ t0 }}</span>
             </label>
             {% endfor %}
           </div>

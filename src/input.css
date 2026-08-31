@@ -153,6 +153,19 @@
   .checkbox-grid { @apply grid grid-cols-2 gap-2 sm:grid-cols-3; }
   .checkbox-item { @apply flex items-center gap-2 text-sm text-ink; }
 
+  /* ===== Pill-tick（点击选中的时段药丸）===== */
+  .pill-grid { @apply flex flex-wrap gap-1.5; }
+  .pill-tick { @apply cursor-pointer select-none; }
+  .pill-tick input { @apply sr-only; }
+  .pill-tick span {
+    @apply inline-flex items-center px-2.5 py-1 rounded-full
+           text-[11px] font-mono font-semibold tabular
+           border border-edge-subtle bg-app-muted/60 text-ink-secondary
+           transition-colors hover:border-accent/60 hover:text-accent;
+  }
+  .pill-tick input:checked + span { @apply bg-accent border-accent text-white; }
+  .pill-tick input:focus-visible + span { @apply ring-2 ring-accent/40; }
+
   /* ===== Badge ===== */
   .badge {
     @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full
