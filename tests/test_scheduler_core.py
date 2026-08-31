@@ -49,6 +49,9 @@ class DummyClient:
     async def sign(self, rid):
         return await self._act("sign", rid)
 
+    async def signback(self, rid):
+        return await self._act("signback", rid)
+
     async def leave(self, rid):
         return await self._act("leave", rid)
 
@@ -195,7 +198,14 @@ async def test_run_leave_without_reserve_marks_failed(store, monkeypatch):
 
 
 async def test_run_leave_idempotent_end_completes(store, monkeypatch):
-    dummy = DummyClient([{"success": False, "msg": "剩余时长小于暂离时长，无法暂离"}])
+    # 剩余充足 (≥20min) 时 signback 失败 → 回退暂离; 暂离报"剩余不足"类
+    # 幂等消息 → 预约将在服务端自然终结, 收尾 COMPLETE 停止重试
+    fixed = now_cst().replace(hour=10, minute=30, second=0, microsecond=0)
+    monkeypatch.setattr("seatbot.scheduler.now_cst", lambda: fixed)
+    dummy = DummyClient([
+        {"success": False, "msg": "系统繁忙"},                      # signback 失败
+        {"success": False, "msg": "剩余时长小于暂离时长，无法暂离"},  # 回退暂离 → 幂等收尾
+    ])
     monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
     sched = Scheduler(make_cfg(), store)
     t = Task(id=None, account_id="xiongjt", day=today_cst(),
@@ -204,10 +214,17 @@ async def test_run_leave_idempotent_end_completes(store, monkeypatch):
     t.id = await store.add_task(t)
     await sched._run_leave(await store.get_account("xiongjt"), t)
     assert (await store.get_task(t.id)).status == TaskStatus.COMPLETE
+    assert dummy.calls == [("signback", 5), ("leave", 5)]
 
 
 async def test_run_leave_failure_keeps_active_for_retry(store, monkeypatch):
-    dummy = DummyClient([{"success": False, "msg": "网络异常"}])
+    # signback 与暂离通道双双失败 (非幂等消息) → 保持 ACTIVE, 下个 tick 重试
+    fixed = now_cst().replace(hour=10, minute=30, second=0, microsecond=0)
+    monkeypatch.setattr("seatbot.scheduler.now_cst", lambda: fixed)
+    dummy = DummyClient([
+        {"success": False, "msg": "网络异常"},
+        {"success": False, "msg": "网络异常"},
+    ])
     monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
     sched = Scheduler(make_cfg(), store)
     t = Task(id=None, account_id="xiongjt", day=today_cst(),
@@ -216,6 +233,24 @@ async def test_run_leave_failure_keeps_active_for_retry(store, monkeypatch):
     t.id = await store.add_task(t)
     await sched._run_leave(await store.get_account("xiongjt"), t)
     assert (await store.get_task(t.id)).status == TaskStatus.ACTIVE
+
+
+async def test_run_leave_near_end_skips_leave_and_retries(store, monkeypatch):
+    # 到点前 5 分钟签退 (RELAY_LEAD_SECONDS=300): signback 失败时剩余 <20min,
+    # 不允许落回暂离通道 (必然失败且会误触发幂等收尾掐断重试),
+    # 任务保持 ACTIVE 由下个 tick 重试 signback
+    fixed = now_cst().replace(hour=10, minute=55, second=0, microsecond=0)
+    monkeypatch.setattr("seatbot.scheduler.now_cst", lambda: fixed)
+    dummy = DummyClient([{"success": False, "msg": "系统繁忙"}])
+    monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
+    sched = Scheduler(make_cfg(), store)
+    t = Task(id=None, account_id="xiongjt", day=today_cst(),
+             start_time=time(9, 0), end_time=time(11, 0),
+             seat_num="104", status=TaskStatus.SIGNED, reserve_id=5)
+    t.id = await store.add_task(t)
+    await sched._run_leave(await store.get_account("xiongjt"), t)
+    assert (await store.get_task(t.id)).status == TaskStatus.ACTIVE
+    assert dummy.calls == [("signback", 5)]   # 未落暂离通道, 留给下个 tick 重试
 
 
 # ---------- tick 只看今天 (P0: 明日 ACTIVE 不再饿死当日操作) ----------
