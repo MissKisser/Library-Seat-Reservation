@@ -16,6 +16,9 @@ from seatbot.bindings import (
     account_margins, auto_assign, candidate_accounts,
     desired_slots_of, validate_matrix,
 )
+from seatbot.utils.weekly import (
+    WEEKDAY_KEYS, WEEKDAY_LABELS, normalize_weekly, slots_for_weekday, weekday_key,
+)
 from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
@@ -44,13 +47,11 @@ def _pick_read_account(accounts: list[Account]) -> Account | None:
 
 def _parse_seat_slots(
     raw: str, max_hours: float, daily_limit: float,
-) -> dict[str, list[str]] | None:
-    """解析并校验表单提交的 seat_slots JSON。
+) -> dict[str, dict[str, list[str] | str]] | None:
+    """解析并校验表单提交的 seat_slots JSON（接受全周 list 或按星期 dict 两种形态）。
 
-    合法: {"104": ["09:00-11:00"], ...} — key 为 1-4 位数字, value 为字符串数组。
-    约束（AGENTS.md 机制规范）: 每座位每天最多 1 时段、单段 ≤ max_hours、
-    全账号每日 ≤ daily_limit 小时、各座位时段不重叠。
-    空 / 非法为空对象时返回 None; 校验失败抛 ValueError。
+    返回规范形态 {座位: {mon..sun: 时段列表}}；空 / 非法为空对象时返回 None；
+    校验失败抛 ValueError（消息可直接展示）。
     """
     raw = (raw or "").strip()
     if not raw:
@@ -61,20 +62,77 @@ def _parse_seat_slots(
         raise ValueError(f"seat_slots JSON 错误: {e}") from e
     if not isinstance(data, dict) or not data:
         return None
-    out: dict[str, list[str]] = {}
-    for seat, slots in data.items():
+    out: dict[str, dict[str, list[str] | str]] = {}
+    for seat, val in data.items():
         sn = str(seat).strip()
         if not sn.isdigit() or not (1 <= len(sn) <= 4):
             raise ValueError(f"seat_slots 座位号非法: {seat!r}")
-        if not isinstance(slots, list) or not all(isinstance(x, str) for x in slots):
-            raise ValueError(f"seat_slots[{sn}] 必须是字符串数组")
-        out[sn.zfill(3)] = slots
+        if not isinstance(val, (list, dict)):
+            raise ValueError(f"seat_slots[{sn}] 必须是字符串数组或按星期的对象")
+        try:
+            out[sn.zfill(3)] = normalize_weekly(val, allow_full=False)
+        except ValueError as e:
+            raise ValueError(f"seat_slots[{sn}] {e}") from e
     validate_matrix(
         out, max_seg_hours=max_hours,
         daily_limit_hours=daily_limit,
     )
     return out
 
+
+def _matrix_set_day(
+    matrix: dict,
+    seat: str,
+    wd: str,
+    slots: list[str],
+) -> dict:
+    """返回新 matrix：设置 seat 在 wd 的 slots，保留其余星期与其他座位。
+
+    兼容旧形态（直接 list 值）与新形态（{wd: list} 嵌套）。
+    """
+    import copy
+    result: dict = {}
+    for k, v in matrix.items():
+        if isinstance(v, dict):
+            result[k] = dict(v)
+        else:
+            result[k] = list(v) if v else []
+    if seat in result and isinstance(result[seat], dict):
+        cur = result[seat]
+    else:
+        cur = {wk: [] for wk in WEEKDAY_KEYS}
+        if seat in result:
+            old = result[seat]
+            if isinstance(old, dict):
+                cur.update(old)
+            elif isinstance(old, list):
+                for wk in WEEKDAY_KEYS:
+                    cur[wk] = list(old)
+        result[seat] = cur
+    result[seat][wd] = list(slots)
+    return result
+
+
+def _fmt_weekly(
+    raw: dict[str, dict[str, list[str] | str]] | None,
+) -> dict[str, str]:
+    """将 seat_slots dict 格式化为人类可读字符串（用于提示消息）。"""
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for seat, spec in raw.items():
+        if not spec:
+            out[seat] = ""
+            continue
+        if isinstance(spec, dict):
+            parts = [
+                f"{WEEKDAY_LABELS.get(wk, wk)}:{','.join(v or ['空'])}"
+                for wk, v in spec.items() if v
+            ]
+            out[seat] = "; ".join(parts) if parts else ""
+        else:
+            out[seat] = ", ".join(spec or [])
+    return out
 
 
 def _templates(request: Request):
@@ -263,9 +321,10 @@ async def _collect_day_bundle(
     # 缺口只统计**期望时段内**的未覆盖块：需有成功任务或用户/他人占用才算覆盖
     # 成功 = active/signed/etc 且无 last_error；future 的 pending 视为已计划覆盖
     desired_blocks: dict[str, set[str]] = {}
+    view_wd = weekday_key(view_day)
     for s in target_seats:
         blocks: set[str] = set()
-        for r in desired_slots_of(s):
+        for r in desired_slots_of(s, view_wd):
             try:
                 rs, re_ = parse_range(r)
             except Exception:
@@ -559,6 +618,7 @@ async def _tasks_payload(store, cfg, d: date) -> dict:
                 accounts, seat=t.seat_num, start=t.start_time, end=t.end_time,
                 exclude_id=t.account_id,
                 daily_limit_hours=cfg.library.daily_reserve_hours_limit,
+                weekday=weekday_key(d),
             )
     return payload
 
@@ -867,9 +927,16 @@ async def targets_replace(
 # Bindings — 座位绑定矩阵管理（余量 / 自动绑定 / 手动绑定）
 # =========================================================================
 
-def _count_bindings(matrices: dict[str, dict[str, list[str]]]) -> int:
-    """统计一批矩阵里的绑定总数。"""
-    return sum(len(ranges) for m in matrices.values() for ranges in m.values())
+def _count_bindings(matrices: dict[str, dict[str, dict[str, list[str]]]]) -> int:
+    """统计一批矩阵里的绑定总数（支持新星期嵌套形态）。"""
+    total = 0
+    for m in matrices.values():
+        for spec in m.values():
+            if isinstance(spec, dict):
+                total += sum(len(v) for v in spec.values())
+            else:
+                total += len(spec)   # 旧 list 形态兼容
+    return total
 
 
 @router.get("/bindings", response_class=HTMLResponse)
@@ -944,10 +1011,14 @@ async def bindings_auto(request: Request):
     """自动绑定：为所有未覆盖的 (座位, 期望时段) 挑账号，保留既有绑定。"""
     from urllib.parse import quote
 
-    store = request.app.state.store
-    lib = request.app.state.cfg.library
-    seats = await store.list_target_seats()
-    accounts = await store.list_accounts()
+    # desired_slots_of() 现在返回 list|dict|None；auto_assign 需要 {seat: {wd: [...]}} 形态
+    desired = {}
+    for s in seats:
+        seat_slots = {}
+        for wd in WEEKDAY_KEYS:
+            seat_slots[wd] = desired_slots_of(s, wd)
+        desired[s.seat_num] = seat_slots
+    before = _count_bindings({a.id: (a.seat_slots or {}) for a in accounts})
     if not seats or not accounts:
         return RedirectResponse(
             f"/bindings?error={quote('没有目标座位或守护账号')}", status_code=303)
@@ -981,8 +1052,9 @@ async def bindings_manual(
     seat_num: str = Form(...),
     start: str = Form(...),
     end: str = Form(...),
+    weekday: str = Form("mon"),
 ):
-    """手动绑定/切换：设置某账号在某座位的那一个时段。"""
+    """手动绑定/切换：设置某账号在某座位某天的时段。"""
     from urllib.parse import quote
 
     store = request.app.state.store
@@ -990,6 +1062,10 @@ async def bindings_manual(
     acc = await store.get_account(account_id)
     if not acc:
         raise HTTPException(404, f"account {account_id} not found")
+    wd = weekday.strip().lower()
+    if wd not in WEEKDAY_KEYS:
+        return RedirectResponse(
+            f"/bindings?error={quote(f'非法星期: {weekday!r}')}", status_code=303)
     sn = seat_num.strip().zfill(3)
     if sn not in {s.seat_num for s in await store.list_target_seats()}:
         return RedirectResponse(
@@ -1001,8 +1077,7 @@ async def bindings_manual(
     except (ValueError, TypeError) as exc:
         return RedirectResponse(
             f"/bindings?error={quote(f'时间格式错误: {exc}')}", status_code=303)
-    matrix = dict(acc.seat_slots or {})
-    matrix[sn] = [rng]
+    matrix = _matrix_set_day(dict(acc.seat_slots or {}), sn, wd, [rng])
     try:
         validate_matrix(
             matrix, max_seg_hours=lib.max_reserve_hours,
@@ -1015,7 +1090,7 @@ async def bindings_manual(
     acc.bound_seats = sorted(matrix.keys())
     await store.upsert_account(acc)
     return RedirectResponse(
-        f"/bindings?msg={quote(f'已绑定 {account_id} → {sn} {rng}')}",
+        f"/bindings?msg={quote(f'已绑定 {account_id} → {sn} {WEEKDAY_LABELS[wd]} {rng}')}",
         status_code=303)
 
 
@@ -1024,8 +1099,9 @@ async def bindings_delete(
     request: Request,
     account_id: str = Form(...),
     seat_num: str = Form(...),
+    weekday: str = Form(""),
 ):
-    """解绑：移除某账号在某座位的时段。"""
+    """解绑：移除某账号在某座位的时段；给定 weekday 只解绑该天，否则整座位解绑。"""
     from urllib.parse import quote
 
     store = request.app.state.store
@@ -1034,29 +1110,42 @@ async def bindings_delete(
         raise HTTPException(404)
     sn = seat_num.strip().zfill(3)
     matrix = dict(acc.seat_slots or {})
-    removed = matrix.pop(sn, None)
-    if removed is None:
+    if sn not in matrix:
         return RedirectResponse(
             f"/bindings?error={quote(f'{account_id} 在 {sn} 无绑定')}",
             status_code=303)
+    if weekday:
+        wd = weekday.strip().lower()
+        if wd not in WEEKDAY_KEYS:
+            return RedirectResponse(
+                f"/bindings?error={quote(f'非法星期: {weekday!r}')}", status_code=303)
+        matrix = _matrix_set_day(matrix, sn, wd, [])
+    else:
+        matrix.pop(sn, None)
     acc.seat_slots = matrix
     acc.bound_seats = sorted(matrix.keys())
     await store.upsert_account(acc)
+    day_part = f" {WEEKDAY_LABELS.get(wd, wd)}" if weekday else ""
     return RedirectResponse(
-        f"/bindings?msg={quote(f'已解绑 {account_id} × {sn}')}", status_code=303)
+        f"/bindings?msg={quote(f'已解绑 {account_id} × {sn}{day_part}')}", status_code=303)
 
 
 @router.post("/bindings/desired")
 async def bindings_desired(
     request: Request,
     seat_num: str = Form(...),
-    blocks: list[str] = Form(default=[]),
+    blocks_mon: list[str] = Form(default=[]),
+    blocks_tue: list[str] = Form(default=[]),
+    blocks_wed: list[str] = Form(default=[]),
+    blocks_thu: list[str] = Form(default=[]),
+    blocks_fri: list[str] = Form(default=[]),
+    blocks_sat: list[str] = Form(default=[]),
+    blocks_sun: list[str] = Form(default=[]),
 ):
-    """编辑期望守护时段：按 30 分钟块复选提交，连续块自动合并为时段段。
+    """编辑期望守护时段（按星期几，30 分钟块复选，连续块自动合并）。
 
-    seat_num 为 "__ALL__" 时把同一组块应用到所有已启用座位；
-    全不勾选 = 清空自定义、恢复默认三段。每个合并后的时段段必须
-    ≤ max_reserve_hours（超星单段上限）。
+    seat_num 为 "__ALL__" 时把同组块应用到所有已启用座位；
+    7 天全不勾 = 清空自定义恢复默认三段；部分天勾选时未勾的天 = 该天不检查缺口。
     """
     from urllib.parse import quote
 
@@ -1078,49 +1167,59 @@ async def bindings_desired(
 
     open_t = parse_hhmm(lib.open_time)
     close_t = parse_hhmm(lib.close_time)
-    starts: list[_time] = []
-    for b in blocks:
-        try:
-            t = parse_hhmm(b.strip())
-        except Exception:
-            return RedirectResponse(
-                f"/bindings?error={quote(f'时间块 {b!r} 格式错误')}", status_code=303)
-        e = (_dt.combine(date.today(), t) + timedelta(minutes=30)).time()
-        if t < open_t or e > close_t:
-            span = f"{lib.open_time}-{lib.close_time}"
-            return RedirectResponse(
-                f"/bindings?error={quote(f'时间块 {b} 超出开放时间 {span}')}",
-                status_code=303)
-        if t not in starts:
-            starts.append(t)
-    starts.sort()
 
-    merged: list[tuple[_time, _time]] = []
-    for t in starts:
-        e = (_dt.combine(date.today(), t) + timedelta(minutes=30)).time()
-        if merged and merged[-1][1] == t:
-            merged[-1] = (merged[-1][0], e)
-        else:
-            merged.append((t, e))
-    ranges: list[str] = []
-    for s, e in merged:
-        rng = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
-        h = (_dt.combine(date.today(), e) - _dt.combine(date.today(), s)
-             ).total_seconds() / 3600
-        if h > lib.max_reserve_hours + 1e-9:
-            msg = (f"连续勾选形成时段 {rng} 长 {h:g}h，"
-                   f"超过单段上限 {lib.max_reserve_hours:g}h——请在中间断开勾选")
-            from urllib.parse import quote as _q
-            return RedirectResponse(f"/bindings?error={_q(msg)}", status_code=303)
-        ranges.append(rng)
+    def _merge(block_list: list[str]) -> tuple[list[str], str | None]:
+        """30 分钟块起点 → 合并时段段列表；超长返回错误消息。"""
+        starts: list[_time] = []
+        for b in block_list:
+            try:
+                t = parse_hhmm(b.strip())
+            except Exception:
+                return [], f"时间块 {b!r} 格式错误"
+            e = (_dt.combine(date.today(), t) + timedelta(minutes=30)).time()
+            if t < open_t or e > close_t:
+                return [], f"时间块 {b} 超出开放时间 {lib.open_time}-{lib.close_time}"
+            if t not in starts:
+                starts.append(t)
+        starts.sort()
+        merged: list[tuple[_time, _time]] = []
+        for t in starts:
+            e = (_dt.combine(date.today(), t) + timedelta(minutes=30)).time()
+            if merged and merged[-1][1] == t:
+                merged[-1] = (merged[-1][0], e)
+            else:
+                merged.append((t, e))
+        ranges: list[str] = []
+        for s, e in merged:
+            rng = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+            h = (_dt.combine(date.today(), e) - _dt.combine(date.today(), s)
+                 ).total_seconds() / 3600
+            if h > lib.max_reserve_hours + 1e-9:
+                return [], (f"连续勾选形成时段 {rng} 长 {h:g}h，"
+                            f"超过单段上限 {lib.max_reserve_hours:g}h——请在中间断开勾选")
+            ranges.append(rng)
+        return ranges, None
+
+    per_day: dict[str, list[str]] = {}
+    raw_blocks = {
+        "mon": blocks_mon, "tue": blocks_tue, "wed": blocks_wed,
+        "thu": blocks_thu, "fri": blocks_fri, "sat": blocks_sat, "sun": blocks_sun,
+    }
+    for wd in WEEKDAY_KEYS:
+        ranges, err = _merge(raw_blocks[wd])
+        if err:
+            return RedirectResponse(
+                f"/bindings?error={quote(err)}", status_code=303)
+        per_day[wd] = ranges
 
     for sn in targets:
-        await store.set_target_seat_desired(sn, ranges)
+        if all(not per_day[wd] for wd in WEEKDAY_KEYS):
+            await store.set_target_seat_desired(sn, None)   # 全空 → 恢复默认
+        else:
+            await store.set_target_seat_desired(sn, per_day)
     scope = "所有座位" if sn_raw == "__ALL__" else "、".join(targets)
-    if ranges:
-        msg = f"{scope} 期望时段已更新为 {len(ranges)} 段（{'、'.join(ranges)}）"
-    else:
-        msg = f"{scope} 已清空自定义期望时段（恢复默认三段）"
+    filled = sum(1 for wd in WEEKDAY_KEYS if per_day[wd])
+    msg = f"已更新 {scope} 的期望时段（{filled}/7 天有守护块）"
     return RedirectResponse(f"/bindings?msg={quote(msg)}", status_code=303)
 
 
@@ -1565,6 +1664,7 @@ async def task_reassign(
         await store.list_accounts(), seat=t.seat_num,
         start=t.start_time, end=t.end_time, exclude_id=t.account_id,
         daily_limit_hours=lib.daily_reserve_hours_limit,
+        weekday=weekday_key(t.day),
     )
     if account_id not in [c["id"] for c in candidates]:
         return RedirectResponse(
@@ -1572,10 +1672,9 @@ async def task_reassign(
             f"{quote(f'{account_id} 不满足接手条件（余量不足/时段冲突/该座位已绑）')}",
             status_code=303)
 
-    old_acc = await store.get_account(t.account_id)
     rng = f"{t.start_time.strftime('%H:%M')}-{t.end_time.strftime('%H:%M')}"
-    new_matrix = dict(new_acc.seat_slots or {})
-    new_matrix[t.seat_num] = [rng]
+    wd = weekday_key(t.day)
+    new_matrix = _matrix_set_day(dict(new_acc.seat_slots or {}), t.seat_num, wd, [rng])
     try:
         validate_matrix(
             new_matrix, max_seg_hours=lib.max_reserve_hours,
@@ -1585,16 +1684,13 @@ async def task_reassign(
         return RedirectResponse(
             f"/tasks?day={t.day.isoformat()}&error={quote(str(e))}", status_code=303)
     if old_acc:
-        old_matrix = dict(old_acc.seat_slots or {})
-        if old_matrix.get(t.seat_num) == [rng]:
-            old_matrix.pop(t.seat_num, None)
-            old_acc.seat_slots = old_matrix
-            old_acc.bound_seats = sorted(old_matrix.keys())
-            await store.upsert_account(old_acc)
+        old_matrix = _matrix_set_day(dict(old_acc.seat_slots or {}), t.seat_num, wd, [])
+        old_acc.seat_slots = old_matrix
+        old_acc.bound_seats = sorted(set(old_matrix.keys()))
+        await store.upsert_account(old_acc)
     new_acc.seat_slots = new_matrix
-    new_acc.bound_seats = sorted(new_matrix.keys())
+    new_acc.bound_seats = sorted(set(new_matrix.keys()))
     await store.upsert_account(new_acc)
-
     await store.update_task_account(task_id, account_id)
     await store.update_task_status(task_id, TaskStatus.READY, last_error="")
     fresh = await store.get_task(task_id)
