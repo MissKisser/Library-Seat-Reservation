@@ -2069,3 +2069,50 @@ async def settings_reset(request: Request):
             pass
     return RedirectResponse("/settings?reset=1", status_code=303)
 
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_view(request: Request):
+    """实况核对视图：最近核对快照的本地任务 vs 服务端占用对比。"""
+    store = request.app.state.store
+    sched = getattr(request.app.state, "sched", None)
+    rows: list[dict] = []
+    for r in await store.list_reconcile_results(limit=48):
+        try:
+            data = json.loads(r["detail"])
+        except Exception:
+            data = {}
+        rows.append({
+            "ts_hm": _dt.fromtimestamp(r["ts"] / 1000).strftime("%m-%d %H:%M"),
+            "day": r["day"], "seat_num": r["seat_num"], "ok": r["ok"],
+            "server_text": "、".join(
+                f"{s}–{e}" for s, e in (data.get("server") or [])),
+            "error": data.get("error", ""),
+            "tasks": data.get("tasks") or [],
+        })
+    return _templates(request).TemplateResponse(
+        request, "audit.html",
+        {
+            "request": request, "rows": rows,
+            "sched_ready": sched is not None and hasattr(sched, "reconcile_sweep"),
+            "checked": request.query_params.get("checked"),
+            "error": request.query_params.get("error"),
+            "active_page": "audit",
+        },
+    )
+
+
+@router.post("/audit/check")
+async def audit_check(request: Request):
+    """立即核对一轮（只读：写快照但不写 last_error/告警）。
+
+    每次点击对每个目标座位×今天/明天各发 1 个只读 getusedtimes 请求。
+    """
+    sched = getattr(request.app.state, "sched", None)
+    if sched is None or not hasattr(sched, "reconcile_sweep"):
+        return RedirectResponse("/audit?error=nosched", status_code=303)
+    try:
+        await sched.reconcile_sweep(write=False)
+    except Exception:
+        return RedirectResponse("/audit?error=check", status_code=303)
+    return RedirectResponse("/audit?checked=1", status_code=303)
