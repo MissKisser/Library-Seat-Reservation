@@ -13,36 +13,21 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from seatbot.bindings import (
-    account_margins, auto_assign, candidate_accounts,
-    desired_slots_of, validate_matrix,
+   account_margins, auto_assign, candidate_accounts,
+   desired_slots_of, validate_matrix,
 )
 from seatbot.utils.weekly import (
-    WEEKDAY_KEYS, WEEKDAY_LABELS, normalize_weekly, slots_for_weekday, weekday_key,
+   WEEKDAY_KEYS, WEEKDAY_LABELS, normalize_weekly, slots_for_weekday, weekday_key,
 )
 from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
 from seatbot.models import Account, Task, TaskStatus
+from seatbot.reconcile import pick_read_account
 from seatbot.scheduler import NextRelay
-from seatbot.utils.timeutil import (
-    at_cst, now_cst, parse_hhmm, parse_range, today_cst,
-)
 
 
 router = APIRouter()
-
-# AGENTS.md 约定的默认测试账号: 只读查询 (getusedtimes / reserve info)
-# 优先使用它, 避免无谓动用其他守护账号的会话。
-PREFERRED_READ_ACCOUNT = "xiongjt"
-
-
-def _pick_read_account(accounts: list[Account]) -> Account | None:
-    """优先选默认只读账号, 否则回退到第一个有凭据的账号。"""
-    return (
-        next((a for a in accounts
-              if a.id == PREFERRED_READ_ACCOUNT and a.phone and a.password), None)
-        or next((a for a in accounts if a.phone and a.password), None)
-    )
 
 
 def _parse_seat_slots(
@@ -180,7 +165,7 @@ async def _fetch_others_occupied(
     except Exception:
         accounts = []
 
-    acc = _pick_read_account(accounts)
+    acc = pick_read_account(accounts, await store.cookie_recency())
     if acc is None:
         return [], "无可用账号"
 

@@ -113,8 +113,17 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value       TEXT NOT NULL,
   updated_at  INTEGER NOT NULL
 );
-"""
 
+-- 实况核对快照（按 (day, seat) 一行的滚动历史）
+CREATE TABLE IF NOT EXISTS reconcile_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    seat_num TEXT NOT NULL,
+    ok INTEGER NOT NULL,
+    detail TEXT NOT NULL DEFAULT ''
+);
+ """
 
 # 旧账号表结构 (用于 v1→v2 schema 迁移判断)
 _LEGACY_ACCOUNTS_COLS = {
@@ -910,6 +919,42 @@ class StateStore:
         cur = await self.db.execute("DELETE FROM notifications")
         await self.db.commit()
         return cur.rowcount
+
+    async def save_reconcile_result(
+        self, day: date, seat_num: str, ok: bool, detail: str,
+    ) -> None:
+        """落一条实况核对快照；表封顶 96 行（默认间隔下约 48h 历史）。"""
+        self._bump()
+        await self.db.execute(
+            "INSERT INTO reconcile_results (ts, day, seat_num, ok, detail) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (int(_time.time() * 1000), day.isoformat(), seat_num,
+             1 if ok else 0, detail),
+        )
+        await self.db.execute(
+            "DELETE FROM reconcile_results WHERE id NOT IN ("
+            "SELECT id FROM reconcile_results ORDER BY id DESC LIMIT 96)"
+        )
+        await self.db.commit()
+
+    async def list_reconcile_results(self, limit: int = 48) -> list[dict]:
+        """按时间倒序取核对快照。"""
+        cur = await self.db.execute(
+            "SELECT ts, day, seat_num, ok, detail FROM reconcile_results "
+            "ORDER BY id DESC LIMIT ?", (limit,),
+        )
+        rows = await cur.fetchall()
+        return [
+            {"ts": r[0], "day": r[1], "seat_num": r[2],
+             "ok": bool(r[3]), "detail": r[4]}
+            for r in rows
+        ]
+
+    async def cookie_recency(self) -> dict[str, int]:
+        """各账号最近一次会话落库时间（account_id → updated_at），供动态选号。"""
+        cur = await self.db.execute(
+            "SELECT account_id, updated_at FROM account_cookies")
+        return {r[0]: r[1] for r in await cur.fetchall()}
 
 
 def _row_to_task(row) -> Task:
