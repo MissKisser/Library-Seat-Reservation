@@ -804,6 +804,20 @@ class ChaoxingClient:
         sr = (payload.get("data") or {}).get("seatReserve")
         return sr
 
+    async def supervise(self, reserve_id: int, photo_object_id: str = "") -> dict[str, Any]:
+        """对一条使用中的预约发起监督（真实操作，仅限用户明确授权时调用）。
+
+        Endpoint:  POST /data/apps/seat/supervise
+        Params:    id=被监督座位当前预约号; objectId=现场照片 id,
+                   仅 seatConfig.supervisePhoto==1 的馆强制，否则传空。
+        Returns:   {success, msg}；成功后被监督方收到 20 分钟落座提醒。
+        """
+        return await self._post_form(
+            f"{self.OFFICE_BASE}/data/apps/seat/supervise",
+            {"id": reserve_id, "objectId": photo_object_id},
+            referer=self.OFFICE_BASE + "/",
+        )
+
     # ---------- reservation records ----------
     #: reservelist 状态码 → 官方含义（详见 docs/api/reservelist.md）
     RESERVE_STATUS = {
