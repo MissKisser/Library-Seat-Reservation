@@ -947,17 +947,31 @@ async def bindings_list(request: Request):
     limit = lib.daily_reserve_hours_limit
     seats = await store.list_target_seats()
     accounts = await store.list_accounts()
-    desired = {s.seat_num: desired_slots_of(s) for s in seats}
+    # 星期列（用于 Jinja 循环 7 天）
+    weekday_cols = list(zip(WEEKDAY_KEYS, [WEEKDAY_LABELS[w] for w in WEEKDAY_KEYS]))
+
+    desired: dict[str, dict[str, list[str]]] = {
+        s.seat_num: {wd: desired_slots_of(s, wd) for wd in WEEKDAY_KEYS}
+        for s in seats
+    }
     seat_bindings: dict[str, list[dict]] = {s.seat_num: [] for s in seats}
     for a in accounts:
-        for seat, ranges in (a.seat_slots or {}).items():
-            for r in ranges:
-                seat_bindings.setdefault(seat, []).append(
-                    {"account_id": a.id, "range": r})
-    uncovered: dict[str, list[str]] = {}
-    for seat, slots in desired.items():
-        bound = {b["range"] for b in seat_bindings.get(seat, [])}
-        uncovered[seat] = [s for s in slots if s not in bound]
+        for seat, val in (a.seat_slots or {}).items():
+            for wd in WEEKDAY_KEYS:
+                day_val = slots_for_weekday(val, wd)
+                if not isinstance(day_val, list):
+                    continue
+                for r in day_val:
+                    seat_bindings.setdefault(seat, []).append(
+                        {"account_id": a.id, "range": r, "weekday": wd})
+    uncovered: dict[str, dict[str, list[str]]] = {}
+    for seat, per_day in desired.items():
+        uncovered[seat] = {}
+        for wd in WEEKDAY_KEYS:
+            bound = {b["range"] for b in seat_bindings.get(seat, [])
+                     if b["weekday"] == wd}
+            uncovered[seat][wd] = [
+                s_ for s_ in per_day[wd] if s_ not in bound]
 
     def _blocks_of(ranges: list[str]) -> list[str]:
         """把 HH:MM-HH:MM 时段展开成 30 分钟块起点列表（复选框预勾选用）。"""
@@ -983,8 +997,11 @@ async def bindings_list(request: Request):
         t = nxt
     from seatbot.bindings import DEFAULT_DESIRED_SLOTS
 
-    desired_blocks = {
-        s.seat_num: _blocks_of(desired_slots_of(s)) for s in seats
+    desired_blocks: dict[str, dict[str, list[str]]] = {
+        s.seat_num: {
+            wd: _blocks_of(desired_slots_of(s, wd)) for wd in WEEKDAY_KEYS
+        }
+        for s in seats
     }
     using_default = {
         s.seat_num: not s.desired_slots for s in seats
@@ -992,14 +1009,20 @@ async def bindings_list(request: Request):
     margins = account_margins(accounts, daily_limit_hours=limit)
     ctx = await _ctx(request, active_page="bindings")
     ctx.update(
+        weekday_cols=weekday_cols,
         seats=seats, desired=desired, seat_bindings=seat_bindings,
         uncovered=uncovered, margins=margins,
         desired_blocks=desired_blocks, using_default=using_default,
         ticks=ticks,
-        total_remaining=sum(m["remaining_hours"] for m in margins),
-        total_used=sum(m["used_hours"] for m in margins),
+        total_remaining=sum(
+            sum(d["remaining_hours"] for d in m["days"].values()) for m in margins),
+        total_used=sum(
+            sum(d["used_hours"] for d in m["days"].values()) for m in margins),
         accounts=accounts, daily_limit=limit,
         max_seg=lib.max_reserve_hours,
+        gap_total={s.seat_num: sum(
+            len(uncovered[s.seat_num][wd]) for wd in WEEKDAY_KEYS)
+            for s in seats},
         msg=request.query_params.get("msg"),
         error=request.query_params.get("error"),
     )
