@@ -16,7 +16,7 @@
   {% if checked %}<div class="chip chip-success">核对完成</div>{% endif %}
   {% if error %}<div class="chip chip-danger">核对未执行{% if error == 'nosched' %}：调度器未运行{% else %}：请查看调度日志{% endif %}</div>{% endif %}
   {% if not rows %}
-  <div class="card p-8 text-center text-sm text-ink-muted">尚无核对记录；启用实况核对或点击「立即核对」生成第一轮快照。</div>
+  <div class="card p-8 text-center text-sm text-ink-muted">尚无核对记录；点击「立即核对」生成第一轮快照。</div>
   {% endif %}
   {% for r in rows %}
   <div class="card p-4 space-y-2">

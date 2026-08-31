@@ -62,17 +62,15 @@ def test_storage_roundtrip_typed_values():
 def test_reconcile_settings_defaults_and_roundtrip():
     cfg = _cfg()
     eff = _settings.effective({}, cfg)
-    assert eff["reconcile_enabled"] is True
-    assert eff["reconcile_interval_minutes"] == 30
+    assert eff["reconcile_interval_seconds"] == 90
     # DB 覆盖往返
-    assert _settings.coerce_for_storage("reconcile_enabled", False) == "false"
-    assert _settings.parse_stored("reconcile_enabled", "false", True) is False
-    raw = _settings.coerce_for_storage("reconcile_interval_minutes", 120)
-    assert _settings.parse_stored("reconcile_interval_minutes", raw, 30) == 120
+    raw = _settings.coerce_for_storage("reconcile_interval_seconds", 600)
+    assert _settings.parse_stored("reconcile_interval_seconds", raw, 90) == 600
 
 
 def test_validate_all_rejects_bad_reconcile_interval():
-    assert _settings.validate_all({"reconcile_interval_minutes": "3"}) != {}
-    assert _settings.validate_all({"reconcile_interval_minutes": "361"}) != {}
-    assert _settings.validate_all({"reconcile_interval_minutes": "120"}) == {}
-    assert _settings.validate_all({"reconcile_enabled": "true"}) == {}
+    assert _settings.validate_all({"reconcile_interval_seconds": "30"}) != {}
+    assert _settings.validate_all({"reconcile_interval_seconds": "86401"}) != {}
+    assert _settings.validate_all({"reconcile_interval_seconds": "600"}) == {}
+    # 勾选开关已移除，属未知配置项
+    assert _settings.validate_all({"reconcile_enabled": "true"}) != {}

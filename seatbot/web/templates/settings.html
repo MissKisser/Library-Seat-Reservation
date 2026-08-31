@@ -58,18 +58,11 @@
 
     <div class="card">
       <div class="card-header"><span class="card-title">实况核对</span></div>
-      <div class="card-body grid grid-cols-1 md:grid-cols-2 gap-4">
-        <label class="flex items-center justify-between gap-3 py-2 cursor-pointer">
-          <span>
-            <span class="block text-sm font-medium">启用实况核对</span>
-            <span class="block text-xs text-ink-muted mt-1 leading-snug">低频只读核验今天+明天的预约是否在服务端真实存在，失守仅告警并标黄差异，不改动预约本身</span>
-          </span>
-          <input type="checkbox" name="reconcile_enabled" value="1" {% if eff.reconcile_enabled %}checked{% endif %} class="mt-0.5">
-        </label>
+      <div class="card-body">
         <div class="form-field">
-          <label for="reconcile_interval_minutes">核对间隔（分钟）<span class="req">*</span></label>
-          <input id="reconcile_interval_minutes" name="reconcile_interval_minutes" type="number" min="5" max="360" step="5" value="{{ eff.reconcile_interval_minutes }}" class="input h-7 w-[84px] text-xs">
-          <div class="hint">5–360 分钟；越短越早发现失守，但占用查询请求增多（每轮 ≤ 4 个只读请求）</div>
+          <label for="reconcile_interval_seconds">核对间隔（秒）<span class="req">*</span></label>
+          <input id="reconcile_interval_seconds" name="reconcile_interval_seconds" type="number" min="60" max="86400" step="30" value="{{ eff.reconcile_interval_seconds }}" class="input h-7 w-[84px] text-xs">
+          <div class="hint">60–86400 秒；实况核对常开，自动核验今天+明天的预约是否在服务端真实存在，失守仅告警并标记差异，不改动预约本身（每轮 ≤ 4 个只读请求）</div>
         </div>
       </div>
     </div>
