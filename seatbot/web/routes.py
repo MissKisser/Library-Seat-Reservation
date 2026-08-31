@@ -2000,8 +2000,10 @@ async def settings_save(request: Request):
     patch_raw["max_reserve_hours"] = (form.get("max_reserve_hours") or "").strip()
     patch_raw["daily_reserve_hours_limit"] = (form.get("daily_reserve_hours_limit") or "").strip()
     patch_raw["notify_webhook"] = (form.get("notify_webhook") or "").strip()
+    patch_raw["reconcile_enabled"] = "true" if form.get("reconcile_enabled") else "false"
+    patch_raw["reconcile_interval_minutes"] = (form.get("reconcile_interval_minutes") or "").strip()
 
-    # 滤掉空字符串的“未填”键（notify_webhook 允许空以清空）
+    # 滤掉空字符串的"未填"键（notify_webhook 允许空以清空）
     patch: dict[str, object] = {}
     for k, v in patch_raw.items():
         if k == "notify_webhook":
