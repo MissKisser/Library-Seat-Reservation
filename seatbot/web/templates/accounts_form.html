@@ -55,12 +55,30 @@
         <input type="hidden" name="seat_slots" id="f-seat-slots"
                value='{{ (account.seat_slots | tojson) if account.seat_slots else '{}' }}'>
 
-        {# 矩阵编辑器 #}
+        {# 矩阵编辑器（全周相同 / 按星期独立） #}
         <div class="border border-edge-subtle rounded-xl overflow-hidden">
           <div class="flex items-center justify-between px-4 pt-3.5">
             <span class="text-[13px] font-bold text-ink">座位绑定（每个座位每天最多 1 个时段，每日累计 ≤ 5h）</span>
             <span class="chip" :class="hasErrors ? 'chip-danger' : 'chip-success'"
                   x-text="hasErrors ? '存在校验错误' : '校验通过'"></span>
+          </div>
+          <div class="flex items-center gap-2 px-4 py-2 flex-wrap border-b border-edge-subtle">
+            <label class="flex items-center gap-1.5 text-xs text-ink-secondary">
+              <input type="checkbox" x-model="uniformMode" @change="onUniformChange()"> 全周相同
+            </label>
+            <template x-for="wd in wds" :key="wd">
+              <button type="button" class="chip"
+                      :class="!uniformMode && activeDay === wd ? 'chip-accent' : 'chip-muted'"
+                      x-show="!uniformMode"
+                      @click="activeDay = wd"
+                      x-text="wdLabels[wd]"></button>
+            </template>
+            <template x-if="!uniformMode">
+              <span class="flex gap-1">
+                <button type="button" class="chip chip-muted" @click="copyDayToAll()">把当天复制到全周</button>
+                <button type="button" class="chip chip-muted" @click="clearDay()">清空当天</button>
+              </span>
+            </template>
           </div>
           <div class="flex flex-col gap-2 p-4">
             <template x-for="row in rows" :key="row.seat">

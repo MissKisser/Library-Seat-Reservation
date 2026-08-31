@@ -243,29 +243,66 @@
     };
   };
 
-  /* ===== 账号表单：座位×时段矩阵编辑器 ===== */
-  /* opts = {seats, initial: {seat: ["HH:MM-HH:MM"]}, others: [{id, seatSlots}],
-   *         open: "HH:MM", close: "HH:MM", maxHours: number}
-   * 提交前 sync() 把矩阵序列化回后端既有字段 slots/slots_custom/bound_seats/seat_slots,
-   * 后端解析逻辑零改动。 */
+  /* ===== 账号表单：座位×时段矩阵编辑器（按星期几独立 / 全周相同） ===== */
+  /* opts = {seats, initial: {seat: {mon..sun: ["HH:MM-HH:MM"]}}, others: [{id, seatSlots}],
+   *         open, close, maxHours}
+   * 内部状态 perDay[wd][seat] = [{s,e}]；全周相同模式以周一为源、写回时铺满 7 天；
+   * sync() 序列化为规范形态 {seat: {mon..sun: [...]}}，全天空的座位不出现在 JSON 里。 */
   window.matrixEditor = function (opts) {
+    const WDS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+    const WD_LABELS = { mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六', sun: '周日' };
     const toMin = s => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
     const toHM = v => String(Math.floor(v / 60)).padStart(2, '0') + ':' + String(v % 60).padStart(2, '0');
     const ticks = [];
     for (let t = toMin(opts.open); t <= toMin(opts.close); t += 30) ticks.push(toHM(t));
 
+    const fullDayRanges = () => {
+      const out = [];
+      for (let t = toMin('08:00'); t < toMin('22:00'); t += 120)
+        out.push({ s: toHM(t), e: toHM(Math.min(t + 120, toMin('22:00'))) });
+      return out;
+    };
+
+    const perDay = {};
+    WDS.forEach(wd => {
+      perDay[wd] = {};
+      opts.seats.forEach(seat => {
+        let ranges = [];
+        const v = (opts.initial || {})[seat];
+        if (Array.isArray(v)) ranges = v;
+        else if (v === 'full') ranges = fullDayRanges();
+        else if (v && typeof v === 'object') {
+          const dv = v[wd];
+          if (Array.isArray(dv)) ranges = dv;
+          else if (dv === 'full') ranges = fullDayRanges();
+        }
+        perDay[wd][seat] = ranges.map(r => {
+          const dash = r.indexOf('-');
+          return { s: r.slice(0, dash), e: r.slice(dash + 1) };
+        });
+      });
+    });
+    const sameAllWeek = WDS.every(wd =>
+      JSON.stringify(perDay[wd]) === JSON.stringify(perDay.mon));
+
+    /* ★ perDay 必须挂进返回的 state 才有 Alpine 深层响应式；
+     * 放闭包里会导致增删时段不触发重渲染。以下所有方法经 this.perDay 访问。 */
     return {
       seats: opts.seats,
-      rows: opts.seats.map(seat => ({
-        seat,
-        slots: ((opts.initial && opts.initial[seat]) || []).map(r => {
-          const [s, e] = r.split('-');
-          return { s, e };
-        }),
-      })),
-      others: opts.others || [],
-      maxHours: opts.maxHours,
+      wds: WDS,
+      wdLabels: WD_LABELS,
+      activeDay: 'mon',
+      uniformMode: sameAllWeek,
+      perDay,
       ticks,
+      maxHours: opts.maxHours,
+      others: opts.others || [],
+
+      dayLabel(wd) { return WD_LABELS[wd]; },
+      get rows() {
+        const day = this.uniformMode ? 'mon' : this.activeDay;
+        return this.seats.map(seat => ({ seat, slots: this.perDay[day][seat] }));
+      },
 
       validateRow(row) {
         const msgs = [];
@@ -280,25 +317,71 @@
         });
         return msgs;
       },
-      get hasErrors() { return this.rows.some(r => this.validateRow(r).length); },
+      allRows() {
+        return WDS.flatMap(wd =>
+          this.seats.map(seat => ({ seat, slots: this.perDay[wd][seat] })));
+      },
+      get hasErrors() { return this.allRows().some(r => this.validateRow(r).length); },
+
       addSlot(row) {
         /* 每账号每天每座位最多 1 个时段（超星规则） */
         if (row.slots.length >= 1) return;
         row.slots.push({ s: opts.open, e: toHM(Math.min(toMin(opts.open) + 120, toMin(opts.close))) });
+        if (this.uniformMode) this._replicate(row.seat);
       },
-      removeSlot(row, i) { row.slots.splice(i, 1); },
+      removeSlot(row, i) {
+        row.slots.splice(i, 1);
+        if (this.uniformMode) this._replicate(row.seat);
+      },
+      _replicate(seat) {
+        const src = this.perDay.mon[seat];
+        WDS.slice(1).forEach(wd => { this.perDay[wd][seat] = src.map(x => ({ ...x })); });
+      },
+      onUniformChange() {
+        if (!this.uniformMode) {
+          /* 统一 → 按天：把当前统一内容铺满 7 天 */
+          WDS.forEach(wd => this.seats.forEach(seat => {
+            this.perDay[wd][seat] = this.perDay.mon[seat].map(x => ({ ...x }));
+          }));
+        } else {
+          /* 按天 → 统一：以正在查看的天为准收敛到周一 */
+          this.seats.forEach(seat => {
+            this.perDay.mon[seat] = this.perDay[this.activeDay][seat].map(x => ({ ...x }));
+          });
+        }
+      },
+      copyDayToAll() {
+        const src = this.activeDay;
+        WDS.forEach(wd => {
+          if (wd === src) return;
+          this.seats.forEach(seat => { this.perDay[wd][seat] = this.perDay[src][seat].map(x => ({ ...x })); });
+        });
+      },
+      clearDay() {
+        this.seats.forEach(seat => { this.perDay[this.activeDay][seat] = []; });
+      },
 
-      /* 该座位在全部账号合计后的 30min 覆盖位图: mine/other/gap */
+      /* 其他账号在当前查看天对某座位的占用时段（周天感知） */
+      otherRangesFor(o, seat) {
+        const v = o.seatSlots[seat];
+        const day = this.uniformMode ? 'mon' : this.activeDay;
+        if (Array.isArray(v)) return v;
+        if (v && typeof v === 'object') return Array.isArray(v[day]) ? v[day] : [];
+        return [];
+      },
+
+      /* 该座位在当前天的 30min 覆盖位图: mine/other/gap */
       coverage(seat) {
         const open = toMin(opts.open), close = toMin(opts.close), step = 30;
-        const mineSlots = (this.rows.find(r => r.seat === seat) || { slots: [] }).slots;
+        const day = this.uniformMode ? 'mon' : this.activeDay;
+        const mineSlots = this.perDay[day][seat];
         const bits = [];
         for (let t = open; t < close; t += step) {
           let mine = false;
           mineSlots.forEach(x => { if (toMin(x.s) <= t && t + step <= toMin(x.e)) mine = true; });
           let other = false;
           if (!mine) {
-            this.others.forEach(o => (o.seatSlots[seat] || []).forEach(r => {
+            this.others.forEach(o => this.otherRangesFor(o, seat).forEach(r => {
               const dash = r.indexOf('-');
               const s = r.slice(0, dash), e = r.slice(dash + 1);
               if (toMin(s) <= t && t + step <= toMin(e)) other = true;
@@ -313,14 +396,30 @@
       /* 把矩阵写回隐藏字段; 返回 false 表示有校验错误,调用方应阻止提交 */
       sync() {
         const seatSlots = {};
-        this.rows.forEach(r => {
-          if (!r.slots.length) return;
-          seatSlots[r.seat] = r.slots.map(x => x.s + '-' + x.e);
+        this.seats.forEach(seat => {
+          const perWd = {};
+          let any = false;
+          WDS.forEach(wd => {
+            const list = (this.uniformMode ? this.perDay.mon[seat] : this.perDay[wd][seat])
+              .map(x => x.s + '-' + x.e);
+            perWd[wd] = list;
+            if (list.length) any = true;
+          });
+          if (any) seatSlots[seat] = perWd;
         });
         const el = document.getElementById('f-seat-slots');
         if (el) el.value = JSON.stringify(seatSlots);
         return !this.hasErrors;
       },
+    };
+  };
+
+  /* ===== 绑定页：星期 tab 切换（Jinja 渲染 7 个面板，Alpine 只控制显隐） ===== */
+  window.dayTabs = function () {
+    return {
+      active: 'mon',
+      wds: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+      labels: { mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六', sun: '周日' },
     };
   };
 
