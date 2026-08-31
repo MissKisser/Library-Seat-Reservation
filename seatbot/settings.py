@@ -90,7 +90,9 @@ DEFAULTS: dict[str, object] = {
     "max_reserve_hours": 2.0,
     "daily_reserve_hours_limit": 5.0,
     "notify_webhook": "",
-}
+    "reconcile_enabled": True,
+    "reconcile_interval_minutes": 30,
+ }
 
 
 def normalize_submit_strategy(v: object) -> str:
@@ -155,9 +157,14 @@ def parse_stored(key: str, raw: str | None, fallback: object) -> object:
             if v not in TICK_INTERVAL_OPTIONS and not (5 <= v <= 300):
                 raise ValueError
             return v
-        if key in ("anchor_retry_enabled",):
+        if key in ("anchor_retry_enabled", "reconcile_enabled"):
             s = str(raw).strip().lower()
             return s in ("1", "true", "yes", "on")
+        if key == "reconcile_interval_minutes":
+            v = int(str(raw).strip())
+            if not (5 <= v <= 360):
+                raise ValueError
+            return v
         if key == "anchor_scan_limit":
             v = int(str(raw).strip())
             if not (4 <= v <= 20):
@@ -200,6 +207,10 @@ def validate_all(patch: dict[str, object]) -> dict[str, str]:
                 iv = int(str(v).strip()) if isinstance(v, str) else int(v)  # type: ignore[arg-type]
                 if not (4 <= iv <= 20):
                     raise ValueError("须为 4–20 整数")
+            elif k == "reconcile_interval_minutes":
+                iv = int(str(v).strip()) if isinstance(v, str) else int(v)  # type: ignore[arg-type]
+                if not (5 <= iv <= 360):
+                    raise ValueError("须为 5–360 内整数")
             elif k in ("max_reserve_hours", "daily_reserve_hours_limit"):
                 fv = float(str(v).strip()) if isinstance(v, str) else float(v)  # type: ignore[arg-type]
                 if not (0.5 <= fv <= 12):
@@ -248,7 +259,8 @@ def effective(settings_rows: dict[str, str], cfg) -> dict[str, object]:
     except Exception:
         pass
     for k in ("submit_strategy", "relay_lead_seconds", "tick_interval_seconds",
-              "anchor_retry_enabled", "anchor_scan_limit", "notify_webhook"):
+              "anchor_retry_enabled", "anchor_scan_limit", "notify_webhook",
+              "reconcile_enabled", "reconcile_interval_minutes"):
         try:
             v = getattr(cfg.runtime, k, None)
             if v is not None:
