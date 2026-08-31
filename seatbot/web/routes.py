@@ -504,10 +504,21 @@ async def _fetch_others_occupied_cached(
 
 @router.get("/api/version")
 async def api_version(request: Request):
-    """覆盖图数据版本探针: 纯本地读取, 不发起超星请求。"""
+    """覆盖图数据版本探针: 纯本地读取, 不发起超星请求。
+
+    v = 内存写计数 + tasks.updated_at 最大值, 两个分量均单调不减:
+    库侧分量让绕过本进程的带外写入 (如人工补约脚本直改数据库) 也能
+    触发前端刷新; 内存计数覆盖 tasks 之外的写 (账号/座位/通知等)。
+    store 不支持库侧查询时退回纯内存计数。
+    """
     store = request.app.state.store
+    v = getattr(store, "data_version", 0)
+    try:
+        v += await store.max_task_updated_at()
+    except Exception:
+        pass
     return JSONResponse({
-        "v": getattr(store, "data_version", 0),
+        "v": v,
         "now": now_cst().isoformat(timespec="seconds"),
         "now_ms": int(_dt.now().timestamp() * 1000),
     })

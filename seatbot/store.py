@@ -558,6 +558,18 @@ class StateStore:
         return out
 
     # ---------- tasks ----------
+    async def max_task_updated_at(self) -> int:
+        """tasks.updated_at 的最大值 (毫秒, 空表返回 0)。
+
+        版本探针的库侧分量: 绕过本进程的带外写入 (如人工补约脚本
+        直改数据库) 也会推高该值, 使前端版本探测能感知并刷新。
+        """
+        async with self.db.execute(
+            "SELECT COALESCE(MAX(updated_at), 0) FROM tasks"
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
     async def add_task(self, t: Task) -> int:
         self._bump()
         now = int(_time.time() * 1000)
