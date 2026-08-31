@@ -109,6 +109,22 @@ class PanelAuthMiddleware(BaseHTTPMiddleware):
         return response
 
 
+_STATIC_DIR = TEMPLATES_DIR.parent / "static"
+
+
+def _static_v(name: str) -> str:
+    """静态资源的 mtime 数字版本号: 内容一变 URL 即变, 浏览器缓存自然失效。"""
+    return str(int((_STATIC_DIR / name).stat().st_mtime))
+
+
+def new_templates() -> Jinja2Templates:
+    """统一模板实例: 挂好全局函数, 测试桩与 make_app 共用同一配置。"""
+    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    templates.env.filters["epoch_ms"] = _epoch_ms
+    templates.env.globals["static_v"] = _static_v
+    return templates
+
+
 def _epoch_ms(value) -> str:
     """epoch 毫秒 → 'YYYY-MM-DD HH:MM:SS' (北京时间, 与超星 API 时区一致)。"""
     try:
@@ -123,8 +139,7 @@ def make_app(cfg: Config, store: StateStore, sched: Scheduler) -> FastAPI:
     app.state.cfg = cfg
     app.state.store = store
     app.state.sched = sched
-    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-    templates.env.filters["epoch_ms"] = _epoch_ms
+    templates = new_templates()
     app.state.templates = templates
 
     allowed_hosts = {"localhost", "127.0.0.1", "::1", _host_without_port(cfg.runtime.web_host)}

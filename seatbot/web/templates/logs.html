@@ -20,7 +20,7 @@
   <div class="card">
     <div class="overflow-x-auto">
       <table class="table">
-        <thead><tr><th>时间</th><th>级别</th><th>账号</th><th>消息</th></tr></thead>
+        <thead><tr><th class="num">时间</th><th>级别</th><th>账号</th><th>消息</th></tr></thead>
         <tbody>
           {% for log in logs %}
           <tr data-level="{{ log.level }}" x-show="level === '' || level === '{{ log.level }}'">

@@ -88,10 +88,17 @@
   {% endmacro %}
   <template x-if="notifications && notifications.length">
     <div class="flex flex-col gap-2">
+      <div class="flex">
+        <button type="button" class="btn btn-sm btn-ghost ml-auto"
+                :disabled="dismissAllBusy" @click="dismissAllNotifications()">全部忽略</button>
+      </div>
       <template x-for="n in notifications" :key="n.id">
-        <div class="banner" :class="n.level === 'error' ? 'banner-error' : 'banner-warn'">
+        <div class="banner" :class="n.level === 'error' ? 'banner-error' : (n.level === 'info' ? 'banner-info' : 'banner-warn')">
           <span class="dot"></span>
           <span><b x-text="n.title"></b><span class="ml-2" x-text="n.body"></span></span>
+          <button type="button" class="btn btn-sm btn-ghost ml-auto"
+                  :disabled="dismissBusy === n.id"
+                  @click="dismissNotification(n.id)">忽略</button>
         </div>
       </template>
     </div>

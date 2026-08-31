@@ -112,17 +112,27 @@
     }
   };
 
-  /* ===== 顶栏时钟：轮询 /api/status ===== */
+  /* ===== 顶栏时钟：本地秒级走字 + 每 30s 轮询 /api/status 校准偏移 ===== */
   window.topbarClock = function () {
     return {
       now: '--:--', nextAt: '--:--', nextAcc: '—',
-      init() { this.tick(); setInterval(() => this.tick(), 30000); },
+      _offsetMs: null,
+      init() {
+        this.tick();
+        setInterval(() => this.tick(), 30000);
+        setInterval(() => this.tickLocal(), 1000);
+      },
+      tickLocal() {
+        if (this._offsetMs !== null) {
+          this.now = fmtHHMM(new Date(Date.now() + this._offsetMs));
+        }
+      },
       async tick() {
         try {
           const r = await fetch('/api/status', { cache: 'no-store' });
           if (!r.ok) return;
           const j = await r.json();
-          this.now = fmtHHMM(new Date(j.now));
+          if (j.now_ms) { this._offsetMs = j.now_ms - Date.now(); this.tickLocal(); }
           if (j.next_relay_at) {
             this.nextAt = fmtHHMM(new Date(j.next_relay_at));
             this.nextAcc = j.next_relay_account_id || '-';
@@ -333,12 +343,16 @@
       now: initial.now_hhmm || '',
       countdown: 12,
       busy: false,
+      dismissBusy: null,
+      dismissAllBusy: false,
+      clockOffsetMs: null,
       timer: null,
       card: null,
       boot: { active: true, display: 0, target: 8, stage: '正在唤醒守护系统…' },
 
       init() {
         this.timer = setInterval(() => this.tick(), 1000);
+        this._clockTimer = setInterval(() => this.tickClock(), 1000);
         this._initBoot();
         this.refresh();
         this._onVis = () => { if (!document.hidden) this.probe(); };
@@ -346,9 +360,18 @@
       },
       destroy() {
         clearInterval(this.timer);
+        clearInterval(this._clockTimer);
         clearInterval(this._bootTimer);
         clearTimeout(this._bootGuard);
         document.removeEventListener('visibilitychange', this._onVis);
+      },
+
+      /* 本地秒级走字的"当前时间": 以最近一次服务器时间为基准做偏移校准,
+       * 分钟级显示不再等待下一次数据刷新 */
+      tickClock() {
+        if (this.clockOffsetMs !== null) {
+          this.now = fmtHHMM(new Date(Date.now() + this.clockOffsetMs));
+        }
       },
 
       /* 首屏加载动画: 缓动数字向 target 爬升, 首次数据到达后放行到 100% 揭幕 */
@@ -394,6 +417,7 @@
           const r = await fetch('/api/version', { cache: 'no-store' });
           if (!r.ok) return;
           const j = await r.json();
+          if (j.now_ms) { this.clockOffsetMs = j.now_ms - Date.now(); this.tickClock(); }
           if (this._knownV === undefined) { this._knownV = j.v; return; }
           if (j.v !== this._knownV) await this.refresh();
         } catch (e) { /* 探针失败静默, 下轮再试 */ }
@@ -439,6 +463,28 @@
         return '更新于 ' + d.toTimeString().slice(0, 5);
       },
 
+      /* 忽略一条看板通知: 只删本地记录, 成功后原地移除, 不打断甘特刷新节奏 */
+      async dismissNotification(id) {
+        if (this.dismissBusy) return;
+        this.dismissBusy = id;
+        try {
+          const r = await fetch(`/api/notifications/${id}/dismiss`, { method: 'POST' });
+          if (r.ok) this.notifications = this.notifications.filter(n => n.id !== id);
+        } catch (e) { /* 失败静默, 下轮数据到达时自然恢复 */ }
+        finally { this.dismissBusy = null; }
+      },
+
+      /* 全部忽略: 积压的旧告警逐条点体验极差, 一键清空 */
+      async dismissAllNotifications() {
+        if (this.dismissAllBusy) return;
+        this.dismissAllBusy = true;
+        try {
+          const r = await fetch('/api/notifications/dismiss-all', { method: 'POST' });
+          if (r.ok) this.notifications = [];
+        } catch (e) { /* 失败静默, 下轮数据到达时自然恢复 */ }
+        finally { this.dismissAllBusy = false; }
+      },
+
       async refresh() {
         if (this.card) { this.countdown = 10; return; }
         this.busy = true;
@@ -451,6 +497,7 @@
           this.recentLogs = j.recent_logs || [];
           this.notifications = j.notifications || [];
           this.now = j.now_hhmm || this.now;
+          if (j.now_ms) this.clockOffsetMs = j.now_ms - Date.now();
           if (this.boot.target < 100) this.boot.stage = '核对座位覆盖…';
         } catch (e) {
           console.warn('dashboard refresh failed:', e);

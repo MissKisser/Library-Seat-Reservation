@@ -8,7 +8,7 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
   {# 静态资源带版本参数: CSS/JS 更新后递增 v, 避免浏览器缓存旧文件导致新旧前端错配 #}
-  <link rel="stylesheet" href="/static/style.css?v=20260830c">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_v('style.css') }}">
   <style>[x-cloak]{display:none!important}</style>
   {% block head_extra %}{% endblock %}
   {# app.js 必须先于 alpinejs 加载 (两者都用 defer,按文档序执行)。
@@ -17,7 +17,7 @@
      但此时 window.coverageGrid 还没注册 (app.js 还没跑),表达式求值失败,
      控制台会刷一堆 "X is not defined" 警告,且组件 data stack 为空,
      导致 <template x-for> 永远不渲染 (e.g. 覆盖图加载不出来)。 #}
-  <script defer src="/static/app.js?v=20260829a"></script>
+  <script defer src="/static/app.js?v={{ static_v('app.js') }}"></script>
   <script defer src="/static/alpinejs.min.js"></script>
 </head>
 <body>

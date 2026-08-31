@@ -27,7 +27,7 @@
     <table class="table">
       <thead>
         <tr>
-          <th>ID</th><th>手机号</th><th>时段</th><th>绑定座位</th><th>验证</th><th class="actions">操作</th>
+          <th>ID</th><th class="num">手机号</th><th>时段</th><th>绑定座位</th><th>验证</th><th class="actions">操作</th>
         </tr>
       </thead>
       <tbody>
@@ -48,7 +48,7 @@
           <td>
             {% if a.bound_seats %}
               {% for s in a.bound_seats %}<span class="badge badge-muted mr-1">{{ s }}</span>{% endfor %}
-            {% else %}<span class="text-xs text-ink-muted">通用</span>{% endif %}
+            {% else %}<span class="text-xs text-ink-muted whitespace-nowrap">通用</span>{% endif %}
           </td>
           <td>
             {# 行级验证按钮 #}

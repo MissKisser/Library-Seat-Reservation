@@ -51,7 +51,7 @@
       {% if rows %}
       <table class="w-full text-sm">
         <thead>
-          <tr class="text-left text-xs text-ink-muted border-b border-edge-subtle">
+          <tr class="text-center text-xs text-ink-muted border-b border-edge-subtle whitespace-nowrap">
             <th class="py-2 pr-4">日期</th>
             <th class="py-2 pr-4">时段</th>
             <th class="py-2 pr-4">座位</th>
@@ -64,15 +64,15 @@
         </thead>
         <tbody>
           {% for r in rows %}
-          <tr class="border-b border-edge-subtle last:border-0">
+          <tr class="text-center border-b border-edge-subtle last:border-0">
             <td class="py-2 pr-4 font-mono text-xs whitespace-nowrap">{{ r.day }}</td>
             <td class="py-2 pr-4 font-mono text-xs whitespace-nowrap">{{ r.start }}-{{ r.end }}</td>
             <td class="py-2 pr-4 font-mono text-xs">{{ r.seat }}</td>
             <td class="py-2 pr-4 text-xs text-ink-secondary">{{ r.room }}</td>
-            <td class="py-2 pr-4"><span class="chip {{ r.chip }}">{{ r.label }}</span></td>
-            <td class="py-2 pr-4 font-mono text-xs">{{ r.signin }}</td>
-            <td class="py-2 pr-4 font-mono text-xs">{{ r.signout }}</td>
-            <td class="py-2 font-mono text-xs">{{ r.rid }}</td>
+            <td class="py-2 pr-4 whitespace-nowrap"><span class="chip {{ r.chip }}">{{ r.label }}</span></td>
+            <td class="py-2 pr-4 font-mono text-xs whitespace-nowrap">{{ r.signin }}</td>
+            <td class="py-2 pr-4 font-mono text-xs whitespace-nowrap">{{ r.signout }}</td>
+            <td class="py-2 font-mono text-xs [overflow-wrap:anywhere]">{{ r.rid }}</td>
           </tr>
           {% endfor %}
         </tbody>

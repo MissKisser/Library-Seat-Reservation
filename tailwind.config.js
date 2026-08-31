@@ -18,9 +18,11 @@ module.exports = {
           sidebar: 'rgb(var(--bg-sidebar-rgb) / <alpha-value>)',
           'table-header': 'rgb(var(--bg-table-header-rgb) / <alpha-value>)',
         },
+        /* 描边 token 的基础透明度在 token 层控制（--border-*-a），类级 alpha 修饰符与其相乘；
+           深色描边是半透明白（10%/17%），不能用 <alpha-value> 直译成不透明色 */
         edge: {
-          subtle: 'rgb(var(--border-subtle-rgb) / <alpha-value>)',
-          strong: 'rgb(var(--border-strong-rgb) / <alpha-value>)',
+          subtle: 'rgb(var(--border-subtle-rgb) / calc(<alpha-value> * var(--border-subtle-a)))',
+          strong: 'rgb(var(--border-strong-rgb) / calc(<alpha-value> * var(--border-strong-a)))',
         },
         ink: {
           DEFAULT: 'rgb(var(--text-primary-rgb) / <alpha-value>)',

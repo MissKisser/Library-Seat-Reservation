@@ -5,11 +5,10 @@ from datetime import date, time
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from fastapi.templating import Jinja2Templates
 
 from seatbot.coverage import compute_seat_coverage
 from seatbot.models import Account, SeatTarget, Task, TaskStatus
-from seatbot.web.app import TEMPLATES_DIR
+from seatbot.web.app import new_templates
 from seatbot.web.routes import _annotate_rows, router
 
 
@@ -30,9 +29,10 @@ class FakeStore:
     """In-memory store stub; accounts carry no phone/password so the
     dashboard route skips every Chaoxing call."""
 
-    def __init__(self, tasks=(), seat_slots=None):
+    def __init__(self, tasks=(), seat_slots=None, notifications=()):
         self.tasks = list(tasks)
         self.seat_slots = seat_slots or {"104": ["09:00-11:00"]}
+        self.notifications = list(notifications)
 
     async def list_accounts(self):
         return [Account(id="a1", phone="", password="", slots=[], seat_slots=self.seat_slots)]
@@ -55,7 +55,17 @@ class FakeStore:
         return []
 
     async def list_notifications(self, limit=5):
-        return []
+        return self.notifications[:limit]
+
+    async def dismiss_notification(self, nid):
+        before = len(self.notifications)
+        self.notifications = [n for n in self.notifications if n["id"] != nid]
+        return len(self.notifications) < before
+
+    async def dismiss_all_notifications(self):
+        n = len(self.notifications)
+        self.notifications = []
+        return n
 
 
 class _StubCfg:
@@ -71,7 +81,7 @@ def _make_client(store):
     app.state.cfg = _StubCfg
     app.state.store = store
     app.state.sched = None
-    app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    app.state.templates = new_templates()
     return TestClient(app)
 
 
@@ -217,3 +227,50 @@ def test_others_occupied_cache_avoids_refetch(monkeypatch, client):
     r1, r2 = asyncio.run(run())
     assert calls["n"] == 1
     assert r1 == r2
+
+
+def test_dismiss_notification_route_hides_row():
+    store = FakeStore(notifications=[
+        {"id": 7, "ts": 1, "level": "error", "title": "签到终止", "body": "x"},
+        {"id": 8, "ts": 2, "level": "warn", "title": "另一条", "body": ""},
+    ])
+    client = _make_client(store)
+    resp = client.post("/api/notifications/7/dismiss")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    remaining = client.get("/api/dashboard-data").json()["notifications"]
+    assert [n["id"] for n in remaining] == [8]
+
+
+def test_dismiss_notification_route_unknown_id_returns_404():
+    client = _make_client(FakeStore(notifications=[
+        {"id": 7, "ts": 1, "level": "warn", "title": "t", "body": ""},
+    ]))
+    resp = client.post("/api/notifications/404/dismiss")
+    assert resp.status_code == 404
+    assert resp.json() == {"ok": False, "error": "notification not found"}
+    assert len(client.get("/api/dashboard-data").json()["notifications"]) == 1
+
+
+def test_dashboard_data_includes_now_ms():
+    j = _make_client(FakeStore()).get("/api/dashboard-data").json()
+    assert isinstance(j["now_ms"], int)
+
+
+def test_dismiss_all_notifications_route():
+    store = FakeStore(notifications=[
+        {"id": 1, "ts": 1, "level": "error", "title": "a", "body": ""},
+        {"id": 2, "ts": 2, "level": "info", "title": "b", "body": ""},
+    ])
+    client = _make_client(store)
+    resp = client.post("/api/notifications/dismiss-all")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "dismissed": 2}
+    assert client.get("/api/dashboard-data").json()["notifications"] == []
+
+
+def test_dashboard_references_autoversioned_static():
+    import re
+    html = _make_client(FakeStore()).get("/").text
+    assert re.search(r'/static/app\.js\?v=\d+"', html), "app.js 应带 mtime 数字版本号"
+    assert re.search(r'/static/style\.css\?v=\d+"', html), "style.css 应带 mtime 数字版本号"
