@@ -39,6 +39,7 @@ def test_bound_account_covers_only_its_seat():
     c105 = _cells(by_seat["105"])
     assert c104[("09:00", "09:30")].accounts == ["a"]
     assert c104[("10:30", "11:00")].accounts == ["a"]
+    assert c104[("11:00", "11:30")].accounts == []
     assert c105[("09:00", "09:30")].accounts == []
 
 
@@ -58,7 +59,8 @@ def test_gap_property_reports_uncovered_span():
         [_acc("a", ["09:00-10:00"], bound_seats=["104"])],
         [_seat("104")], DAY,
     )
-    gaps = rows[0].coverage.gaps
+    gaps = rows[0].gaps
+    # 缺口应包含 10:00 起到 22:00 的整段
     assert any(g[0] == time(10, 0) and g[1] == time(22, 0) for g in gaps)
 
 
@@ -70,8 +72,9 @@ def test_user_reserved_and_others_occupied_overlay():
         others_occupied=[("104", time(18, 0), time(19, 0))],
     )
     c = _cells(rows[0])
-    assert c[("09:00", "09:30")].accounts == ["a"]
-    assert c[("09:00", "09:30")].user_reserved is False
+    assert c[("12:30", "13:00")].user_reserved is True
+    assert c[("12:30", "13:00")].accounts == []          # overlay 不算守护
+    assert c[("18:30", "19:00")].others_occupied is True
     assert c[("09:30", "10:00")].user_reserved is False
 
 
