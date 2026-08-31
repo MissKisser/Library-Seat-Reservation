@@ -133,6 +133,8 @@
                     x-text="busy ? '刷新中…' : '立即刷新'"
                     title="跳过占用缓存直接查询平台实况（30 秒内仅强制一次，每次至多 4 个只读查询）"></button>
           </div>
+        </div>
+        <div class="card-body">
           <div class="gantt-wrap">
             {{ coverage_strip('today') }}
             <div class="gantt-legend">

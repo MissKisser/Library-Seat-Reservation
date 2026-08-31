@@ -13,11 +13,11 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from seatbot.bindings import (
-   account_margins, auto_assign, candidate_accounts,
-   desired_slots_of, validate_matrix,
+    account_margins, auto_assign, candidate_accounts,
+    desired_slots_of, validate_matrix,
 )
 from seatbot.utils.weekly import (
-   WEEKDAY_KEYS, WEEKDAY_LABELS, normalize_weekly, slots_for_weekday, weekday_key,
+    WEEKDAY_KEYS, WEEKDAY_LABELS, normalize_weekly, slots_for_weekday, weekday_key,
 )
 from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
