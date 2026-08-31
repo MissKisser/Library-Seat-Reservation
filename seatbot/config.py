@@ -107,7 +107,7 @@ class RuntimeConfig(BaseModel):
     #: 触发时 POST JSON {"title": ..., "content": ...}
     notify_webhook: str = ""
     #: 后台实况核对间隔（秒，可在系统设置页调整，未调整时沿用此处配置）
-    reconcile_interval_seconds: int = 90
+    reconcile_interval_seconds: int = 300
     log_dir: str = "./logs"
     db_path: str = "./seatbot.db"
     web_host: str = "127.0.0.1"

@@ -90,7 +90,7 @@ DEFAULTS: dict[str, object] = {
     "max_reserve_hours": 2.0,
     "daily_reserve_hours_limit": 5.0,
     "notify_webhook": "",
-    "reconcile_interval_seconds": 90,
+    "reconcile_interval_seconds": 300,
 }
 
 

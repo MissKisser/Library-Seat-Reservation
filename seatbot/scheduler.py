@@ -842,13 +842,17 @@ class Scheduler:
     async def reconcile_tick(self) -> None:
         """每分钟：实况核对节拍器——判断是否到期，到期跑一轮 sweep。
 
-        到期 = 距上次 ≥ 间隔（秒级可配）；另有任务将在 30 分钟内开段
-        （签到窗口前）且距上次 ≥ 5min 时提前核对。间隔经
-        load_runtime_settings 热生效，无需重注册 job。
+        仅在馆舍开放时段（open_time–close_time，默认 08:00–22:00）内
+        核对，闭馆时段静默；到期 = 距上次 ≥ 间隔（秒级可配）；另有任务
+        将在 30 分钟内开段（签到窗口前）且距上次 ≥ 5min 时提前核对。
+        间隔经 load_runtime_settings 热生效，无需重注册 job。
         """
         if self._reconcile_running:
             return
         now = now_cst()
+        now_hm = now.strftime("%H:%M")
+        if not (self.cfg.library.open_time <= now_hm < self.cfg.library.close_time):
+            return
         last = self._reconcile_last_at
         if last is not None and now - last < timedelta(seconds=self.reconcile_interval_seconds):
             if now - last < timedelta(minutes=5) or not await self._pre_sign_due(now):
