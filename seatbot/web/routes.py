@@ -1819,7 +1819,7 @@ _RESERVE_CACHE: dict[str, tuple[float, list[dict] | None, str | None]] = {}
 _RESERVE_TTL = 60.0
 _RESERVE_TABS = [
     ("all", "全部", None),
-    ("pending", "待履约", (0, 1)),
+    ("pending", "待履约", (0, 1, 5)),
     ("done", "已履约", (2,)),
     ("cancelled", "已取消", (7,)),
     ("violation", "违约", (8,)),
@@ -1828,6 +1828,8 @@ _RESERVE_STATUS = {
     0: ("待履约", "chip-accent"),
     1: ("使用中", "chip-accent"),
     2: ("已履约", "chip-success"),
+    3: ("暂离中", "chip-accent"),
+    5: ("被监督中", "chip-warn"),
     7: ("已取消", "chip-muted"),
     8: ("违约", "chip-danger"),
 }

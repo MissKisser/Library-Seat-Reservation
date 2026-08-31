@@ -86,8 +86,10 @@ def test_seat_slots_rejects_overlong_range():
     )
     with pytest.raises(PlannerError, match="拆"):
         planner.expand_for_day(date(2026, 8, 25))
+
+
 def test_seat_slots_weekday_dict_per_day():
-    # ★ 星期维度: 按那天的星期键取时段; 缺天 = 不产任务
+    # 星期维度: 按那天的星期键取时段; 缺天 = 不产任务
     acc = make_account(
         [], seat_slots={"104": {"mon": ["09:00-11:00"], "tue": ["15:00-17:00"]}},
         bound_seats=["104"],
