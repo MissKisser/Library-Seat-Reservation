@@ -297,6 +297,19 @@ class Scheduler:
             return
         try:
             supervised = await client.supervised_reservations()
+        except ChaoxingError as e:
+            if "未登录" not in str(e):
+                await self._warn(f"监督检测失败: {e}", acc.id)
+                return
+            await self._warn("监督检测: 会话过期 → 重置会话并重登重试", acc.id)
+            client.reset_session()
+            if not await self.login_and_persist(acc, client, "监督检测重登"):
+                return
+            try:
+                supervised = await client.supervised_reservations()
+            except Exception as e2:
+                await self._warn(f"监督检测失败(重登后): {e2}", acc.id)
+                return
         except Exception as e:
             await self._warn(f"监督检测失败: {e}", acc.id)
             return
