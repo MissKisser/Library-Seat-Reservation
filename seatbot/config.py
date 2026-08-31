@@ -106,6 +106,9 @@ class RuntimeConfig(BaseModel):
     #: 通知外推 webhook；未设置时仅在看板展示。
     #: 触发时 POST JSON {"title": ..., "content": ...}
     notify_webhook: str = ""
+    #: 后台实况核对开关与间隔（可在系统设置页调整，未调整时沿用此处配置）
+    reconcile_enabled: bool = True
+    reconcile_interval_minutes: int = 30
     log_dir: str = "./logs"
     db_path: str = "./seatbot.db"
     web_host: str = "127.0.0.1"
@@ -141,6 +144,13 @@ class RuntimeConfig(BaseModel):
     def _anchor_limit_format(cls, v: int) -> int:
         if not (4 <= int(v) <= 20):
             raise ValueError("anchor_scan_limit must be 4–20")
+        return int(v)
+
+    @field_validator("reconcile_interval_minutes")
+    @classmethod
+    def _reconcile_interval_format(cls, v: int) -> int:
+        if not (5 <= int(v) <= 360):
+            raise ValueError("reconcile_interval_minutes must be 5–360")
         return int(v)
 
 

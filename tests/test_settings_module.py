@@ -57,3 +57,22 @@ def test_storage_roundtrip_typed_values():
     ) == [2, 5]
     assert _settings.parse_stored("anchor_retry_enabled", "true", False) is True
     assert _settings.parse_stored("relay_lead_seconds", "180", 300) == 180
+
+
+def test_reconcile_settings_defaults_and_roundtrip():
+    cfg = _cfg()
+    eff = _settings.effective({}, cfg)
+    assert eff["reconcile_enabled"] is True
+    assert eff["reconcile_interval_minutes"] == 30
+    # DB 覆盖往返
+    assert _settings.coerce_for_storage("reconcile_enabled", False) == "false"
+    assert _settings.parse_stored("reconcile_enabled", "false", True) is False
+    raw = _settings.coerce_for_storage("reconcile_interval_minutes", 120)
+    assert _settings.parse_stored("reconcile_interval_minutes", raw, 30) == 120
+
+
+def test_validate_all_rejects_bad_reconcile_interval():
+    assert _settings.validate_all({"reconcile_interval_minutes": "3"}) != {}
+    assert _settings.validate_all({"reconcile_interval_minutes": "361"}) != {}
+    assert _settings.validate_all({"reconcile_interval_minutes": "120"}) == {}
+    assert _settings.validate_all({"reconcile_enabled": "true"}) == {}
