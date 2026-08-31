@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date, time
 
 import pytest
@@ -121,3 +122,72 @@ async def test_update_task_status_clears_last_error_on_success(store: StateStore
     got = await store.get_task(tid)
     assert got.status == TaskStatus.ACTIVE and got.reserve_id == 99
     assert got.last_error is None
+
+def test_dismiss_notification_removes_row(tmp_path):
+    async def run():
+        s = StateStore(str(tmp_path / "dismiss.db"))
+        await s.init()
+        try:
+            await s.add_notification("签到终止", level="error")
+            await s.add_notification("提示", level="warn")
+            rows = await s.list_notifications()
+            target = rows[0]["id"]
+            deleted = await s.dismiss_notification(target)
+            remaining = await s.list_notifications()
+            return deleted, target, [r["id"] for r in rows], [r["id"] for r in remaining]
+        finally:
+            await s.close()
+
+    deleted, target, before, after = asyncio.run(run())
+    assert deleted is True
+    assert len(after) == len(before) - 1
+    assert set(before) - set(after) == {target}
+
+
+def test_dismiss_notification_unknown_id_is_noop(tmp_path):
+    async def run():
+        s = StateStore(str(tmp_path / "dismiss2.db"))
+        await s.init()
+        try:
+            await s.add_notification("仅一条")
+            deleted = await s.dismiss_notification(987654)
+            return deleted, len(await s.list_notifications())
+        finally:
+            await s.close()
+
+    deleted, count = asyncio.run(run())
+    assert deleted is False
+    assert count == 1
+
+
+def test_add_notification_caps_table_at_30(tmp_path):
+    async def run():
+        s = StateStore(str(tmp_path / "cap.db"))
+        await s.init()
+        try:
+            for i in range(35):
+                await s.add_notification(f"n{i}")
+            return await s.list_notifications(limit=100)
+        finally:
+            await s.close()
+
+    rows = asyncio.run(run())
+    assert len(rows) == 30
+    assert rows[0]["title"] == "n34"
+
+
+def test_dismiss_all_notifications(tmp_path):
+    async def run():
+        s = StateStore(str(tmp_path / "all.db"))
+        await s.init()
+        try:
+            await s.add_notification("a")
+            await s.add_notification("b")
+            deleted = await s.dismiss_all_notifications()
+            return deleted, await s.list_notifications(limit=10)
+        finally:
+            await s.close()
+
+    deleted, rows = asyncio.run(run())
+    assert deleted == 2
+    assert rows == []

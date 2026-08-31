@@ -11,8 +11,8 @@
     --bg-muted: #f5f5f5;          --bg-muted-rgb: 245 245 245;
     --bg-sidebar: #fbfbfb;        --bg-sidebar-rgb: 251 251 251;
     --bg-table-header: #fafafa;   --bg-table-header-rgb: 250 250 250;
-    --border-subtle: #e8e8e8;     --border-subtle-rgb: 232 232 232;
-    --border-strong: #d4d4d4;     --border-strong-rgb: 212 212 212;
+    --border-subtle: #e8e8e8;     --border-subtle-rgb: 232 232 232;  --border-subtle-a: 1;
+    --border-strong: #d4d4d4;     --border-strong-rgb: 212 212 212;  --border-strong-a: 1;
     --text-primary: #0a0a0a;      --text-primary-rgb: 10 10 10;
     --text-secondary: #606060;    --text-secondary-rgb: 96 96 96;
     --text-muted: #a1a1a1;        --text-muted-rgb: 161 161 161;
@@ -44,8 +44,8 @@
     --bg-muted: #2f2f2f;          --bg-muted-rgb: 47 47 47;
     --bg-sidebar: #1c1c1c;        --bg-sidebar-rgb: 28 28 28;
     --bg-table-header: #333333;   --bg-table-header-rgb: 51 51 51;
-    --border-subtle: rgba(255, 255, 255, 0.1);   --border-subtle-rgb: 255 255 255;
-    --border-strong: rgba(255, 255, 255, 0.17);  --border-strong-rgb: 255 255 255;
+    --border-subtle: rgba(255, 255, 255, 0.1);   --border-subtle-rgb: 255 255 255;  --border-subtle-a: 0.1;
+    --border-strong: rgba(255, 255, 255, 0.17);  --border-strong-rgb: 255 255 255;  --border-strong-a: 0.17;
     --text-primary: #f3f3f3;      --text-primary-rgb: 243 243 243;
     --text-secondary: #b7b7b7;    --text-secondary-rgb: 183 183 183;
     --text-muted: #808080;        --text-muted-rgb: 128 128 128;
@@ -70,6 +70,11 @@
   }
 
   html { font-family: theme('fontFamily.sans'); -webkit-font-smoothing: antialiased; }
+  /* 细滚动条随主题换色（scrollbar-* 可继承，挂在根上全局生效） */
+  html { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+  /* 原生表单控件（checkbox/radio/进度）统一品牌色，避免深色下系统默认蓝突兀 */
+  html { accent-color: var(--accent); color-scheme: light dark; }
+  [data-theme="dark"] { color-scheme: dark; }
   body {
     background-color: var(--bg-app);
     color: var(--text-primary);
@@ -110,7 +115,7 @@
   /* ===== Chip（药丸状态标签）===== */
   .chip {
     @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full
-           text-[11px] font-semibold whitespace-nowrap;
+           text-[11px] font-semibold whitespace-nowrap [overflow-wrap:normal];
   }
   .chip-accent  { @apply bg-accent-soft text-accent; }
   .chip-success { @apply bg-success-soft text-success; }
@@ -151,7 +156,7 @@
   /* ===== Badge ===== */
   .badge {
     @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full
-           text-xs font-medium border;
+           text-xs font-medium border [overflow-wrap:normal];
   }
   .badge .dot { @apply h-1.5 w-1.5 rounded-full; }
   .badge-success { @apply bg-success-soft text-success border-success/30; }
@@ -189,13 +194,16 @@
   .table { @apply w-full text-sm border-collapse; }
   .table thead th {
     @apply sticky top-0 z-10 bg-app-table-header text-xs
-           text-ink-muted font-medium text-left px-3 py-2.5 border-b border-edge-subtle;
+           text-ink-muted font-medium text-center px-3 py-2.5 border-b border-edge-subtle
+           whitespace-nowrap;
   }
-  .table tbody td { @apply px-3 py-2.5 border-b border-edge-subtle text-ink; }
+  /* anywhere（而非 break-words）才能缩小 min-content，避免长 token 把 CJK 短列挤成竖排 */
+  /* 表头与单元格统一居中，保证表头相对列内容居中；num 保留等宽数字、actions 保留不换行 */
+  .table tbody td { @apply px-3 py-2.5 border-b border-edge-subtle text-ink text-center [overflow-wrap:anywhere]; }
   .table tbody tr:hover { @apply bg-app-muted/40; }
-  .table .num { @apply tabular text-right; }
-  .table .actions { @apply text-right whitespace-nowrap; }
-  .table code { @apply font-mono text-xs text-ink-secondary; }
+  .table td.num { @apply tabular; }
+  .table td.actions { @apply whitespace-nowrap; }
+  .table code { @apply font-mono text-xs text-ink-secondary whitespace-nowrap; }
 
   /* ===== 空状态 ===== */
   .empty {

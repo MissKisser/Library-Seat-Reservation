@@ -36,14 +36,14 @@
   <div class="card">
     <div class="overflow-x-auto">
       <table class="table">
-        <thead><tr><th>账号</th><th>座位</th><th>日期</th><th>时段</th><th>备注</th><th class="actions">操作</th></tr></thead>
+        <thead><tr><th>账号</th><th>座位</th><th class="num">日期</th><th class="num">时段</th><th>备注</th><th class="actions">操作</th></tr></thead>
         <tbody>
           {% for r in reserved %}
           <tr>
             <td><code>{{ r.account_id }}</code></td>
-            <td class="font-mono">{{ r.seat_num }}</td>
-            <td class="num">{{ r.day }}</td>
-            <td class="num font-mono text-xs">{{ r.start_time }}-{{ r.end_time }}</td>
+            <td class="font-mono whitespace-nowrap">{{ r.seat_num }}</td>
+            <td class="num whitespace-nowrap">{{ r.day }}</td>
+            <td class="num font-mono text-xs whitespace-nowrap">{{ r.start_time }}-{{ r.end_time }}</td>
             <td class="text-xs text-ink-secondary">{{ r.note or '—' }}</td>
             <td class="actions">
               <button class="btn btn-ghost btn-sm text-danger"

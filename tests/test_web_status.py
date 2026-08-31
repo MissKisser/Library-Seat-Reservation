@@ -104,3 +104,15 @@ def test_status_with_last_log(client):
     assert j["last_log"]["level"] == "INFO"
     assert j["last_log"]["account_id"] == "guard_a"
     assert j["last_log"]["message"] == "hello"
+
+
+def test_status_now_ms_epoch(client):
+    import time as _t
+    j = client.get("/api/status").json()
+    assert abs(j["now_ms"] - _t.time() * 1000) < 5000
+
+
+def test_version_now_ms_epoch(client):
+    import time as _t
+    j = client.get("/api/version").json()
+    assert abs(j["now_ms"] - _t.time() * 1000) < 5000

@@ -774,10 +774,18 @@ class StateStore:
         return [LogRow(id=r[0], ts=r[1], level=r[2], account_id=r[3], message=r[4]) for r in rows]
 
     async def add_notification(self, title: str, body: str = "", level: str = "warn") -> None:
-        """落一条用户需要看到的通知（看板 banner 展示，可选 webhook 外推）。"""
+        """落一条用户需要看到的通知（看板 banner 展示，可选 webhook 外推）。
+
+        表容量封顶 30 条: 连败类告警每 10 分钟就落一条, 不封顶会积压,
+        忽略最新几条后更旧的同类告警又会顶进轮播, 表现为"忽略不生效"。
+        """
         await self.db.execute(
             "INSERT INTO notifications (ts, level, title, body) VALUES (?, ?, ?, ?)",
             (int(_time.time() * 1000), level, title, body),
+        )
+        await self.db.execute(
+            "DELETE FROM notifications WHERE id NOT IN ("
+            "SELECT id FROM notifications ORDER BY ts DESC, id DESC LIMIT 30)"
         )
         await self.db.commit()
 
@@ -791,6 +799,18 @@ class StateStore:
             {"id": r[0], "ts": r[1], "level": r[2], "title": r[3], "body": r[4]}
             for r in rows
         ]
+
+    async def dismiss_notification(self, nid: int) -> bool:
+        """删除一条通知; 返回该 id 是否确实存在并已删除。"""
+        cur = await self.db.execute("DELETE FROM notifications WHERE id = ?", (nid,))
+        await self.db.commit()
+        return cur.rowcount > 0
+
+    async def dismiss_all_notifications(self) -> int:
+        """清空全部通知; 返回删除条数。"""
+        cur = await self.db.execute("DELETE FROM notifications")
+        await self.db.commit()
+        return cur.rowcount
 
 
 def _row_to_task(row) -> Task:

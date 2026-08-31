@@ -446,6 +446,7 @@ async def _build_dashboard_data(request: Request) -> dict:
             "occ_err": bundle_tomorrow["occ_err"],
         },
         "now_hhmm": now_cst().strftime("%H:%M"),
+        "now_ms": int(_dt.now().timestamp() * 1000),
         "recent_logs": [{
             "ts": l.ts, "level": l.level,
             "account_id": l.account_id, "message": l.message,
@@ -460,6 +461,23 @@ async def _build_dashboard_data(request: Request) -> dict:
 async def api_dashboard_data(request: Request):
     """Dashboard 局部刷新用的 JSON 视图 (前端按数据版本变化时才拉取)。"""
     return JSONResponse(await _build_dashboard_data(request))
+
+
+@router.post("/api/notifications/dismiss-all")
+async def api_notification_dismiss_all(request: Request):
+    """一键清空全部看板通知 (积压的旧告警逐条忽略体验极差)。"""
+    store = request.app.state.store
+    dismissed = await store.dismiss_all_notifications()
+    return JSONResponse({"ok": True, "dismissed": dismissed})
+
+
+@router.post("/api/notifications/{nid}/dismiss")
+async def api_notification_dismiss(request: Request, nid: int):
+    """忽略一条看板通知; 只删本地记录, 不影响任何任务与账号状态。"""
+    store = request.app.state.store
+    if not await store.dismiss_notification(nid):
+        return JSONResponse({"ok": False, "error": "notification not found"}, status_code=404)
+    return JSONResponse({"ok": True})
 
 
 # 他人占用查询缓存: (day, seats) -> (monotonic_ts, ok, payload)
@@ -491,6 +509,7 @@ async def api_version(request: Request):
     return JSONResponse({
         "v": getattr(store, "data_version", 0),
         "now": now_cst().isoformat(timespec="seconds"),
+        "now_ms": int(_dt.now().timestamp() * 1000),
     })
 
 
@@ -1762,6 +1781,7 @@ async def api_status(request: Request):
     seats = await store.list_target_seats()
     return JSONResponse({
         "now": now.isoformat(timespec="seconds"),
+        "now_ms": int(_dt.now().timestamp() * 1000),
         "next_relay_at": (nxt.at.isoformat(timespec="minutes") if nxt else None),
         "next_relay_in_min": (nxt.delta_minutes if nxt else None),
         "next_relay_account_id": (nxt.account_id if nxt else None),

@@ -482,6 +482,11 @@ class Scheduler:
             await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
             self._clear_fail_streak(t.id)
             await self._info(f"签到成功 预约号#{t.reserve_id} 座位={t.seat_num}", acc.id)
+            await self.store.add_notification(
+                "签到成功",
+                f"账号={acc.id} 座位={t.seat_num} 预约号#{t.reserve_id}",
+                level="info",
+            )
             return
         msg = str(sr.get("msg") or "")
         if "不在签到时间" in msg:

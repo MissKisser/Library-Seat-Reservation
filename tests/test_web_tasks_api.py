@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from fastapi.templating import Jinja2Templates
 
 from seatbot.models import Account, Task, TaskStatus
-from seatbot.web.app import TEMPLATES_DIR
+from seatbot.web.app import new_templates
 from seatbot.web.routes import router
 
 DAY = date.today()
@@ -95,7 +95,7 @@ def _make_client(store, sched=None):
     app.state.cfg = _StubCfg
     app.state.store = store
     app.state.sched = sched
-    app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    app.state.templates = new_templates()
     return TestClient(app)
 
 
