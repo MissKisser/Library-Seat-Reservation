@@ -15,10 +15,9 @@ class SeatTarget:
     label: str = ""          # 可选昵称, e.g. '靠窗主座'
     enabled: bool = True
     created_at: int = 0
-    updated_at: int = 0
-    # 该座位期望被守护的时段; None = 使用 bindings.DEFAULT_DESIRED_SLOTS
-    desired_slots: list[str] | None = None
-
+    # 该座位期望被守护的时段；None = 使用 DEFAULT_DESIRED_SLOTS；
+    # list = 全周统一；dict[星期键, list] = 按天
+    desired_slots: list[str] | dict[str, list[str]] | None = None
 
 # ---------- account / slot ----------
 
@@ -28,9 +27,10 @@ class Account:
     phone: str
     password: str
     slots: str | list[str]                            # SlotSpec
-    bound_seats: list[str] = field(default_factory=list)   # ★ 新增: 绑定的目标座位
-    # ★ v0.5+: per-seat slots (None 表示回退笛卡尔积模式)
-    seat_slots: dict[str, list[str]] | None = None
+    bound_seats: list[str] = field(default_factory=list)  # 绑定的目标座位
+    # per-seat slots；None = 回退笛卡尔积模式；
+    # 值为 dict[星期键, list[str] | "full"]（启动迁移后统一此形态）
+    seat_slots: dict[str, dict[str, list[str] | str]] | None = None
 
 
 # ---------- task lifecycle ----------
