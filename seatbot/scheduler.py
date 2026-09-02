@@ -57,7 +57,7 @@ class Scheduler:
         self.anchor_retry_enabled: bool = bool(getattr(cfg.runtime, "anchor_retry_enabled", True))
         self.anchor_scan_limit: int = int(getattr(cfg.runtime, "anchor_scan_limit", 12))
         self.submit_strategy: str = str(getattr(cfg.runtime, "submit_strategy", "direct_first"))
-        self.reconcile_interval_seconds: int = int(getattr(cfg.runtime, "reconcile_interval_seconds", 90))
+        self.reconcile_interval_seconds: int = int(cfg.runtime.reconcile_interval_seconds)
         self._reconcile_last_at: datetime | None = None
         self._reconcile_running: bool = False
         self._reconcile_flagged: set[int] = set()  # 已告警未恢复的任务 id
@@ -860,6 +860,7 @@ class Scheduler:
         self._reconcile_running = True
         try:
             await self.reconcile_sweep()
+            await self.sync_user_reserved()
         finally:
             self._reconcile_running = False
 
@@ -962,6 +963,58 @@ class Scheduler:
                 json.dumps({"server": used, "tasks": rows},
                            ensure_ascii=False))
         return {"checked": checked, "mismatch": mismatch, "fetch_ok": fetch_ok}
+
+    async def sync_user_reserved(self) -> dict:
+        """实况同步：把各账号 reservelist 中未被本地任务跟踪的生效预约
+        自动补登为 user_reserved，并清退已失效的自动同步行。
+
+        随实况核对节拍运行；reservelist 只返回登录账号本人的记录，故
+        逐账号各发 1 个只读 GET。补登走与手动登记同一张表（note 带实况
+        同步标记），排程生成任务时据此跳过冲突时段；预约取消/履约/违约
+        后从 reservelist 消失，对应自动行在下一轮被清退，手动登记行不受
+        影响。单账号查询失败仅跳过该账号（本轮不清退其行，防止误删），
+        记 warn 告警。返回 {"added", "pruned"} 计数。
+        """
+        from seatbot.reconcile import (
+            AUTO_SYNC_NOTE,
+            diff_user_reserved,
+            parse_reservations,
+        )
+
+        days = {today_cst(), today_cst() + timedelta(days=1)}
+        added = pruned = 0
+        for acc in await self.store.list_accounts():
+            if not (acc.phone and acc.password):
+                continue
+            try:
+                client = await self.client_ready(acc)
+                if not client.cookies():
+                    if not await self.login_and_persist(acc, client, "实况同步登录"):
+                        continue
+                entries = await client.reserve_list()
+                parsed = parse_reservations(entries, days)
+                known = {t.reserve_id
+                         for t in await self.store.list_tasks(account_id=acc.id)
+                         if t.reserve_id}
+                existing = [r for r in await self.store.list_user_reserved()
+                            if r["account_id"] == acc.id]
+                to_add, to_del = diff_user_reserved(parsed, known, existing)
+                for p in to_add:
+                    await self.store.add_user_reserved(
+                        acc.id, p["seat_num"], p["day"], p["start"], p["end"],
+                        note=AUTO_SYNC_NOTE)
+                for rid in to_del:
+                    await self.store.delete_user_reserved(rid)
+                added += len(to_add)
+                pruned += len(to_del)
+                if to_add or to_del:
+                    await self._info(
+                        f"实况同步: 补登 {len(to_add)} 清退 {len(to_del)} "
+                        f"(账号共 {len(parsed)} 条生效预约)", acc.id)
+            except Exception as e:
+                await self._warn(
+                    f"实况同步: {type(e).__name__}: {e}", acc.id)
+        return {"added": added, "pruned": pruned}
 
     async def _apply_verdict(self, acc: Account, t: Task,
                              ratio: float, bad: bool) -> None:
