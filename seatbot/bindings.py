@@ -18,8 +18,6 @@ from seatbot.utils.weekly import (
     slots_for_weekday,
 )
 
-#: 座位未配置期望时段时的默认守护时段
-DEFAULT_DESIRED_SLOTS = ["09:00-11:00", "15:00-17:00", "19:00-21:00"]
 
 _BASE = date(2000, 1, 1)
 
@@ -129,7 +127,12 @@ def used_hours(seat_slots: dict | None, wd: str) -> float:
 def account_margins(
     accounts: list[Account], *, daily_limit_hours: float
 ) -> list[dict]:
-    """每账号逐天余量摘要：days[wd] = {used_hours, remaining_hours, full_slots_left}。"""
+    """每账号逐天余量摘要：days[wd] = {used_hours, remaining_hours, full_slots_left}。
+
+    另提供聚合字段 used_hours / remaining_hours / full_slots_left（分别为周内峰值已用、
+    最紧剩余、可容纳完整 2h 段最小值），供紧凑药丸卡片直接展示；days 保留逐天明细供
+    悬停提示展开。
+    """
     out: list[dict] = []
     for a in accounts:
         days: dict[str, dict] = {}
@@ -141,9 +144,16 @@ def account_margins(
                 "remaining_hours": remaining,
                 "full_slots_left": int(remaining // 2),
             }
+        # 聚合：周内最紧约束（便于药丸卡单行展示）
+        agg_used = max((d["used_hours"] for d in days.values()), default=0.0)
+        agg_remaining = min((d["remaining_hours"] for d in days.values()), default=daily_limit_hours)
+        agg_slots = min((d["full_slots_left"] for d in days.values()), default=int(daily_limit_hours // 2))
         out.append({
             "id": a.id,
             "days": days,
+            "used_hours": agg_used,
+            "remaining_hours": agg_remaining,
+            "full_slots_left": agg_slots,
             "seats": sorted((a.seat_slots or {}).keys()),
         })
     return out
@@ -184,14 +194,35 @@ def candidate_accounts(
     return out
 
 
-def desired_slots_of(seat_target: SeatTarget, wd: str) -> list[str]:
-    """座位在某天的期望守护时段；未配置用默认三段；dict 缺/空天 → []（不检查）。"""
+def desired_slots_of(seat_target: SeatTarget, wd: str, *, is_weekly: bool | None = None) -> list[str]:
+    """座位在某天的期望守护时段；未配置 → []（不检查）；dict 缺/空天 → []。
+
+    is_weekly=None 时自动按字段存在度选择（优先 weekly 列若非 None），
+    供存量/迁移期兼容；显式 True/False 用于按 schedule_mode 精确取列。
+    """
+    # 独立双配置：优先按显式模式取列
+    if is_weekly is True:
+        slots = getattr(seat_target, "desired_slots_weekly", None)
+        if slots is None:
+            return []
+        day_val = slots_for_weekday(slots, wd)
+        return list(day_val) if isinstance(day_val, list) else []
+    if is_weekly is False:
+        slots = getattr(seat_target, "desired_slots", None)
+        if slots is None:
+            return []
+        day_val = slots_for_weekday(slots, wd)
+        return list(day_val) if isinstance(day_val, list) else []
+    # is_weekly=None：兼容旧库（单列复用）
+    weekly = getattr(seat_target, "desired_slots_weekly", None)
+    if weekly is not None:
+        day_val = slots_for_weekday(weekly, wd)
+        return list(day_val) if isinstance(day_val, list) else []
     slots = getattr(seat_target, "desired_slots", None)
     if slots is None:
-        return list(DEFAULT_DESIRED_SLOTS)
+        return []
     day_val = slots_for_weekday(slots, wd)
     return list(day_val) if isinstance(day_val, list) else []
-
 
 def auto_assign(
     accounts: list[Account],

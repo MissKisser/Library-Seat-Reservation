@@ -40,22 +40,6 @@
     </div>
     <div class="card-body">
       {% if margins %}
-      {% if mode == 'weekly' %}
-      <div class="flex flex-col gap-2">
-        {% for m in margins %}
-        <div class="flex items-center gap-3 flex-wrap border border-edge-subtle rounded-lg px-3 py-2">
-          <span class="font-mono text-xs font-bold w-16">{{ m.id }}</span>
-          {% for wd, wlbl in weekday_cols %}
-          <span class="text-[11px] font-mono"
-                title="{{ m.id }} {{ wlbl }}：已用 {{ '%g'|format(m.days[wd].used_hours) }}h / {{ '%g'|format(daily_limit) }}h · 还能容纳 {{ m.days[wd].full_slots_left }} 个完整 2h 段">
-            {{ wlbl[-1] }} <span class="{{ 'text-success' if m.days[wd].remaining_hours >= 2 else ('text-ink-secondary' if m.days[wd].remaining_hours > 0 else 'text-danger') }}">余 {{ '%g'|format(m.days[wd].remaining_hours) }}h</span>
-          </span>
-          {% endfor %}
-          <span class="text-[11px] text-ink-muted">绑定座位：{{ m.seats|join('、') if m.seats else '无' }}</span>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
       <div class="flex flex-wrap gap-2">
         {% for m in margins %}
         <div class="flex items-center gap-2 border border-edge-subtle"
@@ -69,7 +53,6 @@
         </div>
         {% endfor %}
       </div>
-      {% endif %}
       {% else %}
       {{ empty(title='还没有守护账号', hint='先到「守护账号」页创建') }}
       {% endif %}
@@ -124,7 +107,6 @@
     {% if mode == 'weekly' %}
     <div class="card-header"><span class="card-title">期望时段编辑（按星期几，30 分钟块勾选，连续块自动合并为一段）</span></div>
     <div class="card-body flex flex-col gap-4">
-      <div class="hint -mt-1">点击药丸选中/取消；<b>每个药丸 = 从该时刻开始的 30 分钟块</b>，连续选中的自动合并为一段（单段 ≤{{ '%g'|format(max_seg) }}h，超长会被拒绝）；<b>7 天全不选提交 = 清空自定义、恢复默认三段</b>；勾了任意一天，未选的天 = 该天不检查缺口。</div>
 
       {# 统一编辑：应用到所有座位 #}
       <form method="post" action="/bindings/desired" class="border border-edge-subtle rounded-xl p-3" x-data="dayTabs()">
@@ -146,13 +128,12 @@
         <div x-show="active === '{{ wd }}'" class="pill-grid">
           {% for t0, t1 in ticks %}
           <label class="pill-tick">
-            <input type="checkbox" name="blocks_{{ wd }}" value="{{ t0 }}">
-            <span>{{ t0 }}</span>
+            <input type="checkbox" name="blocks_{{ wd }}" value="{{ t0 }}" {% if seats and t0 in desired_blocks[seats[0].seat_num][wd] %}checked{% endif %}>
+            <span>{{ t0 }}-{{ t1 }}</span>
           </label>
           {% endfor %}
         </div>
         {% endfor %}
-        <div class="hint mt-2">7 天全不选提交 = 恢复默认三段；选了任意一天，未选的天 = 该天不检查缺口。</div>
       </form>
 
       {# 单座编辑 #}
@@ -171,7 +152,7 @@
                 </template>
               </div>
               <span class="chip {{ 'chip-muted' if using_default[s.seat_num] else 'chip-accent' }}">
-                {{ '默认三段' if using_default[s.seat_num] else '自定义' }}
+                {{ '未设置' if using_default[s.seat_num] else '已设置' }}
               </span>
             </div>
           </div>
@@ -181,18 +162,23 @@
             <label class="pill-tick">
               <input type="checkbox" name="blocks_{{ wd }}" value="{{ t0 }}"
                      {% if t0 in desired_blocks[s.seat_num][wd] %}checked{% endif %}>
-              <span>{{ t0 }}</span>
+              <span>{{ t0 }}-{{ t1 }}</span>
             </label>
             {% endfor %}
           </div>
           {% endfor %}
-          <div class="flex items-center justify-between">
-            <span class="text-xs text-ink-muted">
-              当前：{% for wd, wlbl in weekday_cols %}{% if desired[s.seat_num][wd] %}{{ wlbl }}
-              {% for d in desired[s.seat_num][wd] %}<span class="font-mono">{{ d }}</span>{% if not loop.last %}、{% endif %}{% endfor %}{% endif %}{% endfor %}
-              {% if using_default[s.seat_num] %}（默认三段）{% endif %}
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-xs text-ink-muted flex items-center gap-1 flex-wrap">
+              当前（<span x-text="labels[active]"></span>）：
+              {% for wd, wlbl in weekday_cols %}
+              <span x-show="active === '{{ wd }}'" class="inline-flex items-center gap-1 flex-wrap">
+                {% for d in desired[s.seat_num][wd] %}<span class="chip chip-accent font-mono" style="font-size:10px;padding:1px 6px">{{ d }}</span>{% endfor %}
+                {% if not desired[s.seat_num][wd] %}<span class="chip chip-muted" style="font-size:10px;padding:1px 6px">不检查</span>{% endif %}
+              </span>
+              {% endfor %}
+              {% if using_default[s.seat_num] %}<span class="chip chip-muted ml-1" style="font-size:10px;padding:1px 6px">未设置</span>{% endif %}
             </span>
-            <button class="btn btn-secondary btn-sm" type="submit">保存 {{ s.seat_num }}</button>
+            <button class="btn btn-secondary btn-sm shrink-0" type="submit">保存 {{ s.seat_num }}</button>
           </div>
         </form>
         {% endfor %}
@@ -201,7 +187,6 @@
     {% else %}
     <div class="card-header"><span class="card-title">期望时段编辑（30 分钟块勾选，连续块自动合并为一段）</span></div>
     <div class="card-body flex flex-col gap-4">
-      <div class="hint -mt-1">点击药丸选中/取消（每个药丸 = 从该时刻开始的 30 分钟块，周一至周日统一生效）；连续选中的自动合并为一段（单段 ≤{{ '%g'|format(max_seg) }}h，超长会被拒绝）；<b>全不选提交 = 清空自定义、恢复默认三段</b>。需要各天不同？切右上角「按天自定义」。</div>
 
       {# 统一编辑：应用到所有座位 #}
       <form method="post" action="/bindings/desired" class="border border-edge-subtle rounded-xl p-3">
@@ -215,7 +200,7 @@
           {% for t0, t1 in ticks %}
           <label class="pill-tick">
             <input type="checkbox" name="blocks" value="{{ t0 }}">
-            <span>{{ t0 }}</span>
+            <span>{{ t0 }}-{{ t1 }}</span>
           </label>
           {% endfor %}
         </div>
@@ -231,20 +216,20 @@
           <div class="flex items-center justify-between">
             <span class="text-[13px] font-bold">{{ s.seat_num }}{% if s.label %} · {{ s.label }}{% endif %}</span>
             <span class="chip {{ 'chip-muted' if using_default[s.seat_num] else 'chip-accent' }}">
-              {{ '默认三段' if using_default[s.seat_num] else '自定义' }}
+              {{ '未设置' if using_default[s.seat_num] else '已设置' }}
             </span>
           </div>
           <div class="pill-grid">
             {% for t0, t1 in ticks %}
             <label class="pill-tick">
               <input type="checkbox" name="blocks" value="{{ t0 }}" {% if t0 in desired_blocks[s.seat_num]['mon'] %}checked{% endif %}>
-              <span>{{ t0 }}</span>
+              <span>{{ t0 }}-{{ t1 }}</span>
             </label>
             {% endfor %}
           </div>
           <div class="flex items-center justify-between">
             <span class="text-xs text-ink-muted">
-              当前：{% for d in desired[s.seat_num]['mon'] %}<span class="font-mono">{{ d }}</span>{% if not loop.last %}、{% endif %}{% else %}（默认三段）{% endfor %}
+              当前：{% for d in desired[s.seat_num]['mon'] %}<span class="font-mono">{{ d }}</span>{% if not loop.last %}、{% endif %}{% else %}（未设置）{% endfor %}
               {% if diverged[s.seat_num] %}<span class="chip chip-warn ml-1">各天配置不一致，切「按天自定义」查看</span>{% endif %}
             </span>
             <button class="btn btn-secondary btn-sm" type="submit">保存 {{ s.seat_num }}</button>
@@ -259,7 +244,7 @@
   {# 每座位：期望 × 绑定 #}
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
     {% for s in seats %}
-    <div class="card">
+    <div class="card" {% if mode == 'weekly' %}x-data="dayTabs()"{% endif %}>
       <div class="card-header">
         <span class="card-title">{{ s.seat_num }}{% if s.label %} · {{ s.label }}{% endif %}
           {% if mode == 'weekly' %}
@@ -271,13 +256,20 @@
             {% if diverged[s.seat_num] %}<span class="chip chip-warn ml-1">各天不一致</span>{% endif %}
           {% endif %}
         </span>
+        {% if mode == 'weekly' %}
+        <div class="flex gap-1">
+          <template x-for="wd in wds" :key="wd">
+            <button type="button" class="chip" :class="active === wd ? 'chip-accent' : 'chip-muted'"
+                    @click="active = wd" x-text="labels[wd]"></button>
+          </template>
+        </div>
+        {% endif %}
       </div>
       {% if mode == 'weekly' %}
       <div class="card-body flex flex-col gap-1">
         {% for wd, wlbl in weekday_cols %}
-        <div class="border-b border-edge-subtle last:border-0 pb-2">
+        <div x-show="active === '{{ wd }}'" class="border-b border-edge-subtle last:border-0 pb-2">
           <div class="flex items-center gap-2 flex-wrap py-1">
-            <span class="text-xs font-bold w-8">{{ wlbl }}</span>
             {% if uncovered[s.seat_num][wd] %}
             <span class="chip chip-danger">缺 {{ uncovered[s.seat_num][wd]|length }} 段</span>
             {% else %}
@@ -332,7 +324,7 @@
         <div class="flex items-center gap-1.5 flex-wrap">
           <span class="text-xs text-ink-muted">期望：</span>
           {% for d in desired[s.seat_num]['mon'] %}<span class="chip chip-accent font-mono">{{ d }}</span>{% endfor %}
-          {% if using_default[s.seat_num] %}<span class="chip chip-muted">默认三段</span>{% endif %}
+          {% if using_default[s.seat_num] %}<span class="chip chip-muted">未设置</span>{% endif %}
           <a class="text-xs text-accent underline" href="#desired-editor">去编辑</a>
         </div>
       </div>

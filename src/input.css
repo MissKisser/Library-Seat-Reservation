@@ -211,7 +211,8 @@
            whitespace-nowrap;
   }
   /* anywhere（而非 break-words）才能缩小 min-content，避免长 token 把 CJK 短列挤成竖排 */
-  /* 表头与单元格统一居中，保证表头相对列内容居中；num 保留等宽数字、actions 保留不换行 */
+  /* 表头与单元格统一居中（水平 text-center + 垂直 align-middle），保证表头相对列内容居中；num 保留等宽数字、actions 保留不换行 */
+  .table th, .table tbody td { @apply align-middle; }
   .table tbody td { @apply px-3 py-2.5 border-b border-edge-subtle text-ink text-center [overflow-wrap:anywhere]; }
   .table tbody tr:hover { @apply bg-app-muted/40; }
   .table td.num { @apply tabular; }

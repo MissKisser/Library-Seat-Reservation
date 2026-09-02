@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% from "_macros/shell.html" import shell %}
+{% block title %}实况核对{% endblock %}
+
 {% block content %}
-{% call shell(active='audit', title='实况核对', subtitle='服务端真实占用 vs 本地任务') %}
 <div class="space-y-4">
   <div class="card p-4 flex items-center justify-between gap-3 flex-wrap">
     <div class="text-xs text-ink-muted">
-      最近 {{ rows|length }} 轮快照（新→旧）。「立即核对」会向平台发起
+      最近3条快照（新→旧，至多保留3条）。「立即核对」会向平台发起
       <span class="text-ink font-medium">至多 目标座位数 × 2 个只读查询</span>。
       {% if not sched_ready %}调度器未运行，无法立即核对。{% endif %}
     </div>
@@ -22,7 +22,8 @@
   <div class="card p-4 space-y-2">
     <div class="flex items-center gap-2 text-xs flex-wrap">
       <span class="chip {{ 'chip-success' if r.ok else 'chip-danger' }}">{{ '一致' if r.ok else '存在失守' }}</span>
-      <span class="font-medium">{{ r.day }} · 座位 {{ r.seat_num }}</span>
+      <span class="chip chip-accent font-mono">{{ r.day }}</span>
+      <span class="chip chip-target font-mono">座位 {{ r.seat_num }}</span>
       <span class="text-ink-muted">{{ r.ts_hm }}</span>
       <span class="text-ink-muted">服务端占用：{{ r.server_text or '无' }}</span>
     </div>
@@ -51,5 +52,4 @@
   </div>
   {% endfor %}
 </div>
-{% endcall %}
 {% endblock %}

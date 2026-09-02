@@ -408,6 +408,35 @@
     };
   };
 
+  /* ===== 守护账号页：查看日下拉（初值由服务端按 14:00 前今天 / 后明天预置） ===== */
+  window.slotWeekPicker = function (initialWd, todayWd, tomorrowWd) {
+    return {
+      wd: initialWd,
+      todayWd: todayWd,
+      tomorrowWd: tomorrowWd,
+      labels: { mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六', sun: '周日' },
+      optionLabel(wd) {
+        if (wd === this.todayWd) return '今天 · ' + this.labels[wd];
+        if (wd === this.tomorrowWd) return '明天 · ' + this.labels[wd];
+        return this.labels[wd];
+      },
+    };
+  };
+
+  /* ===== 守护账号页：时段单元格（座位 × 选中星期的药丸，当天无安排的座位整行隐藏） ===== */
+  window.accountSlotCell = function (view) {
+    return {
+      view: view,
+      activeSeats(wd) {
+        return view.seats.filter((row) => {
+          const v = (row.days || {})[wd];
+          return v === 'full' || (Array.isArray(v) && v.length > 0);
+        });
+      },
+    };
+  };
+
+
   /* ===== 覆盖图: 数据驱动甘特 + 单元格信息卡 ===== */
   /* 首屏与 /api/dashboard-data 共用同一 JSON 形状, Alpine 响应式渲染,
    * 替代旧的 innerHTML 拼 HTML 字符串实现。30s 轮询节奏不变;
@@ -432,12 +461,13 @@
       clockOffsetMs: null,
       timer: null,
       card: null,
-      boot: { active: true, display: 0, target: 8, stage: '正在唤醒守护系统…' },
+      /* 首屏动画已注释停用: active 置 false + target 置满, 避免 tick/probe 被 boot 门控卡死 */
+      boot: { active: false, display: 100, target: 100, stage: '就绪' },
 
       init() {
         this.timer = setInterval(() => this.tick(), 1000);
         this._clockTimer = setInterval(() => this.tickClock(), 1000);
-        this._initBoot();
+        // this._initBoot();
         this.refresh();
         this._onVis = () => { if (!document.hidden) this.probe(); };
         document.addEventListener('visibilitychange', this._onVis);
