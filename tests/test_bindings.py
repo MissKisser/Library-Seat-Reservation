@@ -208,3 +208,152 @@ def test_auto_assign_leaves_no_empty_seat_residue():
     matrices, _ = auto_assign(accs, desired, max_seg_hours=2.0, daily_limit_hours=5.0)
     assert matrices["a"]["001"]["mon"] == ["09:00-11:00"]
     assert "001" not in matrices["b"]
+
+
+# ---------- plan_matrix / diff_matrices ----------
+
+from seatbot.bindings import diff_matrices, plan_matrix
+
+
+def _full_weekday(slot: str) -> dict[str, list[str]]:
+    """全周统一时段（list 形态）→ 内部会按 normalize 展开为 7 键 dict。"""
+    return {wd: [slot] for wd in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
+
+
+def test_plan_matrix_safe_covers_exact():
+    """safe 模式：与 auto_assign 同样按 (wd, seat, slot) 精确覆盖。"""
+    accs = [_acc("a", {}), _acc("b", {}), _acc("c", {})]
+    desired = {"001": {"mon": ["09:00-11:00"], "tue": ["15:00-17:00"]}}
+    m, bad = plan_matrix(
+        accs, desired, max_seg_hours=2.0, daily_limit_hours=5.0,
+        mode="safe",
+    )
+    assert bad == []
+    filled = [(aid, m[aid]["001"][wd])
+              for aid in m for wd in ("mon", "tue")
+              if m[aid].get("001", {}).get(wd)]
+    assert len(filled) == 2
+    # 每账号矩阵必须通过 validate_matrix
+    for aid in m:
+        validate_matrix(m[aid], max_seg_hours=2.0, daily_limit_hours=5.0)
+
+
+def test_plan_matrix_minimal_uses_min_accounts():
+    """minimal：动用账号数应等于理论下限（每段独立账号、最少摊薄）。"""
+    accs = [_acc("a", {}), _acc("b", {}), _acc("c", {}), _acc("d", {})]
+    # 每天 4 段、2 座位（互不重叠约束要求每账号最多 2 段），理论下限 = ceil(4/2)=2
+    desired = {
+        "001": {"mon": ["09:00-11:00"]},
+        "002": {"mon": ["11:00-13:00"]},
+        "003": {"mon": ["13:00-15:00"]},
+        "004": {"mon": ["15:00-17:00"]},
+    }
+    m, bad = plan_matrix(
+        accs, desired, max_seg_hours=2.0, daily_limit_hours=5.0,
+        mode="minimal", account_order=["a", "b", "c", "d"],
+    )
+    assert bad == []
+    active = sorted(aid for aid, spec in m.items() if spec)
+    assert len(active) == 2  # L(下限)=2
+    for aid in m:
+        validate_matrix(m[aid], max_seg_hours=2.0, daily_limit_hours=5.0)
+
+
+def test_plan_matrix_minimal_pool_truncation():
+    """minimal：池成员由 account_order 前 K 截取；池不足时返回空 + 错误文案。"""
+    accs = [_acc("a", {}), _acc("b", {}), _acc("c", {}), _acc("d", {})]
+    # 单天 5 段互不重叠（每段 2h），单账号上限 2 段 → 至少需 3 个账号；池只 2 时必失败
+    desired = {
+        "001": {"mon": ["09:00-11:00"]},
+        "002": {"mon": ["11:00-13:00"]},
+        "003": {"mon": ["13:00-15:00"]},
+        "004": {"mon": ["15:00-17:00"]},
+        "005": {"mon": ["17:00-19:00"]},
+    }
+    m, bad = plan_matrix(
+        accs, desired, max_seg_hours=2.0, daily_limit_hours=5.0,
+        mode="minimal", account_order=["a", "b"],  # 强制池只 2 人
+    )
+    assert m == {}
+    assert any("需至少" in s for s in bad)
+
+def test_diff_matrices_add_remove():
+    """diff：added = 新矩阵多出的段；removed = 旧矩阵有但新矩阵没有的段。
+
+    diff 条目统一为 {account, seat, weekday, slot} dict（与前端约定一致）。
+    """
+    old = {"x": {"001": {"mon": ["09:00-11:00"]}}}
+    new = {"x": {"001": {"mon": ["15:00-17:00"]}}}
+    diff = diff_matrices(old, new)
+    assert {"account": "x", "seat": "001",
+            "weekday": "mon", "slot": "09:00-11:00"} in diff["removed"]
+    assert {"account": "x", "seat": "001",
+            "weekday": "mon", "slot": "15:00-17:00"} in diff["added"]
+
+
+def test_plan_matrix_minimal_two_seats_multi_window():
+    """生产缩影：2 座位 × 多窗口（互不重叠）必须绑满全部段，每账号 validate 通过。"""
+    accs = [_acc("a", {}), _acc("b", {}), _acc("c", {}), _acc("d", {}),
+            _acc("e", {}), _acc("f", {})]
+    desired = {
+        "001": {
+            "mon": ["09:00-11:00", "13:00-15:00", "15:00-17:00"],
+            "tue": ["09:00-11:00", "13:00-15:00"],
+        },
+        "002": {
+            "mon": ["11:00-13:00"],
+            "tue": ["11:00-13:00", "15:00-17:00"],
+        },
+    }
+    m, bad = plan_matrix(
+        accs, desired, max_seg_hours=2.0, daily_limit_hours=5.0,
+        mode="minimal",
+    )
+    total_filled = sum(
+        len(slots)
+        for aid in m for seat in desired
+        for wd in ("mon", "tue")
+        for slots in [m[aid].get(seat, {}).get(wd, [])]
+    )
+    expected = sum(len(slots) for s in desired.values() for slots in s.values())
+    assert bad == [], f"应有解：bad={bad}"
+    assert total_filled == expected, f"段数 {total_filled} ≠ 期望 {expected}"
+    for aid in m:
+        validate_matrix(m[aid], max_seg_hours=2.0, daily_limit_hours=5.0)
+
+
+def test_plan_matrix_minimal_tight_quota():
+    """紧配额场景：池 < 期望下限 → unfillable 含「需至少」。
+
+    同座位多窗口必须不同账号 → 4 窗口 = 至少 4 个账号，K=2 必失败。
+    """
+    accs = [_acc("a", {}), _acc("b", {}), _acc("c", {}), _acc("d", {})]
+    m, bad = plan_matrix(
+        accs, desired={"001": {"mon": ["09:00-11:00", "11:00-13:00",
+                                      "13:00-15:00", "15:00-17:00"]}},
+        max_seg_hours=2.0, daily_limit_hours=5.0,
+        mode="minimal", account_order=["a", "b"],  # 池只 2 人
+    )
+    assert m == {}
+    assert any("需至少" in s for s in bad)
+
+
+def test_auto_assign_safe_vs_minimal_distribution_differs():
+    """auto_assign：safe 摊薄 vs minimal 打包，
+    同 desired 下 minimal 动用账号数应 ≤ safe。
+    """
+    desired = {
+        "001": {"mon": ["09:00-11:00"], "tue": ["13:00-15:00"],
+                "wed": ["15:00-17:00"], "thu": ["09:00-11:00"]},
+        "002": {"mon": ["15:00-17:00"], "tue": ["15:00-17:00"]},
+    }
+    accs = [_acc("a", {}), _acc("b", {}), _acc("c", {}), _acc("d", {})]
+    m_safe, _ = auto_assign(
+        accs, desired, max_seg_hours=2.0, daily_limit_hours=5.0, mode="safe",
+    )
+    m_min, _ = auto_assign(
+        accs, desired, max_seg_hours=2.0, daily_limit_hours=5.0, mode="minimal",
+    )
+    safe_active = sum(1 for aid, spec in m_safe.items() if spec)
+    min_active = sum(1 for aid, spec in m_min.items() if spec)
+    assert min_active <= safe_active

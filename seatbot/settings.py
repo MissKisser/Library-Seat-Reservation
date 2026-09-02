@@ -78,7 +78,6 @@ SUBMIT_CHANNEL_COMPARE: list[dict[str, str]] = [
 
 RELAY_LEAD_OPTIONS: list[int] = [60, 180, 300, 600]
 TICK_INTERVAL_OPTIONS: list[int] = [15, 30, 60]
-
 # 守护时段模式：uniform=全局统一（每天相同时段，界面保持单套）；
 # weekly=按天自定义（界面显示周一至周日分别勾选）。仅是界面与录入约定，
 # 数据层恒为 7 键 dict，执行链路恒按天取值。
@@ -87,6 +86,29 @@ SCHEDULE_MODES: tuple[str, ...] = ("uniform", "weekly")
 SCHEDULE_MODE_LABELS: dict[str, str] = {
     "uniform": "全局统一",
     "weekly": "按天自定义",
+}
+
+
+# 时间分配策略：safe=安全模式（摊薄到多账号，单账号故障最多丢 1 段）；
+# minimal=最简模式（动用账号数最少，单账号最多承担 2 段）。
+# 仅影响矩阵构建（自动绑定 + 显式重排），执行链路（14:00 提交 / 签到 / 签退）
+# 不受影响。
+ALLOCATION_STRATEGIES: tuple[str, ...] = ("safe", "minimal")
+ALLOCATION_STRATEGY_LABELS: dict[str, str] = {
+    "safe": "安全模式",
+    "minimal": "最简模式",
+}
+ALLOCATION_STRATEGY_HELP: dict[str, dict[str, str]] = {
+    "safe": {
+        "label": "安全模式（摊薄）",
+        "badge": "默认",
+        "desc": "把每天的任务摊给尽可能多账号，单账号故障爆炸半径 ≤ 1 段（≤2h）。",
+    },
+    "minimal": {
+        "label": "最简模式（打包）",
+        "badge": "省账号",
+        "desc": "覆盖全部期望时段前提下，最少动用账号数（周内轮换）；单账号最多 2 段（4h/天）。",
+    },
 }
 
 DEFAULTS: dict[str, object] = {
@@ -102,6 +124,7 @@ DEFAULTS: dict[str, object] = {
     "notify_webhook": "",
     "reconcile_interval_seconds": 300,
     "schedule_mode": "uniform",
+    "allocation_strategy": "safe",
 }
 
 
@@ -111,6 +134,14 @@ def normalize_schedule_mode(v: object) -> str:
     if s in SCHEDULE_MODES:
         return s
     raise ValueError(f"schedule_mode 须为 {', '.join(SCHEDULE_MODES)}，得 {v!r}")
+
+
+def normalize_allocation_strategy(v: object) -> str:
+    """校验时间分配策略取值。"""
+    s = str(v).strip().lower() if v is not None else ""
+    if s in ALLOCATION_STRATEGIES:
+        return s
+    raise ValueError(f"allocation_strategy 须为 {', '.join(ALLOCATION_STRATEGIES)}，得 {v!r}")
 
 
 
@@ -195,6 +226,8 @@ def parse_stored(key: str, raw: str | None, fallback: object) -> object:
             return str(raw).strip()
         if key == "schedule_mode":
             return normalize_schedule_mode(raw)
+        if key == "allocation_strategy":
+            return normalize_allocation_strategy(raw)
     except Exception:
         return fallback
     return raw
@@ -242,6 +275,8 @@ def validate_all(patch: dict[str, object]) -> dict[str, str]:
                     raise ValueError("须为 http(s) URL 或留空")
             elif k == "schedule_mode":
                 normalize_schedule_mode(v)
+            elif k == "allocation_strategy":
+                normalize_allocation_strategy(v)
         except Exception as e:
             errors[k] = str(e) if str(e) else "格式错误"
     # 交叉校验：单段上限不应超过日限额
