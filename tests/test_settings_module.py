@@ -72,5 +72,45 @@ def test_validate_all_rejects_bad_reconcile_interval():
     assert _settings.validate_all({"reconcile_interval_seconds": "30"}) != {}
     assert _settings.validate_all({"reconcile_interval_seconds": "86401"}) != {}
     assert _settings.validate_all({"reconcile_interval_seconds": "600"}) == {}
-    # 勾选开关已移除，属未知配置项
     assert _settings.validate_all({"reconcile_enabled": "true"}) != {}
+
+
+# ---------- allocation_strategy ----------
+
+
+def test_allocation_strategy_defaults_to_safe():
+    cfg = _cfg()
+    eff = _settings.effective({}, cfg)
+    assert eff["allocation_strategy"] == "safe"
+
+
+def test_normalize_allocation_strategy_whitelist():
+    assert _settings.normalize_allocation_strategy("safe") == "safe"
+    assert _settings.normalize_allocation_strategy("minimal") == "minimal"
+    # 大小写/空白归一
+    assert _settings.normalize_allocation_strategy("  Minimal  ") == "minimal"
+    # None 与空串 → 抛错（白名单内不收）
+    import pytest
+    with pytest.raises(ValueError):
+        _settings.normalize_allocation_strategy(None)
+    with pytest.raises(ValueError):
+        _settings.normalize_allocation_strategy("")
+    # 非法值抛 ValueError
+    with pytest.raises(ValueError):
+        _settings.normalize_allocation_strategy("greedy")
+
+
+def test_validate_all_rejects_bad_allocation_strategy():
+    errors = _settings.validate_all({"allocation_strategy": "unknown"})
+    assert "allocation_strategy" in errors
+    assert _settings.validate_all({"allocation_strategy": "minimal"}) == {}
+
+
+def test_allocation_strategy_storage_roundtrip():
+    """coerce_for_storage → parse_stored 往返保留归一化值。"""
+    raw = _settings.coerce_for_storage("allocation_strategy", "minimal")
+    assert _settings.parse_stored("allocation_strategy", raw, "safe") == "minimal"
+    # parse_stored 在非法 raw 时回 fallback
+    assert _settings.parse_stored("allocation_strategy", "garbage", "safe") == "safe"
+    # parse_stored 在 None 时回 fallback
+    assert _settings.parse_stored("allocation_strategy", None, "safe") == "safe"

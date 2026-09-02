@@ -406,8 +406,77 @@
       wds: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
       labels: { mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六', sun: '周日' },
     };
+}
+
+  /* ===== 绑定页：按策略重排（preview + apply） ===== */
+  const WD_LABELS = { mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六', sun: '周日' };
+  window.replanModal = function () {
+    return {
+      open: false,
+      loading: false,
+      error: '',
+      strategy: 'safe',
+      strategyLabel: '',
+      summaryText: '',
+      added: [],
+      removed: [],
+      unfillable: [],
+      wdLabel(wd) { return WD_LABELS[wd] || wd; },
+      show(plan) {
+        this.strategy = plan.strategy;
+        this.strategyLabel = ({ safe: '安全模式', minimal: '最简模式' })[plan.strategy] || plan.strategy;
+        const s = plan.summary || {};
+        this.summaryText = `新增 ${s.added_count || 0} / 移除 ${s.removed_count || 0}，影响 ${s.affected_count || 0} 个账号`;
+        this.added = plan.added || [];
+        this.removed = plan.removed || [];
+        this.unfillable = plan.unfillable || [];
+        this.open = true;
+      },
+      close() { this.open = false; this.error = ''; },
+      async fetchPreview() {
+        this.loading = true; this.error = '';
+        try {
+          const r = await fetch('/bindings/replan/preview', { method: 'POST' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const j = await r.json();
+          this.show(j);
+        } catch (e) {
+          this.error = '预览失败：' + (e && e.message || e);
+          this.open = true;
+        } finally {
+          this.loading = false;
+        }
+      },
+      async confirm() {
+        try {
+          const r = await fetch('/bindings/replan/apply', { method: 'POST' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          // PRG：服务端 303，本页面刷新后由 prgToast 弹提示
+          location.assign('/bindings');
+        } catch (e) {
+          this.error = '应用失败：' + (e && e.message || e);
+        }
+      },
+      cancel() { this.close(); },
+    };
   };
 
+  window.replanButton = function () {
+    const modal = () => {
+      const el = document.getElementById('replan-modal');
+      if (!el) return null;
+      // Alpine 组件实例：通过 _x_dataStack 取第一个
+      const stack = el._x_dataStack || [];
+      return stack[0] || null;
+    };
+    return {
+      async openPreview() {
+        let m = modal();
+        if (!m) return;
+        await m.fetchPreview();
+      },
+    };
+  };
   /* ===== 守护账号页：查看日下拉（初值由服务端按 14:00 前今天 / 后明天预置） ===== */
   window.slotWeekPicker = function (initialWd, todayWd, tomorrowWd) {
     return {

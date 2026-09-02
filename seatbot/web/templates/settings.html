@@ -74,6 +74,33 @@
     </div>
 
     <div class="card">
+      <div class="card-header">
+        <span class="card-title">时间分配策略</span>
+        <span class="chip chip-muted">绑定矩阵</span>
+      </div>
+      <div class="card-body">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
+          {% for key in ["safe", "minimal"] %}
+          {% set h = strategy_help_allocation[key] %}
+          <label class="group flex gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors
+                        {% if eff.allocation_strategy == key %}border-accent bg-accent-soft{% else %}border-edge-subtle hover:border-edge-strong bg-app-surface{% endif %}">
+            <input type="radio" name="allocation_strategy" value="{{ key }}" {% if eff.allocation_strategy == key %}checked{% endif %} class="mt-0.5">
+            <span class="flex-1 min-w-0">
+              <span class="flex items-center gap-2">
+                <span class="text-sm font-semibold text-ink">{{ h.label }}</span>
+                {% if h.badge %}<span class="chip {% if '默认' in h.badge %}chip-success{% else %}chip-muted{% endif %}" style="font-size:10px;padding:1px 6px">{{ h.badge }}</span>{% endif %}
+                {% if key in overridden %}<span class="chip chip-target" style="font-size:10px;padding:1px 6px">已自定义</span>{% endif %}
+              </span>
+              <span class="block text-xs text-ink-secondary mt-1 leading-snug">{{ h.desc }}</span>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+        <div class="hint">仅影响矩阵构建（自动绑定 + 显式重排）；执行链路（14:00 提交 / 签到 / 签退）不变。切档不影响已生成任务。</div>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-header"><span class="card-title">实况核对</span></div>
       <div class="card-body">
         <div class="form-field">

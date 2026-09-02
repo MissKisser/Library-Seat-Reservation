@@ -20,6 +20,8 @@
                   class="px-3 py-1.5 {{ 'bg-accent text-white font-semibold' if mode == 'weekly' else 'text-ink-secondary hover:bg-app-muted' }}">按天自定义</button>
         </div>
       </form>
+      <button class="btn btn-primary btn-sm" type="button" id="replan-btn"
+              x-data="replanButton()" @click="openPreview()">按策略重排（{{ allocation_labels[allocation_strategy] }}）</button>
       <form method="post" action="/bindings/auto">
         <button class="btn btn-primary btn-sm" type="submit">⚡ 自动绑定未覆盖时段</button>
       </form>
@@ -333,6 +335,70 @@
     {% else %}
     {{ empty(title='还没有目标座位', hint='先到「目标座位」页添加') }}
     {% endfor %}
+   </div>
+
+  {# 按策略重排弹层：先预览 diff，确认后调用 /apply #}
+  <div id="replan-modal" x-data="replanModal()" x-cloak style="display:none">
+    <div class="modal-backdrop" x-show="open" @keydown.escape.window="cancel()">
+      <div class="modal" @click.outside="cancel()" style="max-width:560px">
+        <div class="modal-title">按策略重排预览</div>
+        <div class="modal-desc text-xs text-ink-secondary">
+          当前策略：<span class="chip chip-accent" x-text="strategyLabel"></span>
+          <span class="text-ink-muted ml-2" x-text="summaryText"></span>
+        </div>
+        <div class="flex flex-col gap-2 mt-2 max-h-[60vh] overflow-auto">
+          <template x-if="loading">
+            <div class="text-sm text-ink-muted">计算中…</div>
+          </template>
+          <template x-if="!loading && error">
+            <div class="text-sm text-danger" x-text="error"></div>
+          </template>
+          <template x-if="!loading && !error">
+            <div>
+              <template x-if="unfillable && unfillable.length">
+                <div class="card border-danger/40 mb-2">
+                  <div class="card-body text-xs text-danger">
+                    <div class="font-semibold mb-1">无法填充：</div>
+                    <ul class="list-disc pl-5">
+                      <template x-for="u in unfillable" :key="u"><li x-text="u"></li></template>
+                    </ul>
+                  </div>
+                </div>
+              </template>
+              <template x-if="!added.length && !removed.length">
+                <div class="text-sm text-ink-muted">当前矩阵已等于方案，无需改动。</div>
+              </template>
+              <template x-if="added.length || removed.length">
+                <table class="w-full text-xs">
+                  <thead><tr class="text-left text-ink-muted">
+                    <th class="py-1 pr-2">账号</th>
+                    <th class="py-1 pr-2">座位</th>
+                    <th class="py-1 pr-2">星期</th>
+                    <th class="py-1 pr-2">时段</th>
+                    <th class="py-1">变化</th>
+                  </tr></thead>
+                  <tbody>
+                    <template x-for="a in added" :key="'a'+a.account+a.seat+a.weekday+a.slot">
+                      <tr><td x-text="a.account"></td><td x-text="a.seat"></td><td x-text="wdLabel(a.weekday)"></td><td x-text="a.slot"></td>
+                      <td><span class="chip chip-success" style="font-size:10px">新增</span></td></tr>
+                    </template>
+                    <template x-for="r in removed" :key="'r'+r.account+r.seat+r.weekday+r.slot">
+                      <tr><td x-text="r.account"></td><td x-text="r.seat"></td><td x-text="wdLabel(r.weekday)"></td><td x-text="r.slot"></td>
+                      <td><span class="chip chip-danger" style="font-size:10px">移除</span></td></tr>
+                    </template>
+                  </tbody>
+                </table>
+              </template>
+            </div>
+          </template>
+        </div>
+        <div class="flex justify-end gap-2 mt-3">
+          <button class="btn btn-secondary btn-sm" @click="cancel()">取消</button>
+          <button class="btn btn-primary btn-sm" @click="confirm()"
+                  :disabled="loading || !!error || (!added.length && !removed.length)">确认重排</button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}

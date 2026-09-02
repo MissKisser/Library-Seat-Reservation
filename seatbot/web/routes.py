@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from seatbot.bindings import (
     account_margins, auto_assign, candidate_accounts,
-    desired_slots_of, validate_matrix,
+    desired_slots_of, diff_matrices, plan_matrix, validate_matrix,
 )
 from seatbot.utils.weekly import (
     WEEKDAY_KEYS, WEEKDAY_LABELS, normalize_weekly, slots_for_weekday, weekday_key,
@@ -956,6 +956,15 @@ async def _schedule_mode(request: Request) -> str:
     except Exception:
         return "uniform"
 
+async def _allocation_strategy(request: Request) -> str:
+    """读取时间分配策略（safe=安全模式 / minimal=最简模式）。"""
+    try:
+        eff, _rows = await _effective_and_raw(request)
+        return _settings.normalize_allocation_strategy(
+            eff.get("allocation_strategy") or "safe")
+    except Exception:
+        return "safe"
+
 
 @router.post("/bindings/mode")
 async def bindings_mode(request: Request, mode: str = Form(...)):
@@ -1061,9 +1070,12 @@ async def bindings_list(request: Request):
         for s in seats
     }
     ctx = await _ctx(request, active_page="bindings")
+    alloc_mode = await _allocation_strategy(request)
     ctx.update(
         weekday_cols=weekday_cols,
         mode=mode, mode_labels=_settings.SCHEDULE_MODE_LABELS,
+        allocation_strategy=alloc_mode,
+        allocation_labels=_settings.ALLOCATION_STRATEGY_LABELS,
         diverged=diverged,
         seats=seats, desired=desired, seat_bindings=seat_bindings,
         uncovered=uncovered, margins=margins,
@@ -1106,10 +1118,12 @@ async def bindings_auto(request: Request):
         desired[s.seat_num] = {
             wd: desired_slots_of(s, wd, is_weekly=is_weekly) for wd in WEEKDAY_KEYS
         }
+    alloc_mode = await _allocation_strategy(request)
     matrices, unfillable = auto_assign(
         accounts, desired,
         max_seg_hours=lib.max_reserve_hours,
         daily_limit_hours=lib.daily_reserve_hours_limit,
+        mode=alloc_mode,
     )
     for a in accounts:
         new = matrices.get(a.id)
@@ -1125,6 +1139,146 @@ async def bindings_auto(request: Request):
         msg += "；仍无法覆盖 " + "；".join(unfillable)
     return RedirectResponse(f"/bindings?msg={quote(msg)}", status_code=303)
 
+
+def _build_replan(
+    accounts: list[Account],
+    desired: dict[str, dict[str, list[str]]],
+    *,
+    max_seg_hours: float,
+    daily_limit_hours: float,
+    mode: str,
+    recency: dict[str, int] | None,
+) -> dict:
+    """算当前策略下的方案与 diff，供 preview / apply 复用。"""
+    if mode not in _settings.ALLOCATION_STRATEGIES:
+        mode = "safe"
+    if accounts:
+        if recency:
+            order = sorted(
+                (a.id for a in accounts),
+                key=lambda aid: (-recency.get(aid, 0), aid),
+            )
+        else:
+            order = sorted(a.id for a in accounts)
+    else:
+        order = []
+    old = {a.id: dict(a.seat_slots or {}) for a in accounts}
+    new, unfillable = plan_matrix(
+        accounts, desired,
+        max_seg_hours=max_seg_hours,
+        daily_limit_hours=daily_limit_hours,
+        mode=mode,
+        account_order=order,
+    )
+    diff = diff_matrices(old, new)
+    affected = sorted({entry["account"] for entry in diff["added"] + diff["removed"]})
+    return {
+        "strategy": mode,
+        "added": diff["added"],
+        "removed": diff["removed"],
+        "affected": affected,
+        "unfillable": unfillable,
+        "summary": {
+            "added_count": len(diff["added"]),
+            "removed_count": len(diff["removed"]),
+            "affected_count": len(affected),
+            "account_count": len(accounts),
+            "seat_count": len(desired),
+        },
+        "new_matrix": new,
+    }
+
+
+@router.post("/bindings/replan/preview")
+async def bindings_replan_preview(request: Request):
+    """重排预览（只读，不写库）：算当前策略下的方案并返回 diff JSON。"""
+    store = request.app.state.store
+    lib = request.app.state.cfg.library
+    seats = await store.list_target_seats()
+    accounts = await store.list_accounts()
+    if not seats or not accounts:
+        return JSONResponse({
+            "strategy": await _allocation_strategy(request),
+            "added": [], "removed": [], "affected": [],
+            "unfillable": ["没有目标座位或守护账号"],
+            "summary": {"added_count": 0, "removed_count": 0,
+                        "affected_count": 0,
+                        "account_count": len(accounts),
+                        "seat_count": len(seats)},
+        })
+    is_weekly = (await _schedule_mode(request) == "weekly")
+    desired = {
+        s.seat_num: {
+            wd: desired_slots_of(s, wd, is_weekly=is_weekly) for wd in WEEKDAY_KEYS
+        }
+        for s in seats
+    }
+    try:
+        recency = await store.cookie_recency()
+    except Exception:
+        recency = {}
+    plan = _build_replan(
+        accounts, desired,
+        max_seg_hours=lib.max_reserve_hours,
+        daily_limit_hours=lib.daily_reserve_hours_limit,
+        mode=await _allocation_strategy(request),
+        recency=recency,
+    )
+    return JSONResponse(plan)
+
+
+@router.post("/bindings/replan/apply")
+async def bindings_replan_apply(request: Request):
+    """重排确认写库：服务端重算同一方案后只对受影响账号 upsert。"""
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    lib = request.app.state.cfg.library
+    seats = await store.list_target_seats()
+    accounts = await store.list_accounts()
+    if not seats or not accounts:
+        return RedirectResponse(
+            f"/bindings?error={quote('没有目标座位或守护账号')}", status_code=303)
+    is_weekly = (await _schedule_mode(request) == "weekly")
+    desired = {
+        s.seat_num: {
+            wd: desired_slots_of(s, wd, is_weekly=is_weekly) for wd in WEEKDAY_KEYS
+        }
+        for s in seats
+    }
+    try:
+        recency = await store.cookie_recency()
+    except Exception:
+        recency = {}
+    plan = _build_replan(
+        accounts, desired,
+        max_seg_hours=lib.max_reserve_hours,
+        daily_limit_hours=lib.daily_reserve_hours_limit,
+        mode=await _allocation_strategy(request),
+        recency=recency,
+    )
+    # 仅对受影响账号 upsert：服务端拿到 plan["new_matrix"] 直接写库。
+    refreshed = {a.id: a for a in await store.list_accounts()}
+    new_full: dict = plan.get("new_matrix") or {}
+    unfillable = plan.get("unfillable") or []
+    if unfillable:
+        return RedirectResponse(
+            f"/bindings?error={quote('重排失败：' + '；'.join(unfillable))}",
+            status_code=303)
+    changed = 0
+    for aid in plan["affected"]:
+        acc = refreshed.get(aid)
+        if acc is None:
+            continue
+        new = new_full.get(aid, {})
+        if new == (acc.seat_slots or {}):
+            continue
+        acc.seat_slots = new
+        acc.bound_seats = sorted(new.keys())
+        await store.upsert_account(acc)
+        changed += 1
+    msg = f"按策略重排完成：影响 {changed} 个账号，新增 {plan['summary']['added_count']} 条，移除 {plan['summary']['removed_count']} 条"
+    return RedirectResponse(f"/bindings?msg={quote(msg)}", status_code=303)
 
 @router.post("/bindings/manual")
 async def bindings_manual(
@@ -2033,7 +2187,10 @@ async def settings_view(request: Request):
             strategy_help=_settings.SUBMIT_STRATEGY_HELP,
             strategy_labels=_settings.SUBMIT_STRATEGY_LABELS,
             relay_options=_settings.RELAY_LEAD_OPTIONS,
+            strategy_help_allocation=_settings.ALLOCATION_STRATEGY_HELP,
+            allocation_labels=_settings.ALLOCATION_STRATEGY_LABELS,
             tick_options=_settings.TICK_INTERVAL_OPTIONS,
+
             defaults=_settings.DEFAULTS,
             saved=request.query_params.get("saved"),
             reset_done=request.query_params.get("reset"),
@@ -2061,6 +2218,7 @@ async def settings_save(request: Request):
     patch_raw["notify_webhook"] = (form.get("notify_webhook") or "").strip()
     patch_raw["reconcile_interval_seconds"] = (form.get("reconcile_interval_seconds") or "").strip()
     patch_raw["schedule_mode"] = (form.get("schedule_mode") or "").strip()
+    patch_raw["allocation_strategy"] = (form.get("allocation_strategy") or "").strip()
 
     # 滤掉空字符串的“未填”键（notify_webhook 允许空以清空）
     patch: dict[str, object] = {}

@@ -112,6 +112,8 @@ def test_all_post_empty_not_500(tmp_path, monkeypatch):
             ("/bindings/auto", {}),
             ("/bindings/mode", {"mode": "uniform"}),
             ("/bindings/mode", {"mode": "weekly"}),
+            ("/bindings/replan/preview", {}),
+            ("/bindings/replan/apply", {}),
         ]
         for path, data in cases:
             sep = "&" if "?" in path else "?"
