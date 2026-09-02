@@ -21,7 +21,7 @@
         </div>
       </form>
       <button class="btn btn-primary btn-sm" type="button" id="replan-btn"
-              x-data="replanButton()" @click="openPreview()">按策略重排（{{ allocation_labels[allocation_strategy] }}）</button>
+              @click="$dispatch('replan-open')">按策略重排（{{ allocation_labels[allocation_strategy] }}）</button>
       <form method="post" action="/bindings/auto">
         <button class="btn btn-primary btn-sm" type="submit">⚡ 自动绑定未覆盖时段</button>
       </form>
@@ -338,7 +338,7 @@
    </div>
 
   {# 按策略重排弹层：先预览 diff，确认后调用 /apply #}
-  <div id="replan-modal" x-data="replanModal()">
+  <div id="replan-modal" x-data="replanModal()" @replan-open.window="fetchPreview()">
     <div class="modal-backdrop" x-show="open" x-cloak style="display:none" @keydown.escape.window="cancel()">
       <div class="modal" @click.outside="cancel()" style="max-width:560px">
         <div class="modal-title">按策略重排预览</div>

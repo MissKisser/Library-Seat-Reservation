@@ -451,30 +451,13 @@
         try {
           const r = await fetch('/bindings/replan/apply', { method: 'POST' });
           if (!r.ok) throw new Error('HTTP ' + r.status);
-          // PRG：服务端 303，本页面刷新后由 prgToast 弹提示
-          location.assign('/bindings');
+          // fetch 已自动跟随 303：r.url 即带 ?msg= 的最终地址，赋回浏览器让 prgToast 弹提示
+          location.assign(r.url);
         } catch (e) {
           this.error = '应用失败：' + (e && e.message || e);
         }
       },
       cancel() { this.close(); },
-    };
-  };
-
-  window.replanButton = function () {
-    const modal = () => {
-      const el = document.getElementById('replan-modal');
-      if (!el) return null;
-      // Alpine 组件实例：通过 _x_dataStack 取第一个
-      const stack = el._x_dataStack || [];
-      return stack[0] || null;
-    };
-    return {
-      async openPreview() {
-        let m = modal();
-        if (!m) return;
-        await m.fetchPreview();
-      },
     };
   };
   /* ===== 守护账号页：查看日下拉（初值由服务端按 14:00 前今天 / 后明天预置） ===== */
@@ -737,6 +720,22 @@
   /* ===== 移动端侧栏开关 ===== */
   window.mobileNav = function () {
     return { open: false, toggle() { this.open = !this.open; } };
+  };
+
+  /* ===== 系统设置页：检测表单变更，自动亮起左下角浮动保存按钮 ===== */
+  window.settingsDirty = function () {
+    return {
+      dirty: false,
+      init() {
+        const form = this.$root.querySelector('form[action="/settings"]');
+        if (!form) return;
+        const snapshot = () => new FormData(form).toString();
+        const baseline = snapshot();
+        form.addEventListener('input', () => { this.dirty = snapshot() !== baseline; });
+        form.addEventListener('change', () => { this.dirty = snapshot() !== baseline; });
+        form.addEventListener('submit', () => { this.dirty = false; });
+      },
+    };
   };
 
   /* 页面加载后跑 PRG toast */

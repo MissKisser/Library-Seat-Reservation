@@ -2307,16 +2307,14 @@ async def audit_view(request: Request):
             "error": data.get("error", ""),
             "tasks": data.get("tasks") or [],
         })
-    return _templates(request).TemplateResponse(
-        request, "audit.html",
-        {
-            "request": request, "rows": rows,
-            "sched_ready": sched is not None and hasattr(sched, "reconcile_sweep"),
-            "checked": request.query_params.get("checked"),
-            "error": request.query_params.get("error"),
-            "active_page": "audit",
-        },
+    ctx = await _ctx(request, active_page="audit")
+    ctx.update(
+        rows=rows,
+        sched_ready=sched is not None and hasattr(sched, "reconcile_sweep"),
+        checked=request.query_params.get("checked"),
+        error=request.query_params.get("error"),
     )
+    return _templates(request).TemplateResponse(request, "audit.html", ctx)
 
 
 @router.post("/audit/check")
