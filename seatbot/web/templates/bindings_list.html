@@ -338,8 +338,8 @@
    </div>
 
   {# 按策略重排弹层：先预览 diff，确认后调用 /apply #}
-  <div id="replan-modal" x-data="replanModal()" x-cloak style="display:none">
-    <div class="modal-backdrop" x-show="open" @keydown.escape.window="cancel()">
+  <div id="replan-modal" x-data="replanModal()">
+    <div class="modal-backdrop" x-show="open" x-cloak style="display:none" @keydown.escape.window="cancel()">
       <div class="modal" @click.outside="cancel()" style="max-width:560px">
         <div class="modal-title">按策略重排预览</div>
         <div class="modal-desc text-xs text-ink-secondary">
