@@ -313,9 +313,10 @@ async def _collect_day_bundle(
     # 成功 = active/signed/etc 且无 last_error；future 的 pending 视为已计划覆盖
     desired_blocks: dict[str, set[str]] = {}
     view_wd = weekday_key(view_day)
+    is_weekly = (await _schedule_mode(request) == "weekly")
     for s in target_seats:
         blocks: set[str] = set()
-        for r in desired_slots_of(s, view_wd):
+        for r in desired_slots_of(s, view_wd, is_weekly=is_weekly):
             try:
                 rs, re_ = parse_range(r)
             except Exception:
@@ -427,17 +428,17 @@ async def dashboard(request: Request):
 
     def _empty_shell(day: date) -> dict:
         return {"view_day": day.isoformat(), "rows": [], "gap_count": 0, "occ_err": None}
-
     # 启动动画的时段徽章: 取 view_day 那天的期望时段（今天或明天的星期键）
     boot_slots: list[str] = []
     view_wd_today = weekday_key(today)
     view_wd_tomorrow = weekday_key(tomorrow)
+    is_weekly_boot = (await _schedule_mode(request) == "weekly")
     for s in target_seats:
-        for r in desired_slots_of(s, view_wd_today):
+        for r in desired_slots_of(s, view_wd_today, is_weekly=is_weekly_boot):
             label = r.split("-")[0][:2] + "–" + r.split("-")[1][:2]
             if label not in boot_slots:
                 boot_slots.append(label)
-        for r in desired_slots_of(s, view_wd_tomorrow):
+        for r in desired_slots_of(s, view_wd_tomorrow, is_weekly=is_weekly_boot):
             label = r.split("-")[0][:2] + "–" + r.split("-")[1][:2]
             if label not in boot_slots:
                 boot_slots.append(label)
@@ -853,11 +854,11 @@ async def targets_replace(
             "desc": desc,
             "new_end": new_end_dt.strftime("%H:%M"),
         })
-
     # 3) 换目标座位行（注册新席继承标签与期望时段 + 软删旧席）
     await store.add_target_seat(
         new_sn, label=seat_map[old_sn].label,
         desired_slots=seat_map[old_sn].desired_slots,
+        desired_slots_weekly=seat_map[old_sn].desired_slots_weekly,
     )
     await store.delete_target_seat(old_sn)
 
@@ -993,11 +994,13 @@ async def bindings_list(request: Request):
     limit = lib.daily_reserve_hours_limit
     seats = await store.list_target_seats()
     accounts = await store.list_accounts()
+    mode = await _schedule_mode(request)
+    is_weekly = (mode == "weekly")
     # 星期列（用于 Jinja 循环 7 天）
     weekday_cols = list(zip(WEEKDAY_KEYS, [WEEKDAY_LABELS[w] for w in WEEKDAY_KEYS]))
 
     desired: dict[str, dict[str, list[str]]] = {
-        s.seat_num: {wd: desired_slots_of(s, wd) for wd in WEEKDAY_KEYS}
+        s.seat_num: {wd: desired_slots_of(s, wd, is_weekly=is_weekly) for wd in WEEKDAY_KEYS}
         for s in seats
     }
     seat_bindings: dict[str, list[dict]] = {s.seat_num: [] for s in seats}
@@ -1041,22 +1044,19 @@ async def bindings_list(request: Request):
         nxt = t + timedelta(minutes=30)
         ticks.append((t.strftime("%H:%M"), nxt.strftime("%H:%M")))
         t = nxt
-    from seatbot.bindings import DEFAULT_DESIRED_SLOTS
-
     desired_blocks: dict[str, dict[str, list[str]]] = {
         s.seat_num: {
-            wd: _blocks_of(desired_slots_of(s, wd)) for wd in WEEKDAY_KEYS
+            wd: _blocks_of(desired_slots_of(s, wd, is_weekly=is_weekly)) for wd in WEEKDAY_KEYS
         }
         for s in seats
     }
     using_default = {
-        s.seat_num: not s.desired_slots for s in seats
+        s.seat_num: not (s.desired_slots_weekly if is_weekly else s.desired_slots) for s in seats
     }
     margins = account_margins(accounts, daily_limit_hours=limit)
-    mode = await _schedule_mode(request)
     diverged = {
         s.seat_num: any(
-            desired_slots_of(s, wd) != desired_slots_of(s, "mon")
+            desired_slots_of(s, wd, is_weekly=is_weekly) != desired_slots_of(s, "mon", is_weekly=is_weekly)
             for wd in WEEKDAY_KEYS)
         for s in seats
     }
@@ -1096,19 +1096,21 @@ async def bindings_auto(request: Request):
     if not seats or not accounts:
         return RedirectResponse(
             f"/bindings?error={quote('没有目标座位或守护账号')}", status_code=303)
-    # desired_slots_of() 按星期几返回；auto_assign 需要 {seat: {wd: [...]}} 形态
+    # desired_slots_of() 按星期几返回；auto_assign 需要 {seat: {wd: [...]}} 形态，按当前 schedule_mode 取列
+    mode = await _schedule_mode(request)
+    is_weekly = (mode == "weekly")
+    before = _count_bindings({a.id: (a.seat_slots or {}) for a in accounts})
+    changed = 0
     desired = {}
     for s in seats:
         desired[s.seat_num] = {
-            wd: desired_slots_of(s, wd) for wd in WEEKDAY_KEYS
+            wd: desired_slots_of(s, wd, is_weekly=is_weekly) for wd in WEEKDAY_KEYS
         }
-    before = _count_bindings({a.id: (a.seat_slots or {}) for a in accounts})
     matrices, unfillable = auto_assign(
         accounts, desired,
         max_seg_hours=lib.max_reserve_hours,
         daily_limit_hours=lib.daily_reserve_hours_limit,
     )
-    changed = 0
     for a in accounts:
         new = matrices.get(a.id)
         if new is None or new == (a.seat_slots or {}):
@@ -1234,7 +1236,7 @@ async def bindings_desired(
 
     mode=uniform（全局统一）：单组 blocks 块铺满 7 天；
     mode=weekly（按天自定义）：blocks_mon..blocks_sun 分别对应各天，
-    未勾的天 = 该天不检查缺口。7 天全不勾 = 清空自定义恢复默认三段。
+    未勾的天 = 该天不检查缺口。7 天全不勾 = 清空自定义（该座位不再检查缺口）。
     seat_num 为 "__ALL__" 时把同组块应用到所有已启用座位。
     """
     from urllib.parse import quote
@@ -1260,7 +1262,7 @@ async def bindings_desired(
     close_t = parse_hhmm(lib.close_time)
 
     def _merge(block_list: list[str]) -> tuple[list[str], str | None]:
-        """30 分钟块起点 → 合并时段段列表；超长返回错误消息。"""
+        """30 分钟块起点 → 合并时段段列表；超长按上限自动拆分为多段（≤max_reserve_hours）。"""
         starts: list[_time] = []
         for b in block_list:
             try:
@@ -1282,13 +1284,12 @@ async def bindings_desired(
                 merged.append((t, e))
         ranges: list[str] = []
         for s, e in merged:
-            rng = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
-            h = (_dt.combine(date.today(), e) - _dt.combine(date.today(), s)
-                 ).total_seconds() / 3600
-            if h > lib.max_reserve_hours + 1e-9:
-                return [], (f"连续勾选形成时段 {rng} 长 {h:g}h，"
-                            f"超过单段上限 {lib.max_reserve_hours:g}h——请在中间断开勾选")
-            ranges.append(rng)
+            cur_dt = _dt.combine(date.today(), s)
+            end_dt = _dt.combine(date.today(), e)
+            while cur_dt < end_dt:
+                nxt_dt = min(cur_dt + timedelta(hours=lib.max_reserve_hours), end_dt)
+                ranges.append(f"{cur_dt.strftime('%H:%M')}-{nxt_dt.strftime('%H:%M')}")
+                cur_dt = nxt_dt
         return ranges, None
 
     per_day: dict[str, list[str]] = {}
@@ -1311,107 +1312,82 @@ async def bindings_desired(
                     f"/bindings?error={quote(err)}", status_code=303)
             per_day[wd] = ranges
 
+    is_weekly = (desired_mode == "weekly")
     for sn in targets:
         if all(not per_day[wd] for wd in WEEKDAY_KEYS):
-            await store.set_target_seat_desired(sn, None)   # 全空 → 恢复默认
+            await store.set_target_seat_desired(sn, None, is_weekly=None)
         else:
-            await store.set_target_seat_desired(sn, per_day)
+            await store.set_target_seat_desired(sn, per_day, is_weekly=is_weekly)
+            # 单一真源：显式保存即清另一形态列，避免模式切换后读到残留旧配置
+            await store.set_target_seat_desired(sn, None, is_weekly=not is_weekly)
     scope = "所有座位" if sn_raw == "__ALL__" else "、".join(targets)
     filled = sum(1 for wd in WEEKDAY_KEYS if per_day[wd])
     if desired_mode == "uniform":
         msg = (f"已更新 {scope} 的期望时段（{'、'.join(per_day['mon'])}，"
                f"全周统一）" if per_day["mon"]
-               else f"{scope} 已清空自定义期望时段（恢复默认三段）")
+               else f"{scope} 已清空自定义期望时段")
     else:
         msg = f"已更新 {scope} 的期望时段（{filled}/7 天有守护块）"
-    return RedirectResponse(f"/bindings?msg={quote(msg)}", status_code=303)
-
-
-# =========================================================================
-# User Reserved (用户亲述已预约段, scheduler 跳过)
-# =========================================================================
-@router.get("/user-reserved", response_class=HTMLResponse)
-async def user_reserved_list(request: Request):
-    store = request.app.state.store
-    rows = await store.list_user_reserved()
-    return _templates(request).TemplateResponse(
-        request, "user_reserved_list.html",
-        await _ctx(request, reserved=rows, error=None, active_page="user-reserved"),
-    )
-
-
-@router.post("/user-reserved")
-async def user_reserved_create(
-    request: Request,
-    account_id: str = Form(...),
-    seat_num: str = Form(...),
-    day: str = Form(...),
-    start_time: str = Form(...),
-    end_time: str = Form(...),
-    note: str = Form(""),
-):
-    from datetime import date as _date, time as _time
-    store = request.app.state.store
-    try:
-        d = _date.fromisoformat(day)
-        s = _time(*map(int, start_time.split(":")))
-        e = _time(*map(int, end_time.split(":")))
-        if e <= s:
-            raise ValueError("end must be after start")
-        sn = seat_num.strip()
-        if not sn.isdigit():
-            raise ValueError("seat_num must be digits")
-    except Exception as ex:
-        rows = await store.list_user_reserved()
-        return _templates(request).TemplateResponse(
-            request, "user_reserved_list.html",
-            await _ctx(request, reserved=rows,
-                        error=f"input error: {ex}",
-                        active_page="user-reserved"),
-            status_code=400,
-        )
-    if not await store.get_account(account_id):
-        rows = await store.list_user_reserved()
-        return _templates(request).TemplateResponse(
-            request, "user_reserved_list.html",
-            await _ctx(request, reserved=rows,
-                        error=f"账号不存在: {account_id}",
-                        active_page="user-reserved"),
-            status_code=400,
-        )
-    if d < today_cst():
-        rows = await store.list_user_reserved()
-        return _templates(request).TemplateResponse(
-            request, "user_reserved_list.html",
-            await _ctx(request, reserved=rows,
-                        error="日期不能早于今天",
-                        active_page="user-reserved"),
-            status_code=400,
-        )
-    await store.add_user_reserved(
-        account_id=account_id,
-        seat_num=sn.zfill(3),
-        day=d, start_time=s, end_time=e,
-        note=note,
-    )
-    return RedirectResponse("/user-reserved?created=1", status_code=303)
-
-
-@router.post("/user-reserved/{rid}/delete")
-async def user_reserved_delete(request: Request, rid: int):
-    store = request.app.state.store
-    await store.delete_user_reserved(rid)
-    return RedirectResponse("/user-reserved?deleted=1", status_code=303)
+    return RedirectResponse(f"/bindings?msg={quote(msg)}#desired-editor", status_code=303)
 
 
 # =========================================================================
 # Accounts CRUD (v2: 包含 bound_seats)
 # =========================================================================
+def _slots_view(acc: Account) -> dict:
+    """守护账号页时段展示模型，供前端按星期渲染：
+    {"kind": "seats", "seats": [{"seat": 座位, "days": {mon..sun: list[str] | "full"}}]}
+    / {"kind": "flat", "ranges": list[str]} / {"kind": "full"} / {"kind": "none"}。
+    """
+    if acc.seat_slots:
+        seats = [
+            {"seat": seat, "days": normalize_weekly(val, allow_full=True) or {}}
+            for seat, val in sorted((acc.seat_slots or {}).items())
+        ]
+        return {"kind": "seats", "seats": seats}
+    if acc.slots == "full":
+        return {"kind": "full"}
+    if acc.slots:
+        return {"kind": "flat", "ranges": [str(r) for r in acc.slots]}
+    return {"kind": "none"}
+
+
+def _slots_diverged(acc: Account) -> bool:
+    """账号 seat_slots 各天的配置是否存在不一致（不一致才值得按天查看）。"""
+    for val in (acc.seat_slots or {}).values():
+        days = normalize_weekly(val, allow_full=True) or {}
+        vals = list(days.values())
+        if any(v != vals[0] for v in vals[1:]):
+            return True
+    return False
+
+
+def _default_view_weekday(now: _dt | None = None) -> str:
+    """守护账号页默认查看的星期键：14:00 前看今天，之后看明天（预约窗口语义）。"""
+    now = now or now_cst()
+    day = now.date() + timedelta(days=1) if now.hour >= 14 else now.date()
+    return weekday_key(day)
+
+
 @router.get("/accounts", response_class=HTMLResponse)
 async def accounts_list(request: Request):
+    store = request.app.state.store
+    accounts = await store.list_accounts()
+    mode = await _schedule_mode(request)
+    today = today_cst()
     return _templates(request).TemplateResponse(
         request, "accounts_list.html",
-        await _ctx(request, active_page="accounts"),
+        await _ctx(
+            request,
+            active_page="accounts",
+            accounts=accounts,
+            show_week_picker=(mode == "weekly") or any(_slots_diverged(a) for a in accounts),
+            view_wd=_default_view_weekday(),
+            today_wd=weekday_key(today),
+            tomorrow_wd=weekday_key(today + timedelta(days=1)),
+            weekday_cols=list(zip(WEEKDAY_KEYS, [WEEKDAY_LABELS[w] for w in WEEKDAY_KEYS])),
+            slots_views={a.id: _slots_view(a) for a in accounts},
+        ),
     )
 
 
@@ -2160,7 +2136,7 @@ async def audit_view(request: Request):
     store = request.app.state.store
     sched = getattr(request.app.state, "sched", None)
     rows: list[dict] = []
-    for r in await store.list_reconcile_results(limit=48):
+    for r in await store.list_reconcile_results(limit=3):
         try:
             data = json.loads(r["detail"])
         except Exception:
