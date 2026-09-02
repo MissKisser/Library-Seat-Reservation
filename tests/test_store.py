@@ -245,11 +245,14 @@ def test_set_target_seat_desired_accepts_dict_and_none(tmp_path):
             await s.set_target_seat_desired(
                 "030", {"mon": ["09:00-11:00"], "sun": []})
             seats = await s.list_target_seats()
-            assert seats[0].desired_slots["mon"] == ["09:00-11:00"]
-            assert seats[0].desired_slots["tue"] == []
+            # dict 形态自动识别为按天（weekly），存于 weekly 列
+            assert seats[0].desired_slots_weekly["mon"] == ["09:00-11:00"]
+            assert seats[0].desired_slots_weekly["tue"] == []
+            assert seats[0].desired_slots is None
             await s.set_target_seat_desired("030", None)
             seats = await s.list_target_seats()
             assert seats[0].desired_slots is None
+            assert seats[0].desired_slots_weekly is None
         finally:
             await s.close()
 

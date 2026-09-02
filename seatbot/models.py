@@ -16,10 +16,12 @@ class SeatTarget:
     enabled: bool = True
     created_at: int = 0
     updated_at: int = 0
-    # 该座位期望被守护的时段；None = 使用 DEFAULT_DESIRED_SLOTS；
+    # 该座位期望被守护的时段；None = 未设置（不检查）；
     # list = 全周统一；dict[星期键, list] = 按天
+    # 独立双配置：desired_slots 为全周统一（uniform），desired_slots_weekly 为按天（weekly），
+    # 互不覆盖；读取时按 schedule_mode 选列
     desired_slots: list[str] | dict[str, list[str]] | None = None
-
+    desired_slots_weekly: dict[str, list[str]] | None = None
 # ---------- account / slot ----------
 
 @dataclass

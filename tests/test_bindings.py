@@ -112,8 +112,7 @@ def test_account_margins_shape():
 # ---------- desired_slots_of ----------
 
 def test_desired_slots_of_none_defaults():
-    assert desired_slots_of(_seat_target(None), "wed") == [
-        "09:00-11:00", "15:00-17:00", "19:00-21:00"]
+    assert desired_slots_of(_seat_target(None), "wed") == []
 
 
 def test_desired_slots_of_list_form_uniform():

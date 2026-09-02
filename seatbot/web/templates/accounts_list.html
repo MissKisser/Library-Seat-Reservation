@@ -3,78 +3,123 @@
 {% block title %}守护账号{% endblock %}
 
 {% block content %}
-<div class="page-header">
-  <div>
-    <h1 class="page-title">守护账号</h1>
-    <p class="page-sub">轮值预约目标座位的超星账号</p>
-  </div>
-  <div class="flex items-center gap-2">
-    {# 批量验证 #}
-    {% set _verify_ids = accounts | map(attribute='id') | list | tojson %}
-    <div x-data='verifyAll({{ _verify_ids }})'>
-      <button class="btn btn-secondary btn-sm" @click="run()" :disabled="running || {{ accounts|length }} == 0">
-        <svg x-show="running" class="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg>
-        <span x-text="label">全部验证</span>
-      </button>
+<div x-data="slotWeekPicker('{{ view_wd }}', '{{ today_wd }}', '{{ tomorrow_wd }}')">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">守护账号</h1>
+      <p class="page-sub">轮值预约目标座位的超星账号</p>
     </div>
-    <a class="btn btn-primary btn-sm" href="/accounts/new">+ 新建账号</a>
+    <div class="flex items-center gap-2">
+      {% if show_week_picker %}
+      <label class="flex items-center gap-1.5 text-xs text-ink-secondary whitespace-nowrap"
+             title="按天自定义模式下各账号时段按星期几独立；默认看今天，14:00 后默认看明天（次日预约窗口已开）">
+        查看日
+        <select class="select w-auto text-xs" x-model="wd">
+          {% for wd_key, wlbl in weekday_cols %}
+          <option value="{{ wd_key }}" x-text="optionLabel('{{ wd_key }}')">{{ wlbl }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+      {# 批量验证 #}
+      {% set _verify_ids = accounts | map(attribute='id') | list | tojson %}
+      <div x-data='verifyAll({{ _verify_ids }})'>
+        <button class="btn btn-secondary btn-sm" @click="run()" :disabled="running || {{ accounts|length }} == 0">
+          <svg x-show="running" class="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg>
+          <span x-text="label">全部验证</span>
+        </button>
+      </div>
+      <a class="btn btn-primary btn-sm" href="/accounts/new">+ 新建账号</a>
+    </div>
   </div>
-</div>
 
-{% if accounts %}
-<div class="card">
-  <div class="overflow-x-auto">
-    <table class="table">
-      <thead>
-        <tr>
-          <th>ID</th><th class="num">手机号</th><th>时段</th><th>绑定座位</th><th>验证</th><th class="actions">操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for a in accounts %}
-        <tr>
-          <td><code>{{ a.id }}</code></td>
-          <td class="num">{{ a.phone }}</td>
-          <td class="text-xs text-ink-secondary">
-            {% if a.seat_slots %}
-              {# per-seat slots (2026-08-24) — 优先显示 #}
-              {% for seat, slots in a.seat_slots.items() %}
-                <div class="font-mono">{{ seat }}: {{ slots | tojson }}</div>
-              {% endfor %}
-            {% elif a.slots == 'full' %}全天{% else %}
-              <span class="font-mono">{{ a.slots | tojson }}</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if a.bound_seats %}
-              {% for s in a.bound_seats %}<span class="badge badge-muted mr-1">{{ s }}</span>{% endfor %}
-            {% else %}<span class="text-xs text-ink-muted whitespace-nowrap">通用</span>{% endif %}
-          </td>
-          <td>
-            {# 行级验证按钮 #}
-            <div x-data="verifyButton('{{ a.id }}')" class="flex items-center gap-2" data-verify-id="{{ a.id }}">
-              <button class="btn btn-ghost btn-sm" @click="run()" :disabled="running" :aria-busy="running">
-                <svg x-show="running" class="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg>
-                <svg x-show="!running && state==='success'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
-                <span x-text="label">验证</span>
-              </button>
-              <span x-show="message" x-text="message" :class="state==='success' ? 'text-success text-xs' : 'text-danger text-xs'"></span>
-            </div>
-          </td>
-          <td class="actions">
-            <a class="btn btn-ghost btn-sm" href="/accounts/{{ a.id }}/edit">编辑</a>
-            <button class="btn btn-ghost btn-sm text-danger"
-              @click="confirmAction({title:'删除账号？',desc:'删除 {{ a.id }} 及其绑定',confirmText:'删除',danger:true}).then(ok=>{if(ok){const f=document.createElement('form');f.method='post';f.action='/accounts/{{ a.id }}/delete';document.body.appendChild(f);f.submit();}})">删除</button>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  {% if accounts %}
+  <div class="card">
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>账号</th>
+            <th>守护时段<span class="text-ink-muted font-normal">（<span x-text="labels[wd]"></span>）</span></th>
+            <th>验证</th>
+            <th class="actions">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in accounts %}
+          <tr>
+            <td class="align-middle">
+              <div class="flex flex-col items-center gap-0.5">
+                <span class="font-mono text-[13px] font-semibold whitespace-nowrap">{{ a.id }}</span>
+                <span class="text-xs text-ink-secondary font-mono whitespace-nowrap">{{ a.phone }}</span>
+              </div>
+            </td>
+            <td class="align-middle" x-data='accountSlotCell({{ slots_views[a.id] | tojson }})'>
+              <div class="flex flex-col items-center gap-1.5 min-w-[14rem]">
+                <template x-if="view.kind === 'seats'">
+                  <div class="flex flex-col items-center gap-1.5">
+                    <template x-for="row in activeSeats(wd)" :key="row.seat">
+                      <div class="flex items-center justify-center gap-1.5 flex-wrap">
+                        <span class="badge badge-muted font-mono" x-text="row.seat"></span>
+                        <template x-if="row.days[wd] === 'full'">
+                          <span class="chip chip-accent font-mono">全天</span>
+                        </template>
+                        <template x-if="Array.isArray(row.days[wd]) && row.days[wd].length">
+                          <div class="flex items-center gap-1 flex-wrap">
+                            <template x-for="r in row.days[wd]" :key="r">
+                              <span class="chip chip-accent font-mono" x-text="r"></span>
+                            </template>
+                          </div>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="view.kind === 'flat'">
+                  <div class="flex items-center justify-center gap-1.5 flex-wrap">
+                    <span class="badge badge-muted">通用</span>
+                    <template x-for="r in view.ranges" :key="r">
+                      <span class="chip chip-accent font-mono" x-text="r"></span>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="view.kind === 'full'">
+                  <div class="flex items-center justify-center gap-1.5">
+                    <span class="badge badge-muted">通用</span>
+                    <span class="chip chip-accent font-mono">全天</span>
+                  </div>
+                </template>
+                <template x-if="view.kind === 'none'">
+                  <span class="chip chip-muted">未绑定座位</span>
+                </template>
+              </div>
+            </td>
+            <td class="align-middle">
+              {# 行级验证按钮 #}
+              <div x-data="verifyButton('{{ a.id }}')" class="flex items-center justify-center gap-2" data-verify-id="{{ a.id }}">
+                <button class="btn btn-ghost btn-sm" @click="run()" :disabled="running" :aria-busy="running">
+                  <svg x-show="running" class="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg>
+                  <svg x-show="!running && state==='success'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+                  <span x-text="label">验证</span>
+                </button>
+                <span x-show="message" x-text="message" :class="state==='success' ? 'text-success text-xs' : 'text-danger text-xs'"></span>
+              </div>
+            </td>
+            <td class="actions">
+              <a class="btn btn-ghost btn-sm" href="/accounts/{{ a.id }}/edit">编辑</a>
+              <button class="btn btn-ghost btn-sm text-danger"
+                @click="confirmAction({title:'删除账号？',desc:'删除 {{ a.id }} 及其绑定',confirmText:'删除',danger:true}).then(ok=>{if(ok){const f=document.createElement('form');f.method='post';f.action='/accounts/{{ a.id }}/delete';document.body.appendChild(f);f.submit();}})">删除</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
+  {% else %}
+  <div class="card"><div class="card-body">
+    {{ empty(title='还没有守护账号', hint='添加第一个超星账号来开始轮值预约', action_label='+ 新建账号', action_href='/accounts/new') }}
+  </div></div>
+  {% endif %}
 </div>
-{% else %}
-<div class="card"><div class="card-body">
-  {{ empty(title='还没有守护账号', hint='添加第一个超星账号来开始轮值预约', action_label='+ 新建账号', action_href='/accounts/new') }}
-</div></div>
-{% endif %}
 {% endblock %}

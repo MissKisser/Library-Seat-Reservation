@@ -20,9 +20,9 @@ library:
 # 目标座位 — Web 面板 (/targets) 是主入口, 这里只是 seed
 target_seats:
   - seat_num: "104"
-    label: "主座 (示例)"
+    label: "目标座位A (示例)"
   - seat_num: "105"
-    label: "相邻备用 (示例)"
+    label: "目标座位B (示例)"
 
 # 守护账号 (M 个)
 #

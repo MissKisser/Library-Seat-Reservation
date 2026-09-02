@@ -10,8 +10,7 @@ from typing import Any
 import aiosqlite
 
 from seatbot.models import Account, SeatTarget, Task, TaskStatus
-from seatbot.utils.weekly import normalize_weekly
-
+from seatbot.utils.weekly import WEEKDAY_KEYS, normalize_weekly
 # v2 schema:
 #  - accounts:        + bound_seats_json
 #  - target_seats:    NEW (multi-seat registry)
@@ -36,7 +35,8 @@ CREATE TABLE IF NOT EXISTS target_seats (
   enabled     INTEGER NOT NULL DEFAULT 1,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
-  desired_slots_json TEXT
+  desired_slots_json TEXT,
+  desired_slots_weekly_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -236,6 +236,26 @@ class StateStore:
             await self.db.execute(
                 "ALTER TABLE target_seats ADD COLUMN desired_slots_json TEXT"
             )
+        if "desired_slots_weekly_json" not in seat_cols:
+            await self.db.execute(
+                "ALTER TABLE target_seats ADD COLUMN desired_slots_weekly_json TEXT"
+            )
+            # 独立双配置迁移：存量 desired_slots_json 若为按天 dict 且 7 天不全相同（周级），则搬至 weekly 列
+            cur2 = await self.db.execute(
+                "SELECT seat_num, desired_slots_json FROM target_seats WHERE desired_slots_json IS NOT NULL")
+            for sid, raw in await cur2.fetchall():
+                try:
+                    val = json.loads(raw)
+                except Exception:
+                    continue
+                if isinstance(val, dict) and any(k in WEEKDAY_KEYS for k in val.keys()):
+                    vals = [json.dumps(val.get(wd, []), sort_keys=True) for wd in WEEKDAY_KEYS]
+                    is_uniform = len(set(vals)) == 1
+                    if not is_uniform:
+                        await self.db.execute(
+                            "UPDATE target_seats SET desired_slots_weekly_json=?, desired_slots_json=NULL WHERE seat_num=?",
+                            (json.dumps(val), sid),
+                        )
         # 6. 星期维度形态归一: seat_slots / desired_slots 的 list 值展开为 7 键 dict（幂等）
         cur = await self.db.execute("SELECT id, seat_slots_json FROM accounts")
         for rid, raw in await cur.fetchall():
@@ -269,6 +289,21 @@ class StateStore:
             if norm is not None and norm != val:
                 await self.db.execute(
                     "UPDATE target_seats SET desired_slots_json=? WHERE seat_num=?",
+                    (json.dumps(norm), sid),
+                )
+        # 6b. weekly 列的归一（同样幂等）
+        cur = await self.db.execute(
+            "SELECT seat_num, desired_slots_weekly_json FROM target_seats "
+            "WHERE desired_slots_weekly_json IS NOT NULL")
+        for sid, raw in await cur.fetchall():
+            try:
+                val = json.loads(raw)
+            except Exception:
+                continue
+            norm = normalize_weekly(val, allow_full=False)
+            if norm is not None and norm != val:
+                await self.db.execute(
+                    "UPDATE target_seats SET desired_slots_weekly_json=? WHERE seat_num=?",
                     (json.dumps(norm), sid),
                 )
         await self.db.commit()
@@ -576,23 +611,30 @@ class StateStore:
     # ---------- target seats ----------
     async def add_target_seat(
         self, seat_num: str, *, label: str = "",
-        desired_slots: list[str] | None = None,
+        desired_slots: list[str] | dict[str, list[str]] | None = None,
+        desired_slots_weekly: dict[str, list[str]] | None = None,
     ) -> None:
         """注册目标座位；对已软删除的座位重新启用（Web/CLI 入口）。"""
         self._bump()
         now = int(_time.time() * 1000)
+        # weekly 列需显式传入时才写，否则沿用 add 时的 desired_slots 语义（兼容旧调）
+        if desired_slots_weekly is None and isinstance(desired_slots, dict) and any(k in desired_slots for k in ("mon","tue","wed","thu","fri","sat","sun")):
+            # 调用方若把 weekly dict 误传到 desired_slots，自动纠偏（防御）
+            desired_slots_weekly = desired_slots  # type: ignore
+            desired_slots = None
+        uni_json = (lambda n: json.dumps(n) if n is not None else None)(normalize_weekly(desired_slots, allow_full=False) if desired_slots is not None else None)
+        wk_json = (lambda n: json.dumps(n) if n is not None else None)(normalize_weekly(desired_slots_weekly, allow_full=False) if desired_slots_weekly is not None else None)
         await self.db.execute(
             """INSERT INTO target_seats
-                   (seat_num, label, enabled, created_at, updated_at, desired_slots_json)
-               VALUES (?, ?, 1, ?, ?, ?)
+                   (seat_num, label, enabled, created_at, updated_at, desired_slots_json, desired_slots_weekly_json)
+               VALUES (?, ?, 1, ?, ?, ?, ?)
                ON CONFLICT(seat_num) DO UPDATE SET
-                   label=excluded.label, enabled=1, updated_at=excluded.updated_at""",
-            (seat_num.zfill(3), label, now, now,
-             (lambda n: json.dumps(n) if n is not None else None)(
-                 normalize_weekly(desired_slots, allow_full=False))),
+                   label=excluded.label, enabled=1, updated_at=excluded.updated_at,
+                   desired_slots_json=COALESCE(excluded.desired_slots_json, target_seats.desired_slots_json),
+                   desired_slots_weekly_json=COALESCE(excluded.desired_slots_weekly_json, target_seats.desired_slots_weekly_json)""",
+            (seat_num.zfill(3), label, now, now, uni_json, wk_json),
         )
         await self.db.commit()
-
     async def seed_target_seat(
         self, seat_num: str, *, label: str = "",
         desired_slots: list[str] | None = None,
@@ -612,12 +654,44 @@ class StateStore:
 
     async def set_target_seat_desired(
         self, seat_num: str, slots: list[str] | dict[str, list[str]] | None,
+        *, is_weekly: bool | None = None,
     ) -> bool:
-        """更新座位期望时段（list=全周统一 / dict=按天 / None=恢复默认）；不存在返回 False。"""
+        """更新座位期望时段；is_weekly 指明写哪列（True=按天 weekly，False=全周统一 uniform）；
+        为 None 时按 slots 形态自动判定（dict 含周键且 7 天不全同→weekly，其余→uniform）；
+        slots=None 时按 is_weekly 清对应列，为 None 时清两列（清空后该座位不再检查缺口）。"""
         self._bump()
+        if slots is None:
+            if is_weekly is None:
+                cur = await self.db.execute(
+                    "UPDATE target_seats SET desired_slots_json=NULL, desired_slots_weekly_json=NULL, updated_at=? "
+                    "WHERE seat_num=? AND enabled=1",
+                    (int(_time.time() * 1000), seat_num.zfill(3)),
+                )
+            else:
+                col = "desired_slots_weekly_json" if is_weekly else "desired_slots_json"
+                cur = await self.db.execute(
+                    f"UPDATE target_seats SET {col}=NULL, updated_at=? WHERE seat_num=? AND enabled=1",
+                    (int(_time.time() * 1000), seat_num.zfill(3)),
+                )
+            await self.db.commit()
+            return cur.rowcount > 0
+        # 非空：按 is_weekly 或自动判定列
+        if is_weekly is None:
+            # 自动：dict 且含周键且 7 天不全同 → weekly，否则 uniform
+            if isinstance(slots, dict) and any(k in WEEKDAY_KEYS for k in slots.keys()):
+                # 归一后判断是否全同
+                try:
+                    norm_tmp = normalize_weekly(slots, allow_full=False)
+                    vals = [json.dumps(norm_tmp.get(wd, []), sort_keys=True) for wd in WEEKDAY_KEYS] if isinstance(norm_tmp, dict) else []
+                    is_weekly = len(set(vals)) != 1
+                except Exception:
+                    is_weekly = True
+            else:
+                is_weekly = False
         norm = normalize_weekly(slots, allow_full=False)
+        col = "desired_slots_weekly_json" if is_weekly else "desired_slots_json"
         cur = await self.db.execute(
-            "UPDATE target_seats SET desired_slots_json=?, updated_at=? "
+            f"UPDATE target_seats SET {col}=?, updated_at=? "
             "WHERE seat_num=? AND enabled=1",
             (json.dumps(norm) if norm is not None else None,
              int(_time.time() * 1000), seat_num.zfill(3)),
@@ -633,26 +707,51 @@ class StateStore:
             (int(_time.time() * 1000), seat_num.zfill(3)),
         )
         await self.db.commit()
-
     async def list_target_seats(self) -> list[SeatTarget]:
-        cur = await self.db.execute(
-            "SELECT seat_num, label, enabled, created_at, updated_at, "
-            "desired_slots_json FROM target_seats WHERE enabled=1 ORDER BY seat_num"
-        )
-        rows = await cur.fetchall()
+        try:
+            cur = await self.db.execute(
+                "SELECT seat_num, label, enabled, created_at, updated_at, "
+                "desired_slots_json, desired_slots_weekly_json FROM target_seats WHERE enabled=1 ORDER BY seat_num"
+            )
+            rows = await cur.fetchall()
+        except Exception as e:
+            if "no such column" in str(e).lower():
+                cur = await self.db.execute(
+                    "SELECT seat_num, label, enabled, created_at, updated_at, "
+                    "desired_slots_json FROM target_seats WHERE enabled=1 ORDER BY seat_num"
+                )
+                rows = await cur.fetchall()
+                out: list[SeatTarget] = []
+                for r in rows:
+                    try:
+                        desired = json.loads(r[5]) if r[5] else None
+                    except Exception:
+                        desired = None
+                    out.append(SeatTarget(
+                        seat_num=r[0], label=r[1], enabled=bool(r[2]),
+                        created_at=r[3], updated_at=r[4],
+                        desired_slots=desired,
+                        desired_slots_weekly=None,
+                    ))
+                return out
+            raise
         out: list[SeatTarget] = []
         for r in rows:
             try:
                 desired = json.loads(r[5]) if r[5] else None
             except Exception:
                 desired = None
+            try:
+                desired_weekly = json.loads(r[6]) if len(r) > 6 and r[6] else None
+            except Exception:
+                desired_weekly = None
             out.append(SeatTarget(
                 seat_num=r[0], label=r[1], enabled=bool(r[2]),
                 created_at=r[3], updated_at=r[4],
                 desired_slots=desired,
+                desired_slots_weekly=desired_weekly,
             ))
         return out
-
     # ---------- tasks ----------
     async def max_task_updated_at(self) -> int:
         """tasks.updated_at 的最大值 (毫秒, 空表返回 0)。
