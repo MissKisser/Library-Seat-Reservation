@@ -5,7 +5,6 @@
   'target': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
   'grid': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 12h18M12 3v18"/></svg>',
   'users': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
-  'user-check': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m16 11 2 2 4-4"/></svg>',
   'tasks': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="6" height="6" rx="1"/><path d="m5 8 1 1 2-2"/><rect x="3" y="13" width="6" height="6" rx="1"/><path d="m5 16 1 1 2-2"/><path d="M13 6h8M13 12h8M13 18h8"/></svg>',
   'calendar': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/></svg>',
   'logs': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M8 13h8M8 17h5"/></svg>',
@@ -55,13 +54,12 @@
         {{ nav_link('/targets', '目标座位', active, 'targets', target_seats|length, icon=_icons['target']) }}
         {{ nav_link('/bindings', '绑定矩阵', active, 'bindings', icon=_icons['grid']) }}
         {{ nav_link('/accounts', '守护账号', active, 'accounts', accounts_count, icon=_icons['users']) }}
-        {{ nav_link('/user-reserved', '用户已约', active, 'user-reserved', icon=_icons['user-check']) }}
         <div class="sidebar-group-label"><span class="group-label-text">运维</span></div>
- +        {{ nav_link('/tasks', '任务', active, 'tasks', icon=_icons['tasks']) }}
+        {{ nav_link('/tasks', '任务', active, 'tasks', icon=_icons['tasks']) }}
         {{ nav_link('/audit', '实况核对', active, 'audit', icon=_icons['logs']) }}
-         {{ nav_link('/reservations', '预约记录', active, 'reservations', icon=_icons['calendar']) }}
-         {{ nav_link('/logs', '日志', active, 'logs', icon=_icons['logs']) }}
-         {{ nav_link('/settings', '系统设置', active, 'settings', icon=_icons['settings']) }}
+        {{ nav_link('/reservations', '预约记录', active, 'reservations', icon=_icons['calendar']) }}
+        {{ nav_link('/logs', '日志', active, 'logs', icon=_icons['logs']) }}
+        {{ nav_link('/settings', '系统设置', active, 'settings', icon=_icons['settings']) }}
     </aside>
     <main class="app-content">
       {{ caller() }}
