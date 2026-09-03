@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from seatbot.bindings import (
     account_margins, auto_assign, candidate_accounts,
-    desired_slots_of, diff_matrices, plan_matrix, rebind_candidates_for_days,
+    desired_slots_of, diff_matrices, matrix_windows, plan_matrix, rebind_candidates_for_days,
     rebind_matrices, set_day_slots, validate_matrix,
 )
 from seatbot.utils.weekly import (
@@ -997,7 +997,8 @@ async def bindings_list(request: Request):
                     continue
                 for r in day_val:
                     seat_bindings.setdefault(seat, []).append(
-                        {"account_id": a.id, "range": r, "weekday": wd})
+                        {"account_id": a.id, "range": r, "weekday": wd,
+                         "candidates": []})
     # 换绑候选：按超星限制逐天复核；全局统一行取该时段实际生效的所有天的交集
     def _bound_days(acc_id: str, seat: str, rng: str) -> list[str]:
         acc = next((a for a in accounts if a.id == acc_id), None)
@@ -1009,17 +1010,25 @@ async def bindings_list(request: Request):
                 out.append(w)
         return out
 
+    cand_cache: dict[tuple, list[dict]] = {}
     for seat, rows in seat_bindings.items():
         for row in rows:
-            days = [row["weekday"]] if is_weekly else _bound_days(
-                row["account_id"], seat, row["range"])
-            try:
-                row["candidates"] = rebind_candidates_for_days(
-                    accounts, seat=seat, rng=row["range"], weekdays=days,
-                    source_id=row["account_id"], daily_limit_hours=limit,
-                )
-            except ValueError:
-                row["candidates"] = []
+            # 全局统一模式只渲染周一行，其余天的行无需计算候选
+            if not is_weekly and row["weekday"] != "mon":
+                continue
+            days = ([row["weekday"]] if is_weekly
+                    else _bound_days(row["account_id"], seat, row["range"]))
+            key = (row["account_id"], seat, row["range"], tuple(days))
+            if key not in cand_cache:
+                try:
+                    cand_cache[key] = rebind_candidates_for_days(
+                        accounts, seat=seat, rng=row["range"], weekdays=days,
+                        source_id=row["account_id"], daily_limit_hours=limit,
+                        max_seg_hours=lib.max_reserve_hours,
+                    )
+                except ValueError:
+                    cand_cache[key] = []
+            row["candidates"] = cand_cache[key]
     uncovered: dict[str, dict[str, list[str]]] = {}
     for seat, per_day in desired.items():
         uncovered[seat] = {}
@@ -1431,11 +1440,11 @@ async def bindings_rebind(
     limit = lib.daily_reserve_hours_limit
     candidates = rebind_candidates_for_days(
         accounts, seat=sn, rng=rng, weekdays=wds, source_id=src.id,
-        daily_limit_hours=limit,
+        daily_limit_hours=limit, max_seg_hours=lib.max_reserve_hours,
     )
     if dst.id not in [c["id"] for c in candidates]:
         return RedirectResponse(
-            f"/bindings?error={quote(f'{dst.id} 不满足接手条件（该座位已绑 / 每日超 {limit:g}h / 时段冲突）')}",
+            f"/bindings?error={quote(f'{dst.id} 不满足接手条件（该座位已绑 / 每日超 {limit:g}h / 时段冲突 / 单段超 {lib.max_reserve_hours:g}h）')}",
             status_code=303)
     try:
         src_matrix, dst_matrix = rebind_matrices(
@@ -1650,7 +1659,7 @@ def _default_view_weekday(now: _dt | None = None) -> str:
 @router.get("/accounts", response_class=HTMLResponse)
 async def accounts_list(request: Request):
     store = request.app.state.store
-    accounts = await store.list_accounts()
+    accounts = await store.list_accounts(include_inactive=True)
     mode = await _schedule_mode(request)
     today = today_cst()
     return _templates(request).TemplateResponse(
@@ -1840,9 +1849,161 @@ async def accounts_update(
     return RedirectResponse("/accounts?updated=1", status_code=303)
 
 
-@router.post("/accounts/{acc_id}/delete")
-async def accounts_delete(request: Request, acc_id: str):
+def _matrix_conflicts(acc: Account, others: list[Account]) -> int:
+    """账号矩阵与其他账号的跨账号重叠段数（同座位且时间相交）。
+
+    用于启用账号时的冲突提醒：禁用期间其他账号可能经重排接管了时段。
+    格式非法（如含 "full"）的矩阵按无法解析处理，不计冲突。
+    """
+    try:
+        mine = {(seat, s, e) for seat, s, e, _ in matrix_windows(acc.seat_slots)}
+    except ValueError:
+        return 0
+    n = 0
+    for o in others:
+        try:
+            windows = matrix_windows(o.seat_slots)
+        except ValueError:
+            continue
+        for seat, s, e, _ in windows:
+            if any(mseat == seat and s < me and ms < e for mseat, ms, me in mine):
+                n += 1
+    return n
+
+
+async def _account_capacity_unfillable(store, cfg, request, acc_id: str) -> list[str]:
+    """把 acc_id 从账号池剔除后全量重解守护矩阵，返回不可行说明（空 = 容量足够）。
+
+    供禁用/删除前的容量校验共用：unfillable 非空意味着剩余账号接不住守护时段。
+    """
+    seats = await store.list_target_seats()
+    accounts = [
+        a for a in await store.list_accounts(include_inactive=True)
+        if a.status == "active" and a.id != acc_id
+    ]
+    if not seats or not accounts:
+        return ["没有可用的守护账号"] if seats else []
+    is_weekly = (await _schedule_mode(request) == "weekly")
+    desired = {
+        s.seat_num: {
+            wd: desired_slots_of(s, wd, is_weekly=is_weekly) for wd in WEEKDAY_KEYS
+        }
+        for s in seats
+    }
+    lib = cfg.library
+    try:
+        recency = await store.cookie_recency()
+    except Exception:
+        recency = {}
+    plan = _build_replan(
+        accounts, desired,
+        max_seg_hours=lib.max_reserve_hours,
+        daily_limit_hours=lib.daily_reserve_hours_limit,
+        mode=await _allocation_strategy(request),
+        recency=recency,
+    )
+    return plan.get("unfillable") or []
+
+
+async def _account_task_census(store, acc_id: str) -> tuple[int, int]:
+    """统计账号任务：(在途真预约数, 未提交任务数)。"""
+    inflight = pending = 0
+    for t in await store.list_tasks(account_id=acc_id):
+        if t.status in (TaskStatus.PENDING, TaskStatus.READY):
+            pending += 1
+        elif t.status in (
+            TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.LEAVING, TaskStatus.SUBMITTING,
+        ):
+            inflight += 1
+    return inflight, pending
+
+
+@router.get("/accounts/{acc_id}/check")
+async def accounts_check(request: Request, acc_id: str):
+    """账号操作前置检查（禁用/删除确认弹层的数据源）。"""
     store = request.app.state.store
+    acc = await store.get_account(acc_id)
+    if not acc:
+        raise HTTPException(404, f"account {acc_id} not found")
+    inflight, pending = await _account_task_census(store, acc_id)
+    try:
+        bound_segments = len(matrix_windows(acc.seat_slots))
+    except ValueError:
+        bound_segments = 0
+    unfillable = await _account_capacity_unfillable(store, request.app.state.cfg, request, acc_id)
+    return JSONResponse({
+        "id": acc_id, "status": acc.status,
+        "inflight": inflight, "pending": pending,
+        "bound_segments": bound_segments,
+        "capacity_ok": not unfillable, "unfillable": unfillable,
+    })
+
+
+@router.post("/accounts/{acc_id}/toggle")
+async def accounts_toggle(
+    request: Request,
+    acc_id: str,
+    confirm: int = Form(0),
+    replan: int = Form(0),
+):
+    """禁用/启用账号（active↔inactive，可逆）。
+
+    禁用为排水语义：未提交任务作废（置 FAILED），在途真预约由既有 tick
+    继续签到/签退至履约完毕；剩余账号接不住守护时段时需 confirm=1 二次确认。
+    """
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    acc = await store.get_account(acc_id)
+    if not acc:
+        raise HTTPException(404, f"account {acc_id} not found")
+    sched = request.app.state.sched
+    if acc.status == "inactive":
+        await store.set_account_status(acc_id, "active")
+        await sched.sync_jobs()
+        others = [a for a in await store.list_accounts() if a.id != acc_id]
+        n_conflict = _matrix_conflicts(acc, others)
+        msg = f"已启用 {acc_id}"
+        if n_conflict:
+            msg += f"；其绑定时段与 {n_conflict} 段其他账号时段重叠，建议在绑定矩阵页重排"
+            await store.add_notification(
+                "账号启用冲突提醒",
+                f"{acc_id} 的绑定矩阵与 {n_conflict} 段其他账号时段重叠，建议重排",
+                level="warn",
+            )
+        await store.log_action(acc_id, "toggle", None, "enable", True, msg)
+        return RedirectResponse(f"/accounts?msg={quote(msg)}", status_code=303)
+
+    unfillable = await _account_capacity_unfillable(store, request.app.state.cfg, request, acc_id)
+    if unfillable and confirm != 1:
+        raise HTTPException(409, "；".join(unfillable))
+    inflight, pending = await _account_task_census(store, acc_id)
+    for t in await store.list_tasks(account_id=acc_id):
+        if t.status in (TaskStatus.PENDING, TaskStatus.READY):
+            await store.update_task_status(t.id, TaskStatus.FAILED, last_error="账号已禁用，任务作废")
+    await store.set_account_status(acc_id, "inactive")
+    await sched.sync_jobs()
+    note = (
+        f"{acc_id} 已禁用：作废未提交任务 {pending} 条；"
+        f"在途预约 {inflight} 段将继续签到/签退至履约完毕。"
+    )
+    if unfillable:
+        note += " 守护时段已出现缺口，可在绑定矩阵页一键重排。"
+    await store.add_notification("账号已禁用", note, level="warn")
+    await store.log_action(acc_id, "toggle", None, "disable", True, note)
+    if replan == 1:
+        return RedirectResponse("/bindings?replan_hint=1", status_code=303)
+    return RedirectResponse(f"/accounts?msg={quote(note)}", status_code=303)
+
+
+@router.post("/accounts/{acc_id}/delete")
+async def accounts_delete(request: Request, acc_id: str, confirm_force: int = Form(0)):
+    store = request.app.state.store
+    inflight, _pending = await _account_task_census(store, acc_id)
+    if inflight and confirm_force != 1:
+        raise HTTPException(
+            409, f"该账号仍有 {inflight} 条真实预约在履约，删除后无人签到将产生违约；"
+                 f"建议先禁用排水，确要删除请二次确认")
     await store.delete_account(acc_id)
     return RedirectResponse("/accounts?deleted=1", status_code=303)
 

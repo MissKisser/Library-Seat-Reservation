@@ -277,3 +277,29 @@ async def test_active_task_identity_unique_index(tmp_path):
         assert done.id
     finally:
         await s.close()
+
+
+async def test_account_status_lifecycle(tmp_path):
+    """三态生命周期：双口径过滤、墓碑全视图不可见、set_account_status 联动版本。"""
+    s = StateStore(str(tmp_path / "st.db"))
+    await s.init()
+    try:
+        from seatbot.models import Account
+        await s.upsert_account(Account(id="zs", phone="138", password="p", slots=[]))
+        await s.upsert_account(Account(id="ls", phone="139", password="p", slots=[]))
+        assert {a.id for a in await s.list_accounts()} == {"zs", "ls"}
+
+        await s.set_account_status("ls", "inactive")
+        assert {a.id for a in await s.list_accounts()} == {"zs"}
+        both = await s.list_accounts(include_inactive=True)
+        assert {a.id for a in both} == {"zs", "ls"}
+        inactive = next(a for a in both if a.id == "ls")
+        assert inactive.status == "inactive"
+        # 禁用中账号 Web 视图仍可读（get_account 放行 inactive）
+        assert (await s.get_account("ls")).status == "inactive"
+
+        await s.set_account_status("ls", "disabled")
+        assert {a.id for a in await s.list_accounts(include_inactive=True)} == {"zs"}
+        assert await s.get_account("ls") is None
+    finally:
+        await s.close()
