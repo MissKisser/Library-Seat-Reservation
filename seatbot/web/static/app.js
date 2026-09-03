@@ -729,7 +729,8 @@
       init() {
         const form = this.$root.querySelector('form[action="/settings"]');
         if (!form) return;
-        const snapshot = () => new FormData(form).toString();
+        // FormData 无自定义 toString，需用 URLSearchParams 序列化才能得到稳定可比的字符串
+        const snapshot = () => new URLSearchParams(new FormData(form)).toString();
         const baseline = snapshot();
         form.addEventListener('input', () => { this.dirty = snapshot() !== baseline; });
         form.addEventListener('change', () => { this.dirty = snapshot() !== baseline; });

@@ -282,18 +282,44 @@
             {% if not desired[s.seat_num][wd] %}<span class="chip chip-muted">不检查</span>{% endif %}
           </div>
           {% for b in seat_bindings[s.seat_num] if b.weekday == wd %}
-          <div class="flex items-center justify-between gap-3 py-1 pl-10">
+          <div class="flex items-center justify-between gap-3 py-1 pl-10" x-data="{rb: false}">
             <div class="flex items-center gap-3">
               <span class="text-xs font-mono">{{ b.range }}</span>
               <span class="text-xs text-ink-secondary">{{ b.account_id }}</span>
               {% if b.range not in desired[s.seat_num][wd] %}<span class="chip chip-muted">非期望时段</span>{% endif %}
             </div>
-            <form method="post" action="/bindings/delete">
-              <input type="hidden" name="account_id" value="{{ b.account_id }}">
-              <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
-              <input type="hidden" name="weekday" value="{{ b.weekday }}">
-              <button class="btn btn-ghost btn-sm text-danger" type="submit">解绑</button>
-            </form>
+            <div class="flex items-center gap-1">
+              <form method="post" action="/bindings/rebind" class="flex items-center gap-1"
+                    x-show="rb" x-cloak style="display:none">
+                <input type="hidden" name="account_id" value="{{ b.account_id }}">
+                <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
+                <input type="hidden" name="weekday" value="{{ b.weekday }}">
+                <input type="hidden" name="slot" value="{{ b.range }}">
+                <select name="target_account_id" class="select text-xs" title="仅列出满足超星限制（该座位当天未绑 · 每日 ≤{{ '%g'|format(daily_limit) }}h · 时段不重叠）的账号">
+                  {% for c in b.candidates %}
+                  <option value="{{ c.id }}">{{ c.id }}（余 {{ '%g'|format(c.remaining_hours) }}h）</option>
+                  {% endfor %}
+                </select>
+                <button class="btn btn-primary btn-sm" type="submit">确认</button>
+                <button class="btn btn-ghost btn-sm" type="button" @click="rb = false">取消</button>
+              </form>
+              <template x-if="!rb">
+                <div class="flex items-center gap-1">
+                  {% if b.candidates %}
+                  <button class="btn btn-ghost btn-sm" type="button" @click="rb = true"
+                          title="换给空闲账号（遵循超星限制），同时迁移该时段未提交的预约">换绑</button>
+                  {% else %}
+                  <span class="chip chip-muted" title="没有满足超星限制的账号可接手">无空闲账号</span>
+                  {% endif %}
+                  <form method="post" action="/bindings/delete">
+                    <input type="hidden" name="account_id" value="{{ b.account_id }}">
+                    <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
+                    <input type="hidden" name="weekday" value="{{ b.weekday }}">
+                    <button class="btn btn-ghost btn-sm text-danger" type="submit">解绑</button>
+                  </form>
+                </div>
+              </template>
+            </div>
           </div>
           {% endfor %}
         </div>
@@ -302,17 +328,42 @@
       {% else %}
       <div class="card-body flex flex-col gap-3">
         {% for b in seat_bindings[s.seat_num] if b.weekday == 'mon' %}
-        <div class="flex items-center justify-between gap-3 py-1.5 border-b border-edge-subtle last:border-0">
+        <div class="flex items-center justify-between gap-3 py-1.5 border-b border-edge-subtle last:border-0" x-data="{rb: false}">
           <div class="flex items-center gap-3">
             <span class="text-xs font-mono">{{ b.range }}</span>
             <span class="text-xs text-ink-secondary">{{ b.account_id }}</span>
             {% if b.range not in desired[s.seat_num]['mon'] %}<span class="chip chip-muted">非期望时段</span>{% endif %}
           </div>
-          <form method="post" action="/bindings/delete">
-            <input type="hidden" name="account_id" value="{{ b.account_id }}">
-            <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
-            <button class="btn btn-ghost btn-sm text-danger" type="submit">解绑</button>
-          </form>
+          <div class="flex items-center gap-1">
+            <form method="post" action="/bindings/rebind" class="flex items-center gap-1"
+                  x-show="rb" x-cloak style="display:none">
+              <input type="hidden" name="account_id" value="{{ b.account_id }}">
+              <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
+              <input type="hidden" name="slot" value="{{ b.range }}">
+              <select name="target_account_id" class="select text-xs" title="仅列出满足超星限制（该座位当天未绑 · 每日 ≤{{ '%g'|format(daily_limit) }}h · 时段不重叠）的账号">
+                {% for c in b.candidates %}
+                <option value="{{ c.id }}">{{ c.id }}（余 {{ '%g'|format(c.remaining_hours) }}h）</option>
+                {% endfor %}
+              </select>
+              <button class="btn btn-primary btn-sm" type="submit">确认</button>
+              <button class="btn btn-ghost btn-sm" type="button" @click="rb = false">取消</button>
+            </form>
+            <template x-if="!rb">
+              <div class="flex items-center gap-1">
+                {% if b.candidates %}
+                <button class="btn btn-ghost btn-sm" type="button" @click="rb = true"
+                        title="换给空闲账号（遵循超星限制），该时段生效的每一天一起迁移，并迁移未提交的预约">换绑</button>
+                {% else %}
+                <span class="chip chip-muted" title="没有满足超星限制的账号可接手">无空闲账号</span>
+                {% endif %}
+                <form method="post" action="/bindings/delete">
+                  <input type="hidden" name="account_id" value="{{ b.account_id }}">
+                  <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
+                  <button class="btn btn-ghost btn-sm text-danger" type="submit">解绑</button>
+                </form>
+              </div>
+            </template>
+          </div>
         </div>
         {% else %}
         <p class="text-xs text-ink-muted">该座位暂无任何绑定</p>
@@ -340,13 +391,14 @@
   {# 按策略重排弹层：先预览 diff，确认后调用 /apply #}
   <div id="replan-modal" x-data="replanModal()" @replan-open.window="fetchPreview()">
     <div class="modal-backdrop" x-show="open" x-cloak style="display:none" @keydown.escape.window="cancel()">
-      <div class="modal" @click.outside="cancel()" style="max-width:560px">
+      <div class="modal max-h-[85vh]" @click.outside="cancel()" style="max-width:560px">
         <div class="modal-title">按策略重排预览</div>
         <div class="modal-desc text-xs text-ink-secondary">
           当前策略：<span class="chip chip-accent" x-text="strategyLabel"></span>
           <span class="text-ink-muted ml-2" x-text="summaryText"></span>
         </div>
-        <div class="flex flex-col gap-2 mt-2 max-h-[60vh] overflow-auto">
+        {# min-h-0 让 flex 子项可收缩，diff 区在弹层内部滚动，标题与按钮固定 #}
+        <div class="flex flex-col gap-2 mt-2 min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <template x-if="loading">
             <div class="text-sm text-ink-muted">计算中…</div>
           </template>
@@ -370,7 +422,7 @@
               </template>
               <template x-if="added.length || removed.length">
                 <table class="w-full text-xs">
-                  <thead><tr class="text-left text-ink-muted">
+                  <thead class="sticky top-0 bg-app-surface"><tr class="text-left text-ink-muted">
                     <th class="py-1 pr-2">账号</th>
                     <th class="py-1 pr-2">座位</th>
                     <th class="py-1 pr-2">星期</th>
@@ -392,7 +444,7 @@
             </div>
           </template>
         </div>
-        <div class="flex justify-end gap-2 mt-3">
+        <div class="flex shrink-0 justify-end gap-2 mt-3">
           <button class="btn btn-secondary btn-sm" @click="cancel()">取消</button>
           <button class="btn btn-primary btn-sm" @click="confirm()"
                   :disabled="loading || !!error || (!added.length && !removed.length)">确认重排</button>
