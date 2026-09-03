@@ -483,4 +483,12 @@
     font-variant-numeric: tabular-nums;
   }
   .boot-stage { @apply mt-2.5 text-xs min-h-[18px]; color: rgb(var(--text-secondary-rgb)); }
+
+  /* ===== 设置页浮动保存栏（左下角，避开侧栏；仅在有未保存修改时由 Alpine 显示）===== */
+  .float-save {
+    @apply fixed bottom-4 z-50 flex items-center gap-2;
+    left: 1rem;
+  }
+  @media (min-width: 1024px) { .float-save { left: 76px; } }   /* 侧栏 60px 折叠档 */
+  @media (min-width: 1280px) { .float-save { left: 252px; } }  /* 侧栏 228px 展开档 */
 }

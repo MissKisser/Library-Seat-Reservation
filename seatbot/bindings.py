@@ -37,6 +37,34 @@ def _day_ranges(seat: str, val, wd: str) -> list[str]:
     return day_val
 
 
+def set_day_slots(
+    matrix: dict | None, seat: str, wd: str, slots: list[str],
+) -> dict:
+    """返回新矩阵：设置 seat 在 wd 的时段，保留其余星期与其他座位。
+
+    兼容旧形态（直接 list 值）与新形态（{wd: list} 嵌套）；某天全部清空时
+    顺带删除该座位的空条目。不修改入参。
+    """
+    result: dict = {}
+    for k, v in (matrix or {}).items():
+        result[k] = dict(v) if isinstance(v, dict) else list(v or [])
+    cur: dict[str, list[str]] = {w: [] for w in WEEKDAY_KEYS}
+    old = result.get(seat)
+    if isinstance(old, dict):
+        for w in WEEKDAY_KEYS:
+            if old.get(w):
+                cur[w] = list(old[w])
+    elif isinstance(old, list):
+        for w in WEEKDAY_KEYS:
+            cur[w] = list(old)
+    cur[wd] = list(slots)
+    if any(cur[w] for w in WEEKDAY_KEYS):
+        result[seat] = cur
+    else:
+        result.pop(seat, None)
+    return result
+
+
 def matrix_windows(
     seat_slots: dict | None,
     wd: str | None = None,
@@ -194,6 +222,98 @@ def candidate_accounts(
         })
     out.sort(key=lambda x: -x["remaining_hours"])
     return out
+
+
+def rebind_candidates(
+    accounts: list[Account],
+    *,
+    seat: str,
+    rng: str,
+    weekday: str,
+    source_id: str,
+    daily_limit_hours: float,
+) -> list[dict]:
+    """某 (座位, 时段, 星期几) 可接手换绑的账号清单（排除原账号）。
+
+    候选条件即超星硬限制：该座位当天未绑、当天累计 ≤ daily_limit_hours、
+    与该账号其他座位当天时段不重叠。时段格式非法抛 ValueError。
+    返回 [{id, remaining_hours}]，按当天余量降序。
+    """
+    try:
+        start, end = parse_range(rng)
+    except Exception as exc:
+        raise ValueError(f"时段 {rng!r} 格式错误") from exc
+    return candidate_accounts(
+        accounts, seat=seat, start=start, end=end,
+        exclude_id=source_id, daily_limit_hours=daily_limit_hours,
+        weekday=weekday,
+    )
+
+
+def rebind_candidates_for_days(
+    accounts: list[Account],
+    *,
+    seat: str,
+    rng: str,
+    weekdays: list[str],
+    source_id: str,
+    daily_limit_hours: float,
+) -> list[dict]:
+    """多天换绑的可接手账号：各天候选的交集，余量取各天最小值。
+
+    全周统一形态的换绑要一次改 7 天，账号必须每天都满足超星限制才可选。
+    返回 [{id, remaining_hours}]，按最小余量降序。
+    """
+    per_day = [
+        {c["id"]: c["remaining_hours"] for c in rebind_candidates(
+            accounts, seat=seat, rng=rng, weekday=wd,
+            source_id=source_id, daily_limit_hours=daily_limit_hours)}
+        for wd in weekdays
+    ]
+    if not per_day:
+        return []
+    common = set(per_day[0])
+    for m in per_day[1:]:
+        common &= set(m)
+    out = [{"id": aid, "remaining_hours": min(m[aid] for m in per_day)}
+           for aid in common]
+    out.sort(key=lambda x: (-x["remaining_hours"], x["id"]))
+    return out
+
+
+def rebind_matrices(
+    source: Account,
+    target: Account,
+    *,
+    seat: str,
+    rng: str,
+    weekdays: list[str],
+    max_seg_hours: float,
+    daily_limit_hours: float,
+) -> tuple[dict, dict]:
+    """把 seat 在 weekdays 各天的 rng 段从 source 迁给 target。
+
+    先构造新矩阵再逐账号校验（每座位每天 1 段、单段 ≤ max_seg_hours、
+    每日累计 ≤ daily_limit_hours、跨座位不重叠），任一方不通过则抛
+    ValueError 且两个账号的矩阵都不返回，保证不产生半成品状态。
+    """
+    for wd in weekdays:
+        if wd not in WEEKDAY_KEYS:
+            raise ValueError(f"非法星期: {wd!r}")
+    src_matrix = dict(source.seat_slots or {})
+    dst_matrix = dict(target.seat_slots or {})
+    for wd in weekdays:
+        dst_matrix = set_day_slots(dst_matrix, seat, wd, [rng])
+        src_matrix = set_day_slots(src_matrix, seat, wd, [])
+    validate_matrix(
+        dst_matrix, max_seg_hours=max_seg_hours,
+        daily_limit_hours=daily_limit_hours,
+    )
+    validate_matrix(
+        src_matrix, max_seg_hours=max_seg_hours,
+        daily_limit_hours=daily_limit_hours,
+    )
+    return src_matrix, dst_matrix
 
 
 def desired_slots_of(seat_target: SeatTarget, wd: str, *, is_weekly: bool | None = None) -> list[str]:

@@ -14,7 +14,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from seatbot.bindings import (
     account_margins, auto_assign, candidate_accounts,
-    desired_slots_of, diff_matrices, plan_matrix, validate_matrix,
+    desired_slots_of, diff_matrices, plan_matrix, rebind_candidates_for_days,
+    rebind_matrices, set_day_slots, validate_matrix,
 )
 from seatbot.utils.weekly import (
     WEEKDAY_KEYS, WEEKDAY_LABELS, normalize_weekly, slots_for_weekday, weekday_key,
@@ -74,33 +75,8 @@ def _matrix_set_day(
     wd: str,
     slots: list[str],
 ) -> dict:
-    """返回新 matrix：设置 seat 在 wd 的 slots，保留其余星期与其他座位。
-
-    兼容旧形态（直接 list 值）与新形态（{wd: list} 嵌套）。
-    """
-    result: dict = {}
-    for k, v in matrix.items():
-        if isinstance(v, dict):
-            result[k] = dict(v)
-        else:
-            result[k] = list(v) if v else []
-    if seat in result and isinstance(result[seat], dict):
-        cur = {wk: result[seat].get(wk, []) for wk in WEEKDAY_KEYS}
-        result[seat] = cur
-    else:
-        cur = {wk: [] for wk in WEEKDAY_KEYS}
-        if seat in result:
-            old = result[seat]
-            if isinstance(old, dict):
-                cur.update(old)
-            elif isinstance(old, list):
-                for wk in WEEKDAY_KEYS:
-                    cur[wk] = list(old)
-        result[seat] = cur
-    result[seat][wd] = list(slots)
-    if not any(result[seat][wk] for wk in WEEKDAY_KEYS):
-        del result[seat]
-    return result
+    """返回新 matrix：设置 seat 在 wd 的 slots，保留其余星期与其他座位。"""
+    return set_day_slots(matrix, seat, wd, slots)
 
 
 def _fmt_weekly(val) -> list[str]:
@@ -506,9 +482,9 @@ async def _build_dashboard_data(request: Request, *, fresh: bool = False) -> dic
         "now_hhmm": now_cst().strftime("%H:%M"),
         "now_ms": int(_dt.now().timestamp() * 1000),
         "recent_logs": [{
-            "ts": l.ts, "level": l.level,
-            "account_id": l.account_id, "message": l.message,
-        } for l in recent_logs],
+            "ts": log.ts, "level": log.level,
+            "account_id": log.account_id, "message": log.message,
+        } for log in recent_logs],
         "notifications": notifications,
         "target_seat_count": len(target_seats),
         "account_count": len(accounts),
@@ -1022,6 +998,28 @@ async def bindings_list(request: Request):
                 for r in day_val:
                     seat_bindings.setdefault(seat, []).append(
                         {"account_id": a.id, "range": r, "weekday": wd})
+    # 换绑候选：按超星限制逐天复核；全局统一行取该时段实际生效的所有天的交集
+    def _bound_days(acc_id: str, seat: str, rng: str) -> list[str]:
+        acc = next((a for a in accounts if a.id == acc_id), None)
+        spec = (acc.seat_slots or {}).get(seat) if acc else None
+        out: list[str] = []
+        for w in WEEKDAY_KEYS:
+            day_val = slots_for_weekday(spec, w)
+            if isinstance(day_val, list) and rng in day_val:
+                out.append(w)
+        return out
+
+    for seat, rows in seat_bindings.items():
+        for row in rows:
+            days = [row["weekday"]] if is_weekly else _bound_days(
+                row["account_id"], seat, row["range"])
+            try:
+                row["candidates"] = rebind_candidates_for_days(
+                    accounts, seat=seat, rng=row["range"], weekdays=days,
+                    source_id=row["account_id"], daily_limit_hours=limit,
+                )
+            except ValueError:
+                row["candidates"] = []
     uncovered: dict[str, dict[str, list[str]]] = {}
     for seat, per_day in desired.items():
         uncovered[seat] = {}
@@ -1370,6 +1368,132 @@ async def bindings_delete(
     day_part = f" {WEEKDAY_LABELS.get(wd, wd)}" if weekday else ""
     return RedirectResponse(
         f"/bindings?msg={quote(f'已解绑 {account_id} × {sn}{day_part}')}", status_code=303)
+
+
+@router.post("/bindings/rebind")
+async def bindings_rebind(
+    request: Request,
+    account_id: str = Form(...),
+    target_account_id: str = Form(...),
+    seat_num: str = Form(...),
+    slot: str = Form(...),
+    weekday: str = Form(""),
+):
+    """换绑：把某座位某时段的守护从当前账号转给空闲账号（纯本地，无外呼）。
+
+    weekday 给定 = 只换该天；为空 = 换该时段在源账号上实际生效的所有天。
+    接手账号必须逐天满足超星硬限制（该座位当天未绑、每日累计 ≤ 限额、
+    跨座位时段不重叠），服务端按实时矩阵复核，不接受页面旧清单。
+    同时迁移该时段尚未提交预约的任务归属；已持有预约的任务保持不动。
+    """
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    lib = request.app.state.cfg.library
+    sn = seat_num.strip().zfill(3)
+    rng = slot.strip()
+    if sn not in {s.seat_num for s in await store.list_target_seats()}:
+        return RedirectResponse(
+            f"/bindings?error={quote(f'座位 {sn} 不是已注册目标')}", status_code=303)
+    try:
+        s_t, e_t = parse_range(rng)
+    except (ValueError, TypeError) as exc:
+        return RedirectResponse(
+            f"/bindings?error={quote(f'时段格式错误: {exc}')}", status_code=303)
+    src = await store.get_account(account_id)
+    if not src:
+        raise HTTPException(404, f"account {account_id} not found")
+    dst = await store.get_account(target_account_id)
+    if not dst:
+        raise HTTPException(404, f"account {target_account_id} not found")
+    if dst.id == src.id:
+        return RedirectResponse(
+            f"/bindings?error={quote('不能换绑给当前账号')}", status_code=303)
+
+    wd_raw = (weekday or "").strip().lower()
+    if wd_raw:
+        if wd_raw not in WEEKDAY_KEYS:
+            return RedirectResponse(
+                f"/bindings?error={quote(f'非法星期: {weekday!r}')}", status_code=303)
+        wds = [wd_raw]
+    else:
+        # 全周统一：源账号上该座位该时段实际生效的所有天
+        wds = [
+            wd for wd in WEEKDAY_KEYS
+            if rng in (slots_for_weekday((src.seat_slots or {}).get(sn), wd) or [])
+        ]
+        if not wds:
+            return RedirectResponse(
+                f"/bindings?error={quote(f'{src.id} 在 {sn} 未绑定 {rng}')}",
+                status_code=303)
+
+    accounts = await store.list_accounts()
+    limit = lib.daily_reserve_hours_limit
+    candidates = rebind_candidates_for_days(
+        accounts, seat=sn, rng=rng, weekdays=wds, source_id=src.id,
+        daily_limit_hours=limit,
+    )
+    if dst.id not in [c["id"] for c in candidates]:
+        return RedirectResponse(
+            f"/bindings?error={quote(f'{dst.id} 不满足接手条件（该座位已绑 / 每日超 {limit:g}h / 时段冲突）')}",
+            status_code=303)
+    try:
+        src_matrix, dst_matrix = rebind_matrices(
+            src, dst, seat=sn, rng=rng, weekdays=wds,
+            max_seg_hours=lib.max_reserve_hours, daily_limit_hours=limit,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            f"/bindings?error={quote(str(exc))}", status_code=303)
+
+    src.seat_slots = src_matrix
+    src.bound_seats = sorted(src_matrix.keys())
+    await store.upsert_account(src)
+    dst.seat_slots = dst_matrix
+    dst.bound_seats = sorted(dst_matrix.keys())
+    await store.upsert_account(dst)
+
+    # 迁移该时段尚未提交预约的任务；已持约的保留在原账号（不产生真实操作）
+    today = today_cst()
+    wd_set = set(wds)
+    moved = 0
+    held = 0
+    skipped = 0
+    for t in await store.list_tasks(seat_num=sn):
+        if t.account_id != src.id or t.day < today:
+            continue
+        if t.start_time != s_t or t.end_time != e_t:
+            continue
+        if weekday_key(t.day) not in wd_set:
+            continue
+        if t.reserve_id or t.status in (
+            TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.SUBMITTING,
+            TaskStatus.LEAVING, TaskStatus.COMPLETE,
+        ):
+            held += 1
+            continue
+        if await store.has_active_task_for_account_day_start(
+            dst.id, t.day, t.start_time, sn,
+        ):
+            skipped += 1
+            continue
+        await store.update_task_account(t.id, dst.id)
+        moved += 1
+    day_part = WEEKDAY_LABELS[wd_raw] if wd_raw else \
+        "、".join(WEEKDAY_LABELS[w] for w in wds)
+    msg = f"已换绑 {sn} {rng}（{day_part}）：{src.id} → {dst.id}"
+    if moved:
+        msg += f"，迁移 {moved} 条待约任务"
+    if held:
+        msg += f"，{held} 条已持约任务保留在 {src.id}"
+    if skipped:
+        msg += f"，{skipped} 条任务因目标账号同时段已有任务未迁移"
+    await store.log_action(
+        dst.id, "rebind", f"{sn} {rng}",
+        f"换绑: {src.id} → {dst.id} seat={sn} {rng} days={','.join(wds)} "
+        f"moved={moved} held={held} skipped={skipped}", True, "",
+    )
+    return RedirectResponse(f"/bindings?msg={quote(msg)}", status_code=303)
 
 
 @router.post("/bindings/desired")

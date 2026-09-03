@@ -9,10 +9,14 @@ from seatbot.bindings import (
     candidate_accounts,
     desired_slots_of,
     matrix_windows,
+    rebind_candidates_for_days,
+    rebind_matrices,
+    set_day_slots,
     used_hours,
     validate_matrix,
 )
 from seatbot.models import Account, SeatTarget
+from seatbot.utils.weekly import WEEKDAY_KEYS
 
 
 def _acc(id_: str, seat_slots) -> Account:
@@ -357,3 +361,82 @@ def test_auto_assign_safe_vs_minimal_distribution_differs():
     safe_active = sum(1 for aid, spec in m_safe.items() if spec)
     min_active = sum(1 for aid, spec in m_min.items() if spec)
     assert min_active <= safe_active
+
+
+# ---------- set_day_slots ----------
+
+def test_set_day_slots_matches_legacy_semantics():
+    m = set_day_slots({"001": ["09:00-11:00"]}, "001", "fri", ["19:00-21:00"])
+    assert m["001"]["mon"] == ["09:00-11:00"]
+    assert m["001"]["fri"] == ["19:00-21:00"]
+    assert set_day_slots({"001": {"mon": ["09:00-11:00"]}}, "001", "mon", []) == {}
+
+
+# ---------- rebind_candidates_for_days ----------
+
+def test_rebind_candidates_requires_every_day():
+    """全周换绑：接手账号必须每天都满足限制，任一天撞车即出局。"""
+    accs = [
+        _acc("src", {"001": {w: ["09:00-11:00"] for w in WEEKDAY_KEYS}}),
+        _acc("free", {}),
+        _acc("busy_tue", {"002": {"tue": ["10:00-12:00"]}}),
+    ]
+    out = rebind_candidates_for_days(
+        accs, seat="001", rng="09:00-11:00", weekdays=list(WEEKDAY_KEYS),
+        source_id="src", daily_limit_hours=5.0)
+    assert [c["id"] for c in out] == ["free"]
+
+
+def test_rebind_candidates_excludes_source_and_full_accounts():
+    accs = [
+        _acc("src", {"001": {"mon": ["09:00-11:00"]}}),
+        _acc("same_seat", {"001": {"mon": ["13:00-15:00"]}}),
+        _acc("no_room", {"002": {"mon": ["08:00-10:00", "10:00-13:00"]}}),
+        _acc("ok", {"002": {"mon": ["13:00-15:00"]}}),
+    ]
+    out = rebind_candidates_for_days(
+        accs, seat="001", rng="09:00-11:00", weekdays=["mon"],
+        source_id="src", daily_limit_hours=5.0)
+    assert [c["id"] for c in out] == ["ok"]
+
+
+def test_rebind_candidates_rejects_bad_range():
+    with pytest.raises(ValueError):
+        rebind_candidates_for_days(
+            [], seat="001", rng="bad", weekdays=["mon"],
+            source_id="src", daily_limit_hours=5.0)
+
+
+# ---------- rebind_matrices ----------
+
+def test_rebind_matrices_moves_slot_both_ways():
+    src = _acc("src", {"001": {"mon": ["09:00-11:00"], "tue": ["09:00-11:00"]}})
+    dst = _acc("dst", {"002": {"mon": ["13:00-15:00"]}})
+    src_m, dst_m = rebind_matrices(
+        src, dst, seat="001", rng="09:00-11:00", weekdays=["mon"],
+        max_seg_hours=2.0, daily_limit_hours=5.0)
+    assert src_m["001"]["mon"] == []
+    assert src_m["001"]["tue"] == ["09:00-11:00"]
+    assert dst_m["001"]["mon"] == ["09:00-11:00"]
+    assert dst_m["002"]["mon"] == ["13:00-15:00"]
+
+
+def test_rebind_matrices_rejects_daily_limit_breach():
+    src = _acc("src", {"001": {"mon": ["09:00-11:00"]}})
+    dst = _acc("dst", {"002": {"mon": ["13:00-15:00", "15:00-18:00"]}})
+    with pytest.raises(ValueError):
+        rebind_matrices(
+            src, dst, seat="001", rng="09:00-11:00", weekdays=["mon"],
+            max_seg_hours=2.0, daily_limit_hours=5.0)
+    # 校验失败不得改动任一账号
+    assert src.seat_slots == {"001": {"mon": ["09:00-11:00"]}}
+    assert dst.seat_slots == {"002": {"mon": ["13:00-15:00", "15:00-18:00"]}}
+
+
+def test_rebind_matrices_drops_empty_seat_entry():
+    src = _acc("src", {"001": {"mon": ["09:00-11:00"]}})
+    dst = _acc("dst", {})
+    src_m, _ = rebind_matrices(
+        src, dst, seat="001", rng="09:00-11:00", weekdays=["mon"],
+        max_seg_hours=2.0, daily_limit_hours=5.0)
+    assert "001" not in src_m
