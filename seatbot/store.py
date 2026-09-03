@@ -174,9 +174,42 @@ class StateStore:
 
     async def init(self) -> None:
         self._db = await aiosqlite.connect(self.db_path)
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA busy_timeout=5000")
         await self._db.executescript(SCHEMA)
         await self._db.commit()
         await self._migrate_v1_to_v2()
+        await self._migrate_task_identity_guard()
+
+    async def _migrate_task_identity_guard(self) -> None:
+        """活跃态任务的 (账号,日,座位,开始) 唯一索引：应用层 E4 检查之外的库级防线。
+
+        仅约束未终态行（complete/failed 不受限，历史可重开同键任务）；
+        存量活跃态重复行会阻止创建，此时记 WARN 交人工处理（不自动删数据）。
+        """
+        cur = await self.db.execute(
+            "SELECT 1 FROM tasks "
+            "WHERE status IN ('pending','ready','submitting','active','signed','leaving') "
+            "GROUP BY account_id, day, seat_num, start_time HAVING COUNT(*) > 1 LIMIT 1"
+        )
+        if await cur.fetchone():
+            await self.log_message(
+                "WARN", None,
+                "tasks 存在同(账号,日,座位,开始)的活跃重复行，唯一索引未创建，需人工核对",
+            )
+            await self.db.commit()
+            return
+        try:
+            await self.db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_active_identity "
+                "ON tasks(account_id, day, seat_num, start_time) "
+                "WHERE status IN ('pending','ready','submitting','active','signed','leaving')"
+            )
+            await self.db.commit()
+        except Exception as e:
+            await self.db.rollback()
+            await self.log_message("WARN", None, f"任务唯一索引创建失败: {e}")
+            await self.db.commit()
 
     async def _migrate_v1_to_v2(self) -> None:
         """v1 → v2 schema migrations.
@@ -995,6 +1028,16 @@ class StateStore:
             "SELECT id FROM notifications ORDER BY ts DESC, id DESC LIMIT 30)"
         )
         await self.db.commit()
+
+    async def purge_old_logs(self, *, keep_days: int = 30) -> int:
+        """删除 keep_days 天前的 actions/logs 行并返回删除总数（启动时调用控制库膨胀）。"""
+        cutoff = int((_time.time() - keep_days * 86400) * 1000)
+        cur = await self.db.execute("DELETE FROM actions WHERE ts < ?", (cutoff,))
+        n = cur.rowcount or 0
+        cur = await self.db.execute("DELETE FROM logs WHERE ts < ?", (cutoff,))
+        n += cur.rowcount or 0
+        await self.db.commit()
+        return n
 
     async def list_notifications(self, limit: int = 5) -> list[dict]:
         cur = await self.db.execute(

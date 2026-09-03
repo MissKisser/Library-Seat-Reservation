@@ -44,11 +44,15 @@ class ReservationPlanner:
         bound_seats: list[str],           # 该账号绑定的目标座位
         fallback_seats: list[str],        # 当 bound_seats 空时用的 fallback (library 的 target_seats)
         max_reserve_hours: float,
+        open_time: str = "08:00",         # 馆舍营业窗口，"full" 展开的边界
+        close_time: str = "22:00",
     ):
         self.account = account
         self.bound_seats = list(bound_seats)
         self.fallback_seats = list(fallback_seats)
         self.max_reserve_hours = max_reserve_hours
+        self.open_time = open_time
+        self.close_time = close_time
 
     def expand_for_day(self, day: date) -> list[Task]:
         """展开成 (account, seat, slot) → Task list.
@@ -71,10 +75,11 @@ class ReservationPlanner:
             for seat_num, spec in self.account.seat_slots.items():
                 day_spec = slots_for_weekday(spec, wd)
                 if day_spec == "full":
-                    # per-seat "full" 展开成当日所有 2h 段
+                    # per-seat "full" 展开成馆舍营业时段内的 ≤max_hours 段
                     from seatbot.utils.timeutil import expand_full_day
                     chunks = expand_full_day(
-                        "08:00", "22:00", max_hours=self.max_reserve_hours
+                        self.open_time, self.close_time,
+                        max_hours=self.max_reserve_hours,
                     )
                 elif isinstance(day_spec, list):
                     if not day_spec:
@@ -117,7 +122,10 @@ class ReservationPlanner:
         if isinstance(self.account.slots, list):
             _reject_overlong_ranges(self.account.slots, self.max_reserve_hours, self.account.id)
         try:
-            chunks = expand_account_slots(self.account.slots, self.max_reserve_hours)
+            chunks = expand_account_slots(
+                self.account.slots, self.max_reserve_hours,
+                open_time=self.open_time, close_time=self.close_time,
+            )
         except Exception as e:
             raise PlannerError(
                 f"failed to expand slots for {self.account.id}: {e}"

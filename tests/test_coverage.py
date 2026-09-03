@@ -109,9 +109,9 @@ def test_seat_slots_account_covers_only_specified_pairs():
 def test_seat_slots_guard_matrix_yields_six_segments():
     """真实守护矩阵 (3 账号 × 2 座位 × 3 时段): 每座位每天恰好 3 段 = 6 格守护。"""
     matrix = {
-        "xiongjt": {"104": ["09:00-11:00"], "105": ["15:00-17:00"]},
-        "wangh":   {"104": ["15:00-17:00"], "105": ["19:00-21:00"]},
-        "zhaozh":  {"104": ["19:00-21:00"], "105": ["09:00-11:00"]},
+        "zhangsan": {"104": ["09:00-11:00"], "105": ["15:00-17:00"]},
+        "lisi":   {"104": ["15:00-17:00"], "105": ["19:00-21:00"]},
+        "wangwu":  {"104": ["19:00-21:00"], "105": ["09:00-11:00"]},
     }
     accs = [Account(id=k, phone="13800000000", password="x",
                     slots=[], bound_seats=list(v.keys()), seat_slots=v)
@@ -119,8 +119,8 @@ def test_seat_slots_guard_matrix_yields_six_segments():
     rows = compute_seat_coverage(accs, [_seat("104"), _seat("105")], DAY)
     by_seat = {r.seat.seat_num: r for r in rows}
     for sn, expected in {
-        "104": [("09:00", "xiongjt"), ("15:00", "wangh"), ("19:00", "zhaozh")],
-        "105": [("09:00", "zhaozh"), ("15:00", "xiongjt"), ("19:00", "wangh")],
+        "104": [("09:00", "zhangsan"), ("15:00", "lisi"), ("19:00", "wangwu")],
+        "105": [("09:00", "wangwu"), ("15:00", "zhangsan"), ("19:00", "lisi")],
     }.items():
         c = _cells(by_seat[sn])
         for start, acc_id in expected:

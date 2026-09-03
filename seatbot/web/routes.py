@@ -22,7 +22,7 @@ from seatbot.utils.weekly import (
 from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
-from seatbot.models import Account, Task, TaskStatus
+from seatbot.models import Account, SeatTarget, Task, TaskStatus
 from seatbot.reconcile import pick_read_account
 from seatbot.scheduler import NextRelay
 from seatbot.utils.timeutil import (
@@ -145,7 +145,7 @@ async def _fetch_others_occupied(
     store,
     day: date,
     seat_nums: list[str],
-) -> tuple[list[tuple[str, time, time]], str | None]:
+) -> tuple[list[tuple[str, _time, _time]], str | None]:
     """Call POST /getusedtimes (mobile fidEnc) for each target seat and
     collect (seat_num, start_time, end_time) tuples for every occupied
     30-min cell that day.
@@ -213,7 +213,7 @@ async def _fetch_others_occupied(
         if await sched.login_and_persist(acc, client, "占用查询重登"):
             results = await _gather()
 
-    out: list[tuple[str, _time, time]] = []
+    out: list[tuple[str, _time, _time]] = []
     last_err: str | None = None
     for sn, r in zip(seat_nums, results):
         if isinstance(r, Exception):
@@ -267,7 +267,7 @@ async def _collect_user_reserved(store, day: date) -> list[tuple[str, _time, _ti
 
 async def _collect_own_intervals(store, day: date) -> list[tuple[str, _time, _time]]:
     """收集当日已成功预约的 (seat_num, start, end)。"""
-    own: list[tuple[str, time, time]] = []
+    own: list[tuple[str, _time, _time]] = []
     for t in await store.list_tasks(day=day):
         if t.status in (
             TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.LEAVING, TaskStatus.COMPLETE
@@ -281,7 +281,7 @@ async def _collect_own_intervals(store, day: date) -> list[tuple[str, _time, _ti
 # =========================================================================
 async def _collect_day_bundle(
     request: Request, store, cfg,
-    accounts: list[Account], target_seats: list[SeatTarget],
+    accounts: list[Account], target_seats: list["SeatTarget"],
     view_day: date, *, fresh: bool = False,
 ) -> dict:
     """构建单日覆盖图所需的全部数据。
@@ -551,7 +551,7 @@ _LAST_FRESH_AT: float = 0.0  # 上次绕缓强制拉取的时刻 (monotonic)，3
 async def _fetch_others_occupied_cached(
     request: Request, store, day: date, seat_nums: list[str],
     *, fresh: bool = False,
-) -> tuple[list[tuple[str, _time, time]], str | None]:
+) -> tuple[list[tuple[str, _time, _time]], str | None]:
     """带 TTL 的他人占用查询包装, 把超星请求频率与页面刷新解耦。
 
     fresh=True 时绕过 TTL 强制拉取（手动刷新按钮），30s 内仅放行一次，
@@ -1789,6 +1789,24 @@ async def quick_reserve(
     seats = [s.seat_num for s in await store.list_target_seats()]
     if sn not in seats:
         raise HTTPException(400, f"seat {sn} not a registered target")
+    cfg = request.app.state.cfg
+    hours = (_dt.combine(date.min, e) - _dt.combine(date.min, s)).total_seconds() / 3600
+    if hours > float(cfg.library.max_reserve_hours) + 1e-9:
+        raise HTTPException(
+            400, f"时段 {start}-{end} 长 {hours:g}h，超过单段上限 {float(cfg.library.max_reserve_hours):g}h")
+    if await store.has_active_task_for_account_day_start(acc.id, today_cst(), s, sn):
+        raise HTTPException(409, "该账号当日同座位同时段已有任务，勿重复提交")
+    used = 0.0
+    for t0 in await store.list_tasks(account_id=acc.id, day=today_cst()):
+        if t0.status not in (TaskStatus.FAILED, TaskStatus.COMPLETE):
+            used += (
+                _dt.combine(date.min, t0.end_time)
+                - _dt.combine(date.min, t0.start_time)
+            ).total_seconds() / 3600
+    limit = float(cfg.library.daily_reserve_hours_limit)
+    if used + hours > limit + 1e-9:
+        raise HTTPException(
+            400, f"账号当日已排 {used:g}h，加本段 {hours:g}h 将超每日限额 {limit:g}h")
     t = Task(
         id=None, account_id=acc.id, day=today_cst(),
         start_time=s, end_time=e, seat_num=sn,

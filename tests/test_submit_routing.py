@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, time, timedelta
+from datetime import time, timedelta
 
 import pytest
 
@@ -70,7 +70,7 @@ async def _seed(tmp_path, day) -> tuple[StateStore, Task]:
     from tests.test_scheduler_core import seed_guard_accounts
     await seed_guard_accounts(store)
     t = Task(
-        id=None, account_id="xiongjt", day=day,
+        id=None, account_id="zhangsan", day=day,
         start_time=time(9, 0), end_time=time(11, 0), seat_num="104",
         status=TaskStatus.PENDING,
     )
@@ -88,8 +88,8 @@ async def test_future_day_routes_to_direct(tmp_path):
     store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
     sched = Scheduler(make_cfg(), store)
     client = RoutingClient(used_times=[("09:00", "11:00")])
-    sched._clients["xiongjt"] = client
-    acc = await store.get_account("xiongjt")
+    sched._clients["zhangsan"] = client
+    acc = await store.get_account("zhangsan")
     await sched._run_submit(acc, t)
     assert client.calls == ["direct", "getused"]
     after = await store.get_task(t.id)
@@ -107,8 +107,8 @@ async def test_direct_failure_falls_back_to_page_rewrite(tmp_path):
         },
         used_times=[("09:00", "11:00")],
     )
-    sched._clients["xiongjt"] = client
-    acc = await store.get_account("xiongjt")
+    sched._clients["zhangsan"] = client
+    acc = await store.get_account("zhangsan")
     await sched._run_submit(acc, t)
     assert client.calls == ["direct", "page_rewrite", "getused"]
     after = await store.get_task(t.id)
@@ -130,8 +130,8 @@ async def test_all_channels_fail_without_anchor_marks_failed(tmp_path):
         },
         used_times=[],   # 锚点筛选: 无占用记录的候选一律不放行 → 无锚点
     )
-    sched._clients["xiongjt"] = client
-    acc = await store.get_account("xiongjt")
+    sched._clients["zhangsan"] = client
+    acc = await store.get_account("zhangsan")
     await sched._run_submit(acc, t)
     assert client.calls[:2] == ["direct", "page_rewrite"]
     assert client.calls.count("page_rewrite") == 1   # 无锚点 → 不再三试
@@ -144,8 +144,8 @@ async def test_today_routes_to_browser(tmp_path):
     store, t = await _seed(tmp_path, today_cst())
     sched = Scheduler(make_cfg(), store)
     client = RoutingClient()
-    sched._clients["xiongjt"] = client
-    acc = await store.get_account("xiongjt")
+    sched._clients["zhangsan"] = client
+    acc = await store.get_account("zhangsan")
     await sched._run_submit(acc, t)
     assert client.calls == ["browser"]
     after = await store.get_task(t.id)
@@ -156,8 +156,8 @@ async def test_page_rewrite_only_never_touches_direct(tmp_path):
     store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
     sched = Scheduler(make_cfg(submit_strategy="page_rewrite_only"), store)
     client = RoutingClient(used_times=[("09:00", "11:00")])
-    sched._clients["xiongjt"] = client
-    acc = await store.get_account("xiongjt")
+    sched._clients["zhangsan"] = client
+    acc = await store.get_account("zhangsan")
     await sched._run_submit(acc, t)
     assert client.calls == ["page_rewrite", "getused"]
     after = await store.get_task(t.id)
@@ -175,8 +175,8 @@ async def test_direct_only_never_falls_back(tmp_path):
         },
         used_times=[],   # 不触达核验
     )
-    sched._clients["xiongjt"] = client
-    acc = await store.get_account("xiongjt")
+    sched._clients["zhangsan"] = client
+    acc = await store.get_account("zhangsan")
     await sched._run_submit(acc, t)
     assert client.calls == ["direct"]   # 失败即终, 不得回退任何通道
     after = await store.get_task(t.id)
@@ -187,8 +187,8 @@ async def test_occupancy_check_empty_keeps_active_and_logs_error(tmp_path):
     store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
     sched = Scheduler(make_cfg(), store)
     client = RoutingClient(used_times=[])   # 核验为空
-    sched._clients["xiongjt"] = client
-    acc = await store.get_account("xiongjt")
+    sched._clients["zhangsan"] = client
+    acc = await store.get_account("zhangsan")
     await sched._run_submit(acc, t)
     after = await store.get_task(t.id)
     # 预约号是服务端发的: 不标 FAILED (避免留下无人管理的真预约), 留 ACTIVE 人工复核

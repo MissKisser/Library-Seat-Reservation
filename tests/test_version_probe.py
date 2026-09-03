@@ -31,7 +31,7 @@ async def _max_task_updated_at_tracks_writes(tmp_path):
         t = Task(
             id=None, account_id="a1", day=date(2026, 9, 1),
             start_time=time(14, 0), end_time=time(16, 0),
-            seat_num="030", status=TaskStatus.PENDING,
+            seat_num="021", status=TaskStatus.PENDING,
         )
         await store.add_task(t)
         assert await store.max_task_updated_at() > 0

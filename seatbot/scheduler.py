@@ -61,6 +61,9 @@ class Scheduler:
         self._reconcile_last_at: datetime | None = None
         self._reconcile_running: bool = False
         self._reconcile_flagged: set[int] = set()  # 已告警未恢复的任务 id
+        # 14:00 批量预约两个入口 (cron misfire 补跑 / 启动补跑) 共用的互斥闸，
+        # 防止同批 PENDING 任务被两条路径并发提交成双份真实预约
+        self._bootstrap_gate = asyncio.Lock()
 
     async def load_runtime_settings(self) -> dict[str, object]:
         try:
@@ -210,6 +213,8 @@ class Scheduler:
                 bound_seats=acc.bound_seats,
                 fallback_seats=fallback_seats,
                 max_reserve_hours=self.cfg.library.max_reserve_hours,
+                open_time=self.cfg.library.open_time,
+                close_time=self.cfg.library.close_time,
             )
             try:
                 tasks = planner.expand_for_day(day)
@@ -467,6 +472,10 @@ class Scheduler:
             if used and not any(s <= now_hm < e for s, e in used):
                 return seat
         return None
+
+    async def run_submit(self, acc: Account, t: Task) -> None:
+        """公开提交入口：CLI 手动预约等外部调用方走同一通道分流。"""
+        await self._run_submit(acc, t)
 
     async def _run_submit(self, acc: Account, t: Task) -> None:
         """提交预约 (不签到)。
@@ -884,7 +893,7 @@ class Scheduler:
         只清自己写的标记；不改任务状态。两种模式都落 reconcile_results
         快照。返回 {"checked", "mismatch", "fetch_ok"}。
         """
-        from seatbot.reconcile import classify_task, pick_read_account
+        from seatbot.reconcile import pick_read_account
 
         days = [today_cst(), today_cst() + timedelta(days=1)]
         live = (TaskStatus.ACTIVE, TaskStatus.SIGNED,
@@ -1123,6 +1132,16 @@ class Scheduler:
     async def startup_afternoon_catchup(self) -> None:
         """错过 14:00 批量的补跑: 预约窗口已开且明天仍有未生成/未提交任务时立即批量。
 
+        经 _bootstrap_gate 与 cron 补跑 (_afternoon_bootstrap) 互斥：
+        misfire_grace=3600 使 14:05–15:00 之间重启时 cron 补跑与启动补跑
+        可能同时就绪，此闸保证同批 PENDING 只会被一条路径提交。
+        """
+        async with self._bootstrap_gate:
+            await self._startup_afternoon_catchup_locked()
+
+    async def _startup_afternoon_catchup_locked(self) -> None:
+        """错过 14:00 批量的补跑: 预约窗口已开且明天仍有未生成/未提交任务时立即批量。
+
         只补 PENDING (生成后从未提交), 不自动重试 FAILED ——
         失败任务可能撞账号周违约上限, 自动重试会追加违约记录, 必须人工确认。
         14:00–14:05 之间不补 (该窗口属于常驻进程的 cron, 避免双跑竞态)。
@@ -1207,6 +1226,15 @@ class Scheduler:
             await self._bootstrap_for_account(acc, today, [s.seat_num for s in seats])
 
     async def _afternoon_bootstrap(self) -> None:
+        """每天14:00触发：为明天生成预约任务并立即提交。
+
+        经 _bootstrap_gate 与启动补跑 (startup_afternoon_catchup) 互斥，
+        重启落在预约窗口内时同批 PENDING 只会被一条路径提交。
+        """
+        async with self._bootstrap_gate:
+            await self._afternoon_bootstrap_locked()
+
+    async def _afternoon_bootstrap_locked(self) -> None:
         """每天14:00触发：为明天生成预约任务并立即提交。
 
         超星预约系统在14:00后开放次日预约窗口(`reserveBeforeTime: 14:00`),

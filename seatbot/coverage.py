@@ -191,7 +191,10 @@ def compute_seat_coverage(
                 continue
             try:
                 day_val = slots_for_weekday(spec, wd)
-                ranges = expand_account_slots(day_val, max_hours=24.0)
+                ranges = expand_account_slots(
+                    day_val, max_hours=24.0,
+                    open_time=open_time, close_time=close_time,
+                )
             except Exception:
                 continue
             _paint_ranges(cov, ranges, acc.id)
@@ -200,7 +203,10 @@ def compute_seat_coverage(
         # 空绑定账号不参与守护, 不再通配全天
         for acc in [a for a in flat_accs if seat_num in (a.bound_seats or [])]:
             try:
-                ranges = expand_account_slots(acc.slots, max_hours=24.0)
+                ranges = expand_account_slots(
+                    acc.slots, max_hours=24.0,
+                    open_time=open_time, close_time=close_time,
+                )
             except Exception:
                 continue
             _paint_ranges(cov, ranges, acc.id)

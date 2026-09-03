@@ -1,8 +1,6 @@
-import asyncio
 import tempfile
 from pathlib import Path
 
-import pytest
 
 
 # Windows: pytest's default system temp dir may be sandbox-restricted.
@@ -12,9 +10,5 @@ _LOCAL_TMP = _PROJECT_ROOT / ".tmp_pytest"
 _LOCAL_TMP.mkdir(exist_ok=True)
 tempfile.tempdir = str(_LOCAL_TMP)
 
-
-@pytest.fixture
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+# 事件循环交由 pytest-asyncio 自管：pytest-asyncio 1.x 已废弃自定义
+# event_loop fixture 扩展点，保留会与插件内建 loop 管理产生生命周期错乱。

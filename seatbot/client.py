@@ -848,7 +848,11 @@ class ChaoxingClient:
                     "fidEnc": self.FID_ENC_MOBILE},
             headers={"Referer": self.OFFICE_BASE + "/"},
         )
-        payload = r.json()
+        r.raise_for_status()
+        try:
+            payload = r.json()
+        except json.JSONDecodeError as e:
+            raise ChaoxingError(f"reservelist non-JSON: {r.text[:200]}") from e
         if not payload.get("success"):
             raise ChaoxingError(
                 f"reservelist rejected: {payload.get('msg') or payload!r}"

@@ -10,8 +10,7 @@
 """
 from __future__ import annotations
 
-import asyncio
-from datetime import date, time, timedelta
+from datetime import time, timedelta
 
 import pytest
 
@@ -64,9 +63,9 @@ def make_cfg() -> Config:
 
 
 GUARD_MATRIX = {
-    "xiongjt": {"104": ["09:00-11:00"], "105": ["15:00-17:00"]},
-    "wangh":   {"104": ["15:00-17:00"], "105": ["19:00-21:00"]},
-    "zhaozh":  {"104": ["19:00-21:00"], "105": ["09:00-11:00"]},
+    "zhangsan": {"104": ["09:00-11:00"], "105": ["15:00-17:00"]},
+    "lisi":   {"104": ["15:00-17:00"], "105": ["19:00-21:00"]},
+    "wangwu":  {"104": ["19:00-21:00"], "105": ["09:00-11:00"]},
 }
 
 
@@ -127,25 +126,28 @@ async def test_run_sign_success_marks_signed(store, monkeypatch):
     dummy = DummyClient([{"success": True}])
     monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
     sched = Scheduler(make_cfg(), store)
-    t = Task(id=None, account_id="xiongjt", day=today_cst(),
+    t = Task(id=None, account_id="zhangsan", day=today_cst(),
              start_time=time(9, 0), end_time=time(11, 0),
              seat_num="104", status=TaskStatus.ACTIVE, reserve_id=1)
     t.id = await store.add_task(t)
-    await sched._run_sign(await store.get_account("xiongjt"), t)
+    await sched._run_sign(await store.get_account("zhangsan"), t)
     assert (await store.get_task(t.id)).status == TaskStatus.SIGNED
     assert dummy.calls == [("sign", 1)]
 
 
 async def test_run_sign_window_closed_stops_retry(store, monkeypatch):
     # "不在签到时间内" (已签过/窗口过) → SIGNED, 不再每分钟重打 API
+    # now 固定在时段结束之后，服务端仍拒签 → 判定"窗口已过"终止重试
+    fixed = at_cst(today_cst(), time(12, 0))
+    monkeypatch.setattr("seatbot.scheduler.now_cst", lambda: fixed)
     dummy = DummyClient([{"success": False, "msg": "不在签到时间内无法签到"}])
     monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
     sched = Scheduler(make_cfg(), store)
-    t = Task(id=None, account_id="xiongjt", day=today_cst(),
+    t = Task(id=None, account_id="zhangsan", day=today_cst(),
              start_time=time(9, 0), end_time=time(11, 0),
              seat_num="104", status=TaskStatus.ACTIVE, reserve_id=1)
     t.id = await store.add_task(t)
-    await sched._run_sign(await store.get_account("xiongjt"), t)
+    await sched._run_sign(await store.get_account("zhangsan"), t)
     assert (await store.get_task(t.id)).status == TaskStatus.SIGNED
 
 
@@ -153,11 +155,11 @@ async def test_run_sign_other_failure_keeps_active(store, monkeypatch):
     dummy = DummyClient([{"success": False, "msg": "服务器开小差了"}])
     monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
     sched = Scheduler(make_cfg(), store)
-    t = Task(id=None, account_id="xiongjt", day=today_cst(),
+    t = Task(id=None, account_id="zhangsan", day=today_cst(),
              start_time=time(9, 0), end_time=time(11, 0),
              seat_num="104", status=TaskStatus.ACTIVE, reserve_id=1)
     t.id = await store.add_task(t)
-    await sched._run_sign(await store.get_account("xiongjt"), t)
+    await sched._run_sign(await store.get_account("zhangsan"), t)
     assert (await store.get_task(t.id)).status == TaskStatus.ACTIVE
 
 
@@ -170,11 +172,11 @@ async def test_run_sign_relogin_on_not_logged_in(store, monkeypatch):
     ])
     monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
     sched = Scheduler(make_cfg(), store)
-    t = Task(id=None, account_id="xiongjt", day=today_cst(),
+    t = Task(id=None, account_id="zhangsan", day=today_cst(),
              start_time=time(9, 0), end_time=time(11, 0),
              seat_num="104", status=TaskStatus.ACTIVE, reserve_id=7)
     t.id = await store.add_task(t)
-    await sched._run_sign(await store.get_account("xiongjt"), t)
+    await sched._run_sign(await store.get_account("zhangsan"), t)
     assert dummy.resets == 1          # 清了陈旧 cookie
     assert dummy.logins == 1          # 重新登录
     assert len(dummy.calls) == 2      # sign 重试了一次
@@ -187,11 +189,11 @@ async def test_run_leave_without_reserve_marks_failed(store, monkeypatch):
     dummy = DummyClient([])
     monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
     sched = Scheduler(make_cfg(), store)
-    t = Task(id=None, account_id="xiongjt", day=today_cst(),
+    t = Task(id=None, account_id="zhangsan", day=today_cst(),
              start_time=time(9, 0), end_time=time(11, 0),
              seat_num="104", status=TaskStatus.SIGNED, reserve_id=None)
     t.id = await store.add_task(t)
-    await sched._run_leave(await store.get_account("xiongjt"), t)
+    await sched._run_leave(await store.get_account("zhangsan"), t)
     after = await store.get_task(t.id)
     assert after.status == TaskStatus.FAILED
     assert "无预约号" in (after.last_error or "")
@@ -208,11 +210,11 @@ async def test_run_leave_idempotent_end_completes(store, monkeypatch):
     ])
     monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
     sched = Scheduler(make_cfg(), store)
-    t = Task(id=None, account_id="xiongjt", day=today_cst(),
+    t = Task(id=None, account_id="zhangsan", day=today_cst(),
              start_time=time(9, 0), end_time=time(11, 0),
              seat_num="104", status=TaskStatus.SIGNED, reserve_id=5)
     t.id = await store.add_task(t)
-    await sched._run_leave(await store.get_account("xiongjt"), t)
+    await sched._run_leave(await store.get_account("zhangsan"), t)
     assert (await store.get_task(t.id)).status == TaskStatus.COMPLETE
     assert dummy.calls == [("signback", 5), ("leave", 5)]
 
@@ -227,11 +229,11 @@ async def test_run_leave_failure_keeps_active_for_retry(store, monkeypatch):
     ])
     monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
     sched = Scheduler(make_cfg(), store)
-    t = Task(id=None, account_id="xiongjt", day=today_cst(),
+    t = Task(id=None, account_id="zhangsan", day=today_cst(),
              start_time=time(9, 0), end_time=time(11, 0),
              seat_num="104", status=TaskStatus.SIGNED, reserve_id=5)
     t.id = await store.add_task(t)
-    await sched._run_leave(await store.get_account("xiongjt"), t)
+    await sched._run_leave(await store.get_account("zhangsan"), t)
     assert (await store.get_task(t.id)).status == TaskStatus.ACTIVE
 
 
@@ -244,11 +246,11 @@ async def test_run_leave_near_end_skips_leave_and_retries(store, monkeypatch):
     dummy = DummyClient([{"success": False, "msg": "系统繁忙"}])
     monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
     sched = Scheduler(make_cfg(), store)
-    t = Task(id=None, account_id="xiongjt", day=today_cst(),
+    t = Task(id=None, account_id="zhangsan", day=today_cst(),
              start_time=time(9, 0), end_time=time(11, 0),
              seat_num="104", status=TaskStatus.SIGNED, reserve_id=5)
     t.id = await store.add_task(t)
-    await sched._run_leave(await store.get_account("xiongjt"), t)
+    await sched._run_leave(await store.get_account("zhangsan"), t)
     assert (await store.get_task(t.id)).status == TaskStatus.ACTIVE
     assert dummy.calls == [("signback", 5)]   # 未落暂离通道, 留给下个 tick 重试
 
@@ -265,20 +267,20 @@ async def test_tick_handles_today_despite_tomorrow_active(store, monkeypatch):
     # 今天: 09:00-11:00 进行中未签 (构造一个包含当前时刻的时段)
     s = (now - timedelta(minutes=10)).time()
     e = (now + timedelta(minutes=30)).time()
-    cur = Task(id=None, account_id="xiongjt", day=today,
+    cur = Task(id=None, account_id="zhangsan", day=today,
                start_time=s, end_time=e, seat_num="104",
                status=TaskStatus.ACTIVE, reserve_id=11)
     cur.id = await store.add_task(cur)
     # 明天: 一条"更晚"的 ACTIVE 任务 (旧 find_active_task 会被它吸走)
-    tmr = Task(id=None, account_id="xiongjt", day=today + timedelta(days=1),
+    tmr = Task(id=None, account_id="zhangsan", day=today + timedelta(days=1),
                start_time=time(19, 0), end_time=time(21, 0), seat_num="104",
                status=TaskStatus.ACTIVE, reserve_id=12)
     tmr.id = await store.add_task(tmr)
 
-    await sched.tick_account("xiongjt")
+    await sched.tick_account("zhangsan")
     assert (await store.get_task(cur.id)).status == TaskStatus.SIGNED
     assert (await store.get_task(tmr.id)).status == TaskStatus.ACTIVE
     # SIGNED 后再 tick 同一任务不会重复 sign
     n_calls = len(dummy.calls)
-    await sched.tick_account("xiongjt")
+    await sched.tick_account("zhangsan")
     assert len(dummy.calls) == n_calls

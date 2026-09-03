@@ -1,8 +1,9 @@
 """签到成功应同步落入看板通知（level=info, 不走 webhook 外推）。"""
 import asyncio
-from datetime import date, time
+from datetime import time, timedelta
 
 from seatbot.models import Account, Task, TaskStatus
+from seatbot.utils.timeutil import today_cst
 from seatbot.scheduler import Scheduler
 
 
@@ -63,11 +64,11 @@ def _run_sign_once():
     sched.store = store
     sched.cfg = _StubCfg()
     sched._fail_streak = {}
-    acc = Account(id="刘恒", phone="1", password="x", slots=[])
+    acc = Account(id="赵六", phone="1", password="x", slots=[])
     t = Task(
-        id=70, account_id="刘恒", day=date(2026, 8, 31),
+        id=70, account_id="赵六", day=today_cst(),
         start_time=time(8, 0), end_time=time(10, 0),
-        seat_num="030", status=TaskStatus.ACTIVE, reserve_id=189743666,
+        seat_num="021", status=TaskStatus.ACTIVE, reserve_id=900000001,
     )
     asyncio.run(sched._run_sign(acc, t))
     return store
@@ -79,7 +80,7 @@ def test_sign_success_lands_in_notifications_as_info():
     assert len(infos) == 1
     n = infos[0]
     assert "签到成功" in n["title"]
-    assert "刘恒" in n["body"] and "030" in n["body"] and "189743666" in n["body"]
+    assert "赵六" in n["body"] and "021" in n["body"] and "900000001" in n["body"]
 
 
 def test_sign_success_marks_task_signed():
@@ -102,11 +103,11 @@ def _run_leave_once(signback_result):
     sched.store = store
     sched.cfg = _StubCfg()
     sched._fail_streak = {}
-    acc = Account(id="刘恒", phone="1", password="x", slots=[])
+    acc = Account(id="赵六", phone="1", password="x", slots=[])
     t = Task(
-        id=70, account_id="刘恒", day=date(2026, 8, 31),
+        id=70, account_id="赵六", day=today_cst(),
         start_time=time(16, 0), end_time=time(18, 0),
-        seat_num="030", status=TaskStatus.ACTIVE, reserve_id=189743666,
+        seat_num="021", status=TaskStatus.ACTIVE, reserve_id=900000001,
     )
     asyncio.run(sched._run_leave(acc, t))
     return store
@@ -117,7 +118,7 @@ def test_signback_success_lands_in_notifications_as_info():
     infos = [n for n in store.notifications if n["level"] == "info"]
     assert len(infos) == 1
     assert "签退" in infos[0]["title"]
-    assert "刘恒" in infos[0]["body"] and "189743666" in infos[0]["body"]
+    assert "赵六" in infos[0]["body"] and "900000001" in infos[0]["body"]
 
 
 def test_signback_idempotent_close_lands_in_notifications(monkeypatch):
@@ -185,13 +186,14 @@ def _run_afternoon_bootstrap(tasks_for_tomorrow):
     sched.store = store
     sched.cfg = _StubCfg()
     sched._fail_streak = {}
+    sched._bootstrap_gate = asyncio.Lock()
     asyncio.run(sched._afternoon_bootstrap())
     return store
 
 
-def _tomorrow_task(id_, status, seat="030", start="08:00", end="10:00", rid=None, err=""):
+def _tomorrow_task(id_, status, seat="021", start="08:00", end="10:00", rid=None, err=""):
     return Task(
-        id=id_, account_id="a1", day=date(2026, 9, 1),
+        id=id_, account_id="a1", day=today_cst() + timedelta(days=1),
         start_time=time(*map(int, start.split(":"))),
         end_time=time(*map(int, end.split(":"))),
         seat_num=seat, status=status, reserve_id=rid, last_error=err,
@@ -207,7 +209,7 @@ def test_afternoon_bootstrap_all_success_notifies_info(monkeypatch):
     monkeypatch.setattr(_asyncio_mod, "sleep", _instant)
     store = _run_afternoon_bootstrap([
         _tomorrow_task(1, TaskStatus.ACTIVE, rid=1001),
-        _tomorrow_task(2, TaskStatus.ACTIVE, seat="031", start="10:00", rid=1002),
+        _tomorrow_task(2, TaskStatus.ACTIVE, seat="022", start="10:00", rid=1002),
     ])
     infos = [n for n in store.notifications
              if n["level"] == "info" and "全部成功" in n["title"]]
@@ -224,9 +226,9 @@ def test_afternoon_bootstrap_partial_failure_notifies_error(monkeypatch):
     monkeypatch.setattr(_asyncio_mod, "sleep", _instant)
     store = _run_afternoon_bootstrap([
         _tomorrow_task(1, TaskStatus.ACTIVE, rid=1001),
-        _tomorrow_task(2, TaskStatus.FAILED, seat="031", err="本周违约次数已达上限"),
+        _tomorrow_task(2, TaskStatus.FAILED, seat="022", err="本周违约次数已达上限"),
     ])
     errors = [n for n in store.notifications
               if n["level"] == "error" and "失败" in n["title"]]
     assert len(errors) == 1
-    assert "031" in errors[0]["body"] and "违约" in errors[0]["body"]
+    assert "022" in errors[0]["body"] and "违约" in errors[0]["body"]

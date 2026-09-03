@@ -82,9 +82,15 @@ def expand_full_day(
 
 
 def expand_account_slots(
-    slots: str | list[str], max_hours: float
+    slots: str | list[str],
+    max_hours: float,
+    open_time: str = "08:00",
+    close_time: str = "22:00",
 ) -> list[tuple[time, time]]:
-    """Expand a SlotSpec ('full' or list of 'HH:MM-HH:MM') into chunks."""
+    """Expand a SlotSpec ('full' or list of 'HH:MM-HH:MM') into chunks.
+
+    "full" 按馆舍 open_time/close_time 展开；显式 range 原样分块。
+    """
     if slots == "full":
-        return expand_full_day("08:00", "22:00", max_hours=max_hours)
+        return expand_full_day(open_time, close_time, max_hours=max_hours)
     return [c for r in slots for c in split_into_chunks(parse_range(r), max_hours)]
