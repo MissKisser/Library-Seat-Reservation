@@ -1,8 +1,10 @@
 """监督检测与自动落座: reservelist status=5 → sign 解除, 通知与审计落库。"""
 import asyncio
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import time
 
 from seatbot.models import Account, Task, TaskStatus
+from seatbot.utils.timeutil import now_cst, today_cst
+from seatbot.utils.timeutil import today_cst
 from seatbot.scheduler import Scheduler
 
 
@@ -84,18 +86,18 @@ class _StubSched(Scheduler):
 
 
 def _acc():
-    return Account(id="刘恒", phone="1", password="x", slots=[])
+    return Account(id="赵六", phone="1", password="x", slots=[])
 
 
 def _task(task_id, rid, status=TaskStatus.SIGNED):
     return Task(
-        id=task_id, account_id="刘恒", day=date(2026, 8, 31),
+        id=task_id, account_id="赵六", day=today_cst(),
         start_time=time(15, 0), end_time=time(17, 0),
-        seat_num="030", status=status, reserve_id=rid,
+        seat_num="021", status=status, reserve_id=rid,
     )
 
 
-def _rec(rid, seat="030"):
+def _rec(rid, seat="021"):
     return {"id": rid, "seatNum": seat, "status": 5,
             "roomId": 11692, "startTime": 0, "endTime": 0}
 
@@ -110,16 +112,16 @@ def _run_check(supervised, sign_results=None, tasks=None):
 
 def test_supervised_reservation_triggers_sign_and_notifications():
     store, client, _ = _run_check(
-        [_rec(189743666)], sign_results=[{"success": True, "msg": "ok"}],
-        tasks=[_task(70, 189743666)],
+        [_rec(900000001)], sign_results=[{"success": True, "msg": "ok"}],
+        tasks=[_task(70, 900000001)],
     )
-    assert client.sign_calls == [189743666]
+    assert client.sign_calls == [900000001]
     titles = [n["title"] for n in store.notifications]
     assert "检测到监督：正在自动落座" in titles
     assert "监督已解除" in titles
     warn = [n for n in store.notifications if n["level"] == "warn"]
-    assert len(warn) == 1 and "刘恒" in warn[0]["body"] and "030" in warn[0]["body"]
-    assert ("刘恒", "supervise_sign", "189743666", True) in store.actions
+    assert len(warn) == 1 and "赵六" in warn[0]["body"] and "021" in warn[0]["body"]
+    assert ("赵六", "supervise_sign", "900000001", True) in store.actions
 
 
 def test_sign_success_marks_matching_active_task_signed():
@@ -224,13 +226,9 @@ def test_session_expiry_relogins_and_retries():
 
 
 def test_tick_account_polls_supervision_only_while_holding_seat(monkeypatch):
-    from seatbot.utils import timeutil
-
-    fixed = datetime(2026, 8, 31, 16, 0, 0,
-                     tzinfo=timezone(timedelta(hours=8)))
+    # now 固定在任务时段 (15:00-17:00) 之内，日期取真今天以匹配任务 day
+    fixed = now_cst().replace(hour=16, minute=0, second=0, microsecond=0)
     monkeypatch.setattr("seatbot.scheduler.now_cst", lambda: fixed)
-    monkeypatch.setattr("seatbot.scheduler.today_cst",
-                        lambda: fixed.date())
 
     store = _FakeStore([_task(70, 1001, status=TaskStatus.SIGNED)])
     client = _FakeClient([_rec(1001)])
@@ -240,7 +238,7 @@ def test_tick_account_polls_supervision_only_while_holding_seat(monkeypatch):
         return _acc()
 
     store.get_account = get_account
-    asyncio.run(sched.tick_account("刘恒"))
+    asyncio.run(sched.tick_account("赵六"))
     assert client.supervise_polls == 1
     assert client.sign_calls == [1001]
 
@@ -249,5 +247,5 @@ def test_tick_account_polls_supervision_only_while_holding_seat(monkeypatch):
     store2 = _FakeStore([])
     store2.get_account = get_account
     sched2 = _StubSched(client2, store2)
-    asyncio.run(sched2.tick_account("刘恒"))
+    asyncio.run(sched2.tick_account("赵六"))
     assert client2.supervise_polls == 0

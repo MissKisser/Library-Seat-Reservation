@@ -17,6 +17,15 @@ class LibraryConfig(BaseModel):
     #: 每个账号每天累计预约时长上限（超星每日限额）
     daily_reserve_hours_limit: float = 5.0
 
+    @field_validator("open_time", "close_time")
+    @classmethod
+    def _zero_padded_hhmm(cls, v: str) -> str:
+        """强制零填充 HH:MM：reconcile 营业窗口按字符串比较，非零填充会整体错乱。"""
+        import re
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v):
+            raise ValueError(f"time must be zero-padded HH:MM (e.g. 08:00), got {v!r}")
+        return v
+
 
 # slots is either the literal "full" or a list of "HH:MM-HH:MM" ranges
 SlotSpec = str | list[str]

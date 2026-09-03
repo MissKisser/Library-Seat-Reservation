@@ -107,8 +107,8 @@
             </td>
             <td class="actions">
               <a class="btn btn-ghost btn-sm" href="/accounts/{{ a.id }}/edit">编辑</a>
-              <button class="btn btn-ghost btn-sm text-danger"
-                @click="confirmAction({title:'删除账号？',desc:'删除 {{ a.id }} 及其绑定',confirmText:'删除',danger:true}).then(ok=>{if(ok){const f=document.createElement('form');f.method='post';f.action='/accounts/{{ a.id }}/delete';document.body.appendChild(f);f.submit();}})">删除</button>
+              <button class="btn btn-ghost btn-sm text-danger" data-account-id="{{ a.id }}"
+                @click="const id=$el.dataset.accountId;confirmAction({title:'删除账号？',desc:'删除 '+id+' 及其绑定',confirmText:'删除',danger:true}).then(ok=>{if(ok){const f=document.createElement('form');f.method='post';f.action='/accounts/'+encodeURIComponent(id)+'/delete';document.body.appendChild(f);f.submit();}})">删除</button>
             </td>
           </tr>
           {% endfor %}

@@ -2,7 +2,6 @@
 import asyncio
 from datetime import datetime
 
-import pytest
 from fastapi.testclient import TestClient
 
 from seatbot.config import load_config

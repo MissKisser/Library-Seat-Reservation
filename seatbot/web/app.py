@@ -1,16 +1,19 @@
 """FastAPI application factory."""
 from __future__ import annotations
 
+import hmac
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse, Response
+from starlette.responses import PlainTextResponse
 
+from seatbot import __version__
 from seatbot.config import Config
 from seatbot.scheduler import Scheduler
 from seatbot.store import StateStore
@@ -67,7 +70,7 @@ def auth_decision(
     """
     token = (web_token or "").strip()
     if token:
-        if presented == token:
+        if hmac.compare_digest((presented or "").encode(), token.encode()):
             return True, 0, "", True
         return False, 401, "unauthorized: missing or invalid token", False
     host = _host_without_port(host_header)
@@ -78,6 +81,45 @@ def auth_decision(
     if client_host is None:
         return False, 403, "forbidden: client address unavailable", False
     return True, 0, "", False
+
+
+def _origin_netloc(value: str) -> str:
+    """从 Origin/Referer 头提取 host:port（小写，无 scheme/path）；解析失败返回空串。"""
+    try:
+        return urlsplit(value.strip()).netloc.lower()
+    except ValueError:
+        return ""
+
+
+def csrf_decision(
+    *,
+    method: str,
+    origin: str | None,
+    referer: str | None,
+    host_header: str,
+) -> tuple[bool, str]:
+    """写请求跨站防护判定 (纯函数, 便于单测)。
+
+    返回 (放行, 拒绝说明)。规则:
+      - 非写方法 (POST/PUT/DELETE/PATCH 之外) 一律放行;
+      - 浏览器发起的跨站写请求必带 Origin (form POST) 或 Referer——
+        两者均缺失视为非浏览器调用 (curl/服务间), 交由认证层把守, 放行;
+      - 带了来源头时, 其 host:port 必须与 Host 头同源, 否则拒绝。
+    同源判定按 netloc 精确比较: 攻击页 Origin=evil.com ≠ 本机 Host → 403,
+    即便请求源 IP 是用户本机 (回环模式) 也无法触发写端点。
+    """
+    if method.upper() not in {"POST", "PUT", "DELETE", "PATCH"}:
+        return True, ""
+    source = (origin or "").strip() or (referer or "").strip()
+    if not source:
+        return True, ""
+    src = _origin_netloc(source)
+    dst = _origin_netloc(f"//{(host_header or '').strip()}")
+    if not src or not dst:
+        return False, "cross-origin write rejected: unparseable origin header"
+    if src == dst:
+        return True, ""
+    return False, "cross-origin write rejected"
 
 
 class PanelAuthMiddleware(BaseHTTPMiddleware):
@@ -100,6 +142,14 @@ class PanelAuthMiddleware(BaseHTTPMiddleware):
         )
         if not ok:
             return PlainTextResponse(reason, status_code=status)
+        csrf_ok, csrf_reason = csrf_decision(
+            method=request.method,
+            origin=request.headers.get("origin"),
+            referer=request.headers.get("referer"),
+            host_header=request.headers.get("host") or "",
+        )
+        if not csrf_ok:
+            return PlainTextResponse(csrf_reason, status_code=403)
         response = await call_next(request)
         if set_cookie and via_query:
             response.set_cookie(
@@ -135,7 +185,7 @@ def _epoch_ms(value) -> str:
 
 
 def make_app(cfg: Config, store: StateStore, sched: Scheduler) -> FastAPI:
-    app = FastAPI(title="SeatBot Web Panel", version="0.1.0")
+    app = FastAPI(title="SeatBot Web Panel", version=__version__)
     app.state.cfg = cfg
     app.state.store = store
     app.state.sched = sched

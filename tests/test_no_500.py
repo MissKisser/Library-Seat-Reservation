@@ -42,7 +42,10 @@ def test_pyflakes_no_undefined_name():
         if r.returncode != 0 and "No module named" in (r.stderr or ""):
             continue
         assert r.returncode == 0, f"{' '.join(cmd)}:\n{r.stdout}\n{r.stderr}"
-        assert not r.stdout.strip(), f"undefined name:\n{r.stdout}"
+        # ruff 成功时输出 "All checks passed!"，pyflakes 成功时 stdout 为空——
+        # 两者均视为通过；其余非空输出即 undefined name 告警
+        out = (r.stdout or "").strip()
+        assert not out or "All checks passed" in out, f"undefined name:\n{r.stdout}"
         return
     pytest.skip("ruff/pyflakes not available")
 
@@ -56,10 +59,10 @@ def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, StateStore]:
     asyncio.run(store.init())
     # 预置最小可用数据：2 座位 + 1 账号，避免 /bindings 因空数据 302 干扰
     async def seed():
-        await store.add_target_seat("030", label="座位 030")
-        await store.add_target_seat("031", label="座位 031")
+        await store.add_target_seat("021", label="座位 030")
+        await store.add_target_seat("022", label="座位 031")
         from seatbot.models import Account
-        await store.upsert_account(Account(id="a1", phone="13800000000", password="x", slots=[], seat_slots={"030": {"mon": ["09:00-11:00"]}}))
+        await store.upsert_account(Account(id="a1", phone="13800000000", password="x", slots=[], seat_slots={"021": {"mon": ["09:00-11:00"]}}))
     asyncio.run(seed())
     sched = Scheduler(cfg, store)
     app = make_app(cfg, store, sched)
@@ -105,8 +108,8 @@ def test_all_post_empty_not_500(tmp_path, monkeypatch):
     try:
         # 空提交：全不勾 = 清空（双列），不得 500
         cases = [
-            ("/bindings/desired", {"seat_num": "030", "mode": "uniform"}),
-            ("/bindings/desired", {"seat_num": "030", "mode": "weekly"}),
+            ("/bindings/desired", {"seat_num": "021", "mode": "uniform"}),
+            ("/bindings/desired", {"seat_num": "021", "mode": "weekly"}),
             ("/bindings/desired", {"seat_num": "__ALL__", "mode": "uniform"}),
             ("/bindings/desired", {"seat_num": "__ALL__", "mode": "weekly"}),
             ("/bindings/auto", {}),

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint (undefined names / syntax)
+        run: ruff check seatbot/ --select F,E9
+
+      - name: Smoke config (empty accounts, isolated DB)
+        run: |
+          cat > config.test.yaml <<'YAML'
+          library:
+            room_id: 11692
+            room_name: "smoke"
+            open_time: "08:00"
+            close_time: "22:00"
+            max_reserve_hours: 2.0
+          runtime:
+            db_path: ".tmp_pytest/ci-smoke.db"
+            web_host: "127.0.0.1"
+            web_port: 8765
+            web_token: "ci-token"
+          target_seats: []
+          accounts: []
+          user_reserved: []
+          YAML
+
+      - name: Test
+        env:
+          PYTEST_ADDOPTS: "-o faulthandler_timeout=120"
+        run: pytest tests/ -q

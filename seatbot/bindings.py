@@ -125,12 +125,12 @@ def used_hours(seat_slots: dict | None, wd: str) -> float:
 
 
 def account_margins(
-    accounts: list[Account], *, daily_limit_hours: float
+    accounts: list[Account], *, daily_limit_hours: float, max_seg_hours: float = 2.0
 ) -> list[dict]:
     """每账号逐天余量摘要：days[wd] = {used_hours, remaining_hours, full_slots_left}。
 
     另提供聚合字段 used_hours / remaining_hours / full_slots_left（分别为周内峰值已用、
-    最紧剩余、可容纳完整 2h 段最小值），供紧凑药丸卡片直接展示；days 保留逐天明细供
+    最紧剩余、可容纳完整单段最小值），供紧凑药丸卡片直接展示；days 保留逐天明细供
     悬停提示展开。
     """
     out: list[dict] = []
@@ -139,15 +139,17 @@ def account_margins(
         for wd in WEEKDAY_KEYS:
             used = used_hours(a.seat_slots, wd)
             remaining = max(0.0, daily_limit_hours - used)
+            seg = max_seg_hours if max_seg_hours > 1e-9 else 2.0
             days[wd] = {
                 "used_hours": used,
                 "remaining_hours": remaining,
-                "full_slots_left": int(remaining // 2),
+                "full_slots_left": int(remaining // seg),
             }
         # 聚合：周内最紧约束（便于药丸卡单行展示）
+        seg = max_seg_hours if max_seg_hours > 1e-9 else 2.0
         agg_used = max((d["used_hours"] for d in days.values()), default=0.0)
         agg_remaining = min((d["remaining_hours"] for d in days.values()), default=daily_limit_hours)
-        agg_slots = min((d["full_slots_left"] for d in days.values()), default=int(daily_limit_hours // 2))
+        agg_slots = min((d["full_slots_left"] for d in days.values()), default=int(daily_limit_hours // seg))
         out.append({
             "id": a.id,
             "days": days,
@@ -374,7 +376,7 @@ def plan_matrix(
     {aid: {seat: {wd: [want]}}}, unfillable 列表)。
 
     mode='safe'（摊薄）：任务按时长降序（LPT）贪心分配给"当天已用小时数最少"
-    的账号，贪心不可行时回溯；目标 min-max 单账号单日小时数。
+    的账号，无回溯——某天放不下的输出 unfillable；目标 min-max 单账号单日小时数。
     mode='minimal'（打包）：逐天迭代加深 DFS 求"动用账号数最少"解；
     池成员按 account_order 截取（默认 id 稳定序），单池无法覆盖某天时扩大池。
     池超过账号总数 → 输出 unfillable（文案含"需至少 N 个账号"）。

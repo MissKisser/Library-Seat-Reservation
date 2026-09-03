@@ -19,11 +19,12 @@ from fastapi.testclient import TestClient
 from seatbot.config import Config, LibraryConfig, RuntimeConfig
 from seatbot.models import Task, TaskStatus
 from seatbot.scheduler import Scheduler
-from seatbot.store import StateStore, backup_database
+from seatbot.store import backup_database
 from seatbot.utils.timeutil import at_cst, today_cst
 from seatbot.web.app import (
     _host_without_port,
     auth_decision,
+    csrf_decision,
     make_app,
 )
 
@@ -63,6 +64,39 @@ def test_auth_decision_token_mode():
         presented="wrong", allowed_hosts=ALLOWED,
     )
     assert not ok and code == 401
+
+
+def test_csrf_decision_writes_only():
+    # 非 write 方法一律放行
+    ok, _ = csrf_decision(method="GET", origin="https://evil.com",
+                          referer=None, host_header="127.0.0.1:8080")
+    assert ok
+
+
+def test_csrf_cross_origin_rejected():
+    # 跨站网页向本机面板提交写请求：Origin 与 Host 不同源 → 拒绝（BR-001）
+    ok, reason = csrf_decision(method="POST", origin="https://evil.com",
+                               referer=None, host_header="127.0.0.1:8080")
+    assert not ok and "cross-origin" in reason
+    # Referer 回退同样参与判定
+    ok, _ = csrf_decision(method="POST", origin=None,
+                          referer="https://evil.com/attack", host_header="127.0.0.1:8080")
+    assert not ok
+
+
+def test_csrf_same_origin_and_missing_origin_pass():
+    # 同源 POST 放行
+    ok, _ = csrf_decision(method="POST", origin="http://127.0.0.1:8080",
+                          referer=None, host_header="127.0.0.1:8080")
+    assert ok
+    # 无 Origin/Referer（curl / 服务间调用）交由认证层把守，放行
+    ok, _ = csrf_decision(method="POST", origin=None, referer=None,
+                          host_header="127.0.0.1:8080")
+    assert ok
+    # 同 IP 不同端口视为不同源
+    ok, _ = csrf_decision(method="POST", origin="http://127.0.0.1:9999",
+                          referer=None, host_header="127.0.0.1:8080")
+    assert not ok
 
 
 def test_auth_decision_loopback_mode():
@@ -158,10 +192,12 @@ def test_backup_missing_db_returns_none(tmp_path):
 # ---------- P0-3 启动对账与补跑 ----------
 
 async def _add_task(store, **kw) -> int:
+    # 默认键逐次错开：活跃态 (账号,日,座位,开始) 有库级唯一索引，fixture 同键多行会 IntegrityError
+    seq = _add_task.seq = getattr(_add_task, "seq", 0) + 1
     defaults = dict(
         id=None,
-        account_id="xiongjt", seat_num="104", day=today_cst(),
-        start_time=time(9, 0), end_time=time(11, 0),
+        account_id="zhangsan", seat_num="001", day=today_cst(),
+        start_time=time(9, 0 + (seq - 1) * 2), end_time=time(11, 0 + (seq - 1) * 2),
         status=TaskStatus.ACTIVE,
     )
     defaults.update(kw)
@@ -209,7 +245,7 @@ async def test_catchup_submits_pending_after_window(store, monkeypatch):
     tomorrow = today_cst() + timedelta(days=1)
     t1 = await _add_task(store, day=tomorrow, status=TaskStatus.PENDING)
     t2 = await _add_task(store, day=tomorrow, status=TaskStatus.FAILED)
-    t3 = await _add_task(store, day=tomorrow, status=TaskStatus.ACTIVE, reserve_id=9)
+    await _add_task(store, day=tomorrow, status=TaskStatus.ACTIVE, reserve_id=9)
     monkeypatch.setattr("seatbot.scheduler.now_cst", lambda: at_cst(today_cst(), time(14, 30)))
     await sched.startup_afternoon_catchup()
     assert called == [t1]           # 只补 PENDING
@@ -267,7 +303,7 @@ async def test_misfire_grace_configured(store):
 async def test_fail_streak_notify_at_3_and_every_10(store):
     sched = Scheduler(make_cfg(), store)
     t = Task(
-        id=77, account_id="xiongjt", seat_num="104", day=today_cst(),
+        id=77, account_id="zhangsan", seat_num="104", day=today_cst(),
         start_time=time(9, 0), end_time=time(11, 0), status=TaskStatus.ACTIVE,
     )
     for _ in range(2):
@@ -289,10 +325,10 @@ async def test_fail_streak_notify_at_3_and_every_10(store):
 
 async def test_sign_missing_notifies_and_fails(store, nosleep):
     sched = Scheduler(make_cfg(), store)
-    acc = await store.get_account("xiongjt")
+    acc = await store.get_account("zhangsan")
     tid = await _add_task(store, status=TaskStatus.ACTIVE, reserve_id=123)
     t = await store.get_task(tid)
-    sched._clients["xiongjt"] = DummyClient([{"success": False, "msg": "预约不存在"}])
+    sched._clients["zhangsan"] = DummyClient([{"success": False, "msg": "预约不存在"}])
     await sched._run_sign(acc, t)
     after = await store.get_task(tid)
     assert after.status == TaskStatus.FAILED

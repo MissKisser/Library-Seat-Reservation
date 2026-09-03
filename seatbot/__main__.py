@@ -14,44 +14,48 @@ from seatbot.store import StateStore
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="seatbot", description="超星图书馆座位自动化 v2")
     p.add_argument("--config", "-c", default="./config.yaml")
+    # 子命令同款 --config/-c：`run -c X` 与 `-c X run` 两种写法都可用。
+    # default=SUPPRESS 保证子命令未携带时不覆盖主解析器已解析的值。
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", "-c", default=argparse.SUPPRESS)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("run", help="启动 Web + 调度器")
-    sub.add_parser("init-db", help="初始化 SQLite + 同步 target_seats")
-    once = sub.add_parser("once", help="单次执行 (调试: bootstrap + tick 该账号)")
+    sub.add_parser("run", parents=[common], help="启动 Web + 调度器")
+    sub.add_parser("init-db", parents=[common], help="初始化 SQLite + 同步 target_seats")
+    once = sub.add_parser("once", parents=[common], help="单次执行 (调试: bootstrap + tick 该账号)")
     once.add_argument("--account", required=True)
 
-    login = sub.add_parser("login", help="单独登录测试")
+    login = sub.add_parser("login", parents=[common], help="单独登录测试")
     login.add_argument("--account", required=True)
 
-    sub.add_parser("status", help="查看状态")
+    sub.add_parser("status", parents=[common], help="查看状态")
 
     # ★ v2: 目标座位管理
-    tgt = sub.add_parser("targets", help="目标座位增删查")
+    tgt = sub.add_parser("targets", parents=[common], help="目标座位增删查")
     tgt_sub = tgt.add_subparsers(dest="targets_cmd", required=True)
-    tgt_sub.add_parser("list", help="列出所有 enabled 目标座位")
-    tgt_add = tgt_sub.add_parser("add", help="新增一个目标座位")
+    tgt_sub.add_parser("list", parents=[common], help="列出所有 enabled 目标座位")
+    tgt_add = tgt_sub.add_parser("add", parents=[common], help="新增一个目标座位")
     tgt_add.add_argument("seat_num")
     tgt_add.add_argument("--label", default="")
-    tgt_del = tgt_sub.add_parser("del", help="删除一个目标座位")
+    tgt_del = tgt_sub.add_parser("del", parents=[common], help="删除一个目标座位")
     tgt_del.add_argument("seat_num")
 
     # ★ v2+: 用户硬预约段 (scheduler 跳过)
-    ur = sub.add_parser("user-reserved", help="用户硬预约段增删查")
+    ur = sub.add_parser("user-reserved", parents=[common], help="用户硬预约段增删查")
     ur_sub = ur.add_subparsers(dest="user_reserved_cmd", required=True)
-    ur_sub.add_parser("list", help="列出所有 user_reserved 段")
-    ur_add = ur_sub.add_parser("add", help="登记一段用户硬预约")
+    ur_sub.add_parser("list", parents=[common], help="列出所有 user_reserved 段")
+    ur_add = ur_sub.add_parser("add", parents=[common], help="登记一段用户硬预约")
     ur_add.add_argument("--account", required=True)
     ur_add.add_argument("--seat", required=True)
     ur_add.add_argument("--day", required=True, help="YYYY-MM-DD")
     ur_add.add_argument("--start", required=True, help="HH:MM")
     ur_add.add_argument("--end", required=True, help="HH:MM")
     ur_add.add_argument("--note", default="")
-    ur_del = ur_sub.add_parser("del", help="删除一段 (按 ID)")
+    ur_del = ur_sub.add_parser("del", parents=[common], help="删除一段 (按 ID)")
     ur_del.add_argument("id", type=int)
 
     # ★ 手动触发单次预约（可控性/调试/补救场景）
-    reserve = sub.add_parser("reserve", help="手动触发单次预约")
+    reserve = sub.add_parser("reserve", parents=[common], help="手动触发单次预约")
     reserve.add_argument("--account", required=True, help="账号 ID")
     reserve.add_argument("--seat", required=True, help="座位号 (如 084)")
     reserve.add_argument("--date", dest="day", default=None, help="YYYY-MM-DD，默认明天")
@@ -78,9 +82,30 @@ async def _cmd_run(args) -> int:
         print(f"[WARN] db backup failed (继续启动): {e}")
     store = _make_store(cfg)
     await store.init()
+    try:
+        purged = await store.purge_old_logs()
+        if purged:
+            print(f"purged {purged} log/action row(s) older than 30d")
+    except Exception as e:
+        print(f"[WARN] purge old logs failed: {e}")
     # 按配置文件初始化目标座位（已在页面设置的保持不变）
     for s in cfg.target_seats:
         await store.seed_target_seat(s.seat_num, label=s.label)
+    # 种子矩阵过硬约束校验：违例账号不携带矩阵入库（无绑定=不参与守护），
+    # 避免违反 2h/5h 限额的任务矩阵静默进入 14:00 提交链路
+    from seatbot.bindings import validate_matrix
+    for acc_cfg in cfg.accounts:
+        if not acc_cfg.seat_slots:
+            continue
+        try:
+            validate_matrix(
+                acc_cfg.seat_slots,
+                max_seg_hours=cfg.library.max_reserve_hours,
+                daily_limit_hours=cfg.library.daily_reserve_hours_limit,
+            )
+        except ValueError as exc:
+            print(f"[WARN] account {acc_cfg.id} seat_slots rejected: {exc} (seeded empty)")
+            acc_cfg.seat_slots = {}
     n = await store.sync_accounts(cfg.accounts)
     print(f"synced {n} account(s); {len(cfg.target_seats)} target seat(s) from config")
     sched = Scheduler(cfg, store)
@@ -168,22 +193,30 @@ async def _cmd_login(args) -> int:
     return 0
 
 
+async def _seed_user_reserved_from_config(store, cfg) -> None:
+    """把 config.user_reserved 幂等播种进库（按 (账号,座位,日,开始) 去重）。"""
+    from datetime import date as _date, time as _time
+    for u in cfg.user_reserved:
+        d = _date.fromisoformat(u.day)
+        s = _time(*map(int, u.start_time.split(":")))
+        e = _time(*map(int, u.end_time.split(":")))
+        existing = await store.list_user_reserved(seat_num=u.seat_num, day=d)
+        if any(r["account_id"] == u.account_id
+               and r["start_time"] == s.strftime("%H:%M")
+               for r in existing):
+            continue
+        await store.add_user_reserved(
+            account_id=u.account_id, seat_num=u.seat_num,
+            day=d, start_time=s, end_time=e, note=u.note,
+        )
+
+
 async def _cmd_status(args) -> int:
     cfg = load_config(args.config)
     store = _make_store(cfg)
     await store.init()
     try:
-        # seed user_reserved (idempotent)
-        from datetime import date as _date, time as _time
-        for u in cfg.user_reserved:
-            d = _date.fromisoformat(u.day)
-            s = _time(*map(int, u.start_time.split(":")))
-            e = _time(*map(int, u.end_time.split(":")))
-            existing = await store.list_user_reserved(seat_num=u.seat_num, day=d)
-            if not any(r["account_id"] == u.account_id
-                       and r["start_time"] == s.strftime("%H:%M")
-                       for r in existing):
-                await store.add_user_reserved(u.account_id, u.seat_num, d, s, e, u.note)
+        await _seed_user_reserved_from_config(store, cfg)
         seats = await store.list_target_seats()
         if seats:
             print("--- target seats ---")
@@ -267,7 +300,7 @@ async def _cmd_reserve(args) -> int:
             return 3
         sched = Scheduler(cfg, store)
         print(f"submitting: {acc.id} seat={seat_num} {day} {args.start}-{args.end}")
-        await sched._run_submit(acc, loaded)
+        await sched.run_submit(acc, loaded)
         await sched.shutdown()
         print("done")
         return 0
@@ -280,22 +313,8 @@ async def _cmd_user_reserved(args) -> int:
     store = _make_store(cfg)
     await store.init()
     try:
-        # 同时 seed config.yaml 里的 user_reserved (idempotent: 用 (account,seat,day,start) 去重)
+        await _seed_user_reserved_from_config(store, cfg)
         from datetime import date as _date, time as _time
-        for u in cfg.user_reserved:
-            d = _date.fromisoformat(u.day)
-            s = _time(*map(int, u.start_time.split(":")))
-            e = _time(*map(int, u.end_time.split(":")))
-            existing = await store.list_user_reserved(seat_num=u.seat_num, day=d)
-            if any(r["account_id"] == u.account_id and r["start_time"] == s.strftime("%H:%M")
-                   for r in existing):
-                continue
-            await store.add_user_reserved(
-                account_id=u.account_id,
-                seat_num=u.seat_num,
-                day=d, start_time=s, end_time=e,
-                note=u.note,
-            )
         if args.user_reserved_cmd == "list":
             rows = await store.list_user_reserved()
             for r in rows:

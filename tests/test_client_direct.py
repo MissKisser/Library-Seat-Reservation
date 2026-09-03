@@ -31,7 +31,7 @@ def _make_client(monkeypatch, html: str) -> ChaoxingClient:
 def _run(client: ChaoxingClient) -> dict:
     return asyncio.run(client.submit_direct(
         phone="13800000000", password="pw",
-        room_id=11692, seat_num="030",
+        room_id=11692, seat_num="021",
         day="2026-09-01", start_time="14:00", end_time="16:00",
     ))
 
@@ -55,7 +55,7 @@ def test_submit_direct_signs_full_field_set(monkeypatch):
         "day": "2026-09-01",
         "startTime": "14:00",
         "endTime": "16:00",
-        "seatNum": "030",
+        "seatNum": "021",
         "captcha": "",
         "type": "1",
         "verifyData": "1",
@@ -64,9 +64,9 @@ def test_submit_direct_signs_full_field_set(monkeypatch):
     concat = "".join(f"[{k}={fields[k]}]" for k in sorted(fields))
     expected = hashlib.md5((concat + f"[{SEED}]").encode("utf-8")).hexdigest()
     assert posted["enc"] == expected
-    assert posted["seatNum"] == "030" and posted["day"] == "2026-09-01"
+    assert posted["seatNum"] == "021" and posted["day"] == "2026-09-01"
     assert posted["_url"].endswith("/data/apps/seat/submit")
-    assert "seatNum=030" in posted["_referer"]
+    assert "seatNum=021" in posted["_referer"]
     assert result["success"] and result["reserve_id"] == 42
     assert result["channel"] == "direct"
 

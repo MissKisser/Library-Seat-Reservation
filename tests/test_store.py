@@ -207,11 +207,11 @@ def test_weekly_form_migration_normalizes_legacy_lists(tmp_path):
                 "INSERT INTO accounts (id, phone, password, slots_json, seat_slots_json,"
                 " bound_seats_json, status, created_at, updated_at)"
                 " VALUES ('old', '138', 'p', 'full', ?, '[]', 'active', 0, 0)",
-                (json.dumps({"030": ["09:00-11:00"]}),),
+                (json.dumps({"021": ["09:00-11:00"]}),),
             )
             await s.db.execute(
                 "INSERT INTO target_seats (seat_num, label, enabled, created_at,"
-                " updated_at, desired_slots_json) VALUES ('030', '', 1, 0, 0, ?)",
+                " updated_at, desired_slots_json) VALUES ('021', '', 1, 0, 0, ?)",
                 (json.dumps(["10:00-12:00"]),),
             )
             await s.db.commit()
@@ -221,8 +221,8 @@ def test_weekly_form_migration_normalizes_legacy_lists(tmp_path):
             await s2.init()   # 迁移发生点
             try:
                 acc = await s2.get_account("old")
-                assert acc.seat_slots["030"]["mon"] == ["09:00-11:00"]
-                assert acc.seat_slots["030"]["sun"] == ["09:00-11:00"]
+                assert acc.seat_slots["021"]["mon"] == ["09:00-11:00"]
+                assert acc.seat_slots["021"]["sun"] == ["09:00-11:00"]
                 seats = await s2.list_target_seats()
                 assert seats[0].desired_slots["tue"] == ["10:00-12:00"]
             finally:
@@ -235,21 +235,20 @@ def test_weekly_form_migration_normalizes_legacy_lists(tmp_path):
 
 
 def test_set_target_seat_desired_accepts_dict_and_none(tmp_path):
-    import json
 
     async def run():
         s = StateStore(str(tmp_path / "weekly_desired.db"))
         await s.init()
         try:
-            await s.add_target_seat("030")
+            await s.add_target_seat("021")
             await s.set_target_seat_desired(
-                "030", {"mon": ["09:00-11:00"], "sun": []})
+                "021", {"mon": ["09:00-11:00"], "sun": []})
             seats = await s.list_target_seats()
             # dict 形态自动识别为按天（weekly），存于 weekly 列
             assert seats[0].desired_slots_weekly["mon"] == ["09:00-11:00"]
             assert seats[0].desired_slots_weekly["tue"] == []
             assert seats[0].desired_slots is None
-            await s.set_target_seat_desired("030", None)
+            await s.set_target_seat_desired("021", None)
             seats = await s.list_target_seats()
             assert seats[0].desired_slots is None
             assert seats[0].desired_slots_weekly is None
@@ -257,3 +256,24 @@ def test_set_target_seat_desired_accepts_dict_and_none(tmp_path):
             await s.close()
 
     asyncio.run(run())
+
+
+async def test_active_task_identity_unique_index(tmp_path):
+    """库级 E4 防线：活跃态同 (账号,日,座位,开始) 第二行被拒；终态行不受限。"""
+    s = StateStore(str(tmp_path / "uq.db"))
+    await s.init()
+    try:
+        base = dict(account_id="u1", day=date.today(), seat_num="001",
+                    start_time=time(9, 0), end_time=time(11, 0))
+        t1 = Task(id=None, status=TaskStatus.ACTIVE, **base)
+        t1.id = await s.add_task(t1)
+        assert t1.id
+        dup = Task(id=None, status=TaskStatus.PENDING, **base)
+        with pytest.raises(Exception):
+            await s.add_task(dup)
+        # 终态行不受唯一索引约束（complete/failed 历史可重开同键任务）
+        done = Task(id=None, status=TaskStatus.COMPLETE, **base)
+        done.id = await s.add_task(done)
+        assert done.id
+    finally:
+        await s.close()

@@ -57,7 +57,7 @@ def test_sweep_flags_then_restores_missing_reservation(tmp_path, monkeypatch):
         await store.init()
         await store.upsert_account(Account(
             id="张三", phone="1", password="p", slots=[]))
-        await store.add_target_seat("030")
+        await store.add_target_seat("021")
         tid = await store.add_task(Task(
             id=None, account_id="张三",
             day=today_cst() + timedelta(days=1),
@@ -97,7 +97,7 @@ def test_sweep_heals_stale_session_and_retries(tmp_path, monkeypatch):
         await store.init()
         await store.upsert_account(Account(
             id="张三", phone="1", password="p", slots=[]))
-        await store.add_target_seat("030")
+        await store.add_target_seat("021")
         tid = await store.add_task(Task(
             id=None, account_id="张三",
             day=today_cst() + timedelta(days=1),
@@ -205,7 +205,7 @@ def test_reconcile_results_roundtrip_and_cap(tmp_path):
         await s.init()
         for i in range(5):
             await s.save_reconcile_result(
-                date(2026, 9, 1), "030", i % 2 == 0, f'{{"n":{i}}}')
+                date(2026, 9, 1), "021", i % 2 == 0, f'{{"n":{i}}}')
         rows = await s.list_reconcile_results(limit=3)
         assert len(rows) == 3
         assert rows[0]["detail"] == '{"n":4}'      # 新→旧
@@ -247,11 +247,11 @@ def test_dashboard_fresh_bypass_and_throttle(monkeypatch):
 
     import seatbot.web.routes as R
 
-    key = ("2026-09-01", ("030",))
+    key = ("2026-09-01", ("021",))
     R._OCC_CACHE.clear()
     R._OCC_CACHE[key] = (
         _t.monotonic(), True,
-        ([("030", _dtime(14, 0), _dtime(16, 0))], None),
+        ([("021", _dtime(14, 0), _dtime(16, 0))], None),
     )
     R._LAST_FRESH_AT = 0.0
     calls: list = []
@@ -265,13 +265,13 @@ def test_dashboard_fresh_bypass_and_throttle(monkeypatch):
     async def main():
         # fresh 缺省: 90s TTL 命中, 不发请求
         await R._fetch_others_occupied_cached(
-            None, None, _date(2026, 9, 1), ["030"])
+            None, None, _date(2026, 9, 1), ["021"])
         # fresh=True: 绕过缓存强制拉取并记录节流时间戳
         await R._fetch_others_occupied_cached(
-            None, None, _date(2026, 9, 1), ["030"], fresh=True)
+            None, None, _date(2026, 9, 1), ["021"], fresh=True)
         # 30s 节流: 刚强制过, 再点也回落缓存
         await R._fetch_others_occupied_cached(
-            None, None, _date(2026, 9, 1), ["030"], fresh=True)
+            None, None, _date(2026, 9, 1), ["021"], fresh=True)
         return calls
 
     assert asyncio.run(main()) == [_date(2026, 9, 1)]

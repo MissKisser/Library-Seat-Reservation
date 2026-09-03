@@ -3,7 +3,6 @@ from datetime import date, time
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from fastapi.templating import Jinja2Templates
 
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.web.app import new_templates
