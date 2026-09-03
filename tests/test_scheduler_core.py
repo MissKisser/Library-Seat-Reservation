@@ -288,7 +288,7 @@ async def test_tick_handles_today_despite_tomorrow_active(store, monkeypatch):
 
 # ---------- 当日补约（14:00 后当日 PENDING 低频自动补提交） ----------
 
-async def test_today_backfill_submits_only_pending_before_end(store, monkeypatch, nosleep):
+async def test_today_backfill_submits_only_pending_not_started(store, monkeypatch, nosleep):
     sched = Scheduler(make_cfg(), store)
     now = now_cst().replace(hour=15, minute=0, second=0, microsecond=0)
     monkeypatch.setattr("seatbot.scheduler.now_cst", lambda: now)
@@ -306,7 +306,7 @@ async def test_today_backfill_submits_only_pending_before_end(store, monkeypatch
               start_time=time(17, 0), end_time=time(19, 0),
               seat_num="104", status=TaskStatus.PENDING)
     ok.id = await store.add_task(ok)
-    # 不补：今天 PENDING 但时段已结束
+    # 不补：今天 PENDING 但时段已开始（进行中/已结束的段格子不可点，补了必被拒）
     past = Task(id=None, account_id="zhangsan", day=today,
                 start_time=time(9, 0), end_time=time(10, 0),
                 seat_num="105", status=TaskStatus.PENDING)

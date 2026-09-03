@@ -193,5 +193,7 @@ async def test_occupancy_check_empty_keeps_active_and_logs_error(tmp_path):
     after = await store.get_task(t.id)
     # 预约号是服务端发的: 不标 FAILED (避免留下无人管理的真预约), 留 ACTIVE 人工复核
     assert after.status == TaskStatus.ACTIVE
+    # 核验未反映时等待重查一次 (服务端落库延迟), 两次均未覆盖才告警
+    assert client.calls.count("getused") == 2
     logs = await store.list_logs(limit=20)
-    assert any("占用核验为空" in l.message for l in logs)
+    assert any("占用核验未反映" in l.message for l in logs)
