@@ -284,3 +284,61 @@ async def test_tick_handles_today_despite_tomorrow_active(store, monkeypatch):
     n_calls = len(dummy.calls)
     await sched.tick_account("zhangsan")
     assert len(dummy.calls) == n_calls
+
+
+# ---------- 当日补约（14:00 后当日 PENDING 低频自动补提交） ----------
+
+async def test_today_backfill_submits_only_pending_before_end(store, monkeypatch, nosleep):
+    sched = Scheduler(make_cfg(), store)
+    now = now_cst().replace(hour=15, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr("seatbot.scheduler.now_cst", lambda: now)
+    monkeypatch.setattr("seatbot.scheduler.at_cst", at_cst)
+    today = today_cst()
+    calls: list[int] = []
+
+    async def fake_submit(self, acc, t):
+        calls.append(t.id)
+        await self.store.update_task_status(t.id, TaskStatus.ACTIVE, reserve_id=100 + t.id)
+
+    monkeypatch.setattr(Scheduler, "_run_submit", fake_submit)
+    # 可补：今天 PENDING 且 19:00 才结束
+    ok = Task(id=None, account_id="zhangsan", day=today,
+              start_time=time(17, 0), end_time=time(19, 0),
+              seat_num="104", status=TaskStatus.PENDING)
+    ok.id = await store.add_task(ok)
+    # 不补：今天 PENDING 但时段已结束
+    past = Task(id=None, account_id="zhangsan", day=today,
+                start_time=time(9, 0), end_time=time(10, 0),
+                seat_num="105", status=TaskStatus.PENDING)
+    past.id = await store.add_task(past)
+    # 不补：FAILED（自动重试会追加违约记录，须人工确认）
+    failed = Task(id=None, account_id="zhangsan", day=today,
+                  start_time=time(17, 0), end_time=time(19, 0),
+                  seat_num="104", status=TaskStatus.FAILED)
+    failed.id = await store.add_task(failed)
+    # 不补：明天的 PENDING（归 14:00 批量管）
+    tmr = Task(id=None, account_id="zhangsan", day=today + timedelta(days=1),
+               start_time=time(17, 0), end_time=time(19, 0),
+               seat_num="104", status=TaskStatus.PENDING)
+    tmr.id = await store.add_task(tmr)
+
+    await sched._today_backfill_locked(now)
+    assert calls == [ok.id]
+
+
+async def test_today_backfill_silent_outside_window(store, monkeypatch, nosleep):
+    sched = Scheduler(make_cfg(), store)
+    calls: list[int] = []
+
+    async def fake_submit(self, acc, t):
+        calls.append(t.id)
+
+    monkeypatch.setattr(Scheduler, "_run_submit", fake_submit)
+    Task(id=None, account_id="zhangsan", day=today_cst(),
+         start_time=time(17, 0), end_time=time(19, 0),
+         seat_num="104", status=TaskStatus.PENDING)
+    # 窗口未开（13:00）→ 不提交也不建账
+    monkeypatch.setattr("seatbot.scheduler.now_cst",
+                        lambda: now_cst().replace(hour=13, minute=0, second=0, microsecond=0))
+    await sched.today_backfill_tick()
+    assert calls == []

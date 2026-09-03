@@ -61,6 +61,10 @@ class Scheduler:
         self._reconcile_last_at: datetime | None = None
         self._reconcile_running: bool = False
         self._reconcile_flagged: set[int] = set()  # 已告警未恢复的任务 id
+        # 当日补约节拍器状态：间隔秒与上次执行时刻（间隔热读，重注册免）
+        self.today_backfill_interval_seconds: int = 900
+        self._today_backfill_last_at: datetime | None = None
+        self._today_backfill_running: bool = False
         # 14:00 批量预约两个入口 (cron misfire 补跑 / 启动补跑) 共用的互斥闸，
         # 防止同批 PENDING 任务被两条路径并发提交成双份真实预约
         self._bootstrap_gate = asyncio.Lock()
@@ -883,6 +887,74 @@ class Scheduler:
                 return True
         return False
 
+    # ---------- 当日补约（14:00 后改矩阵/提交失败的当日 PENDING 自动补提交） ----------
+
+    async def today_backfill_tick(self) -> None:
+        """每分钟醒来判断是否到期（默认 15 分钟，秒级可配），到期跑一轮当日补提交。
+
+        范围收窄在"今天"：明天的 PENDING 归 _afternoon_bootstrap (14:00) 管，
+        本节拍只兜底 14:00 后新增/改绑产生的当日任务与当日提交失败后的重试候选。
+        经 _bootstrap_gate 与 14:00 批量/启动补跑互斥；不碰 FAILED（自动重试
+        已失败提交会追加违约记录，须人工确认——与启动补跑同一原则）。
+        仅在预约窗口（14:00 起）与馆舍开放时段内执行，闭馆静默。
+        """
+        if self._today_backfill_running:
+            return
+        now = now_cst()
+        # 预约窗口 14:00 起；闭馆后无意义
+        if now.hour < 14:
+            return
+        now_hm = now.strftime("%H:%M")
+        if not (self.cfg.library.open_time <= now_hm < self.cfg.library.close_time):
+            return
+        last = self._today_backfill_last_at
+        if last is not None and now - last < timedelta(seconds=self.today_backfill_interval_seconds):
+            return
+        if not await self._has_backfillable_today(now):
+            return
+        self._today_backfill_running = True
+        self._today_backfill_last_at = now
+        try:
+            async with self._bootstrap_gate:
+                await self._today_backfill_locked(now)
+        finally:
+            self._today_backfill_running = False
+
+    async def _has_backfillable_today(self, now: datetime) -> bool:
+        """今天存在可补提交的 PENDING 任务（时段尚未结束）。"""
+        today = today_cst()
+        for t in await self.store.list_tasks(day=today):
+            if t.status != TaskStatus.PENDING:
+                continue
+            if at_cst(t.day, t.end_time) > now:
+                return True
+        return False
+
+    async def _today_backfill_locked(self, now: datetime) -> None:
+        """补提交当日仍处 PENDING 且时段未结束的任务（调用方已持 _bootstrap_gate）。"""
+        today = today_cst()
+        accounts = {a.id: a for a in await self.store.list_accounts()}
+        n_ok = n_skip = 0
+        for t in await self.store.list_tasks(day=today):
+            if t.status != TaskStatus.PENDING or at_cst(t.day, t.end_time) <= now:
+                continue
+            acc = accounts.get(t.account_id)
+            if not acc:
+                n_skip += 1
+                continue
+            try:
+                await self._run_submit(acc, t)
+                n_ok += 1
+            except Exception as e:
+                await self._error(
+                    f"当日补约: 提交抛出异常 {type(e).__name__}: {e} 任务={t.id} 座位={t.seat_num}",
+                    acc.id,
+                )
+                n_skip += 1
+            await asyncio.sleep(2)
+        if n_ok:
+            await self._info(f"当日补约: 补提交 {n_ok} 条当日任务", "scheduler")
+
     async def reconcile_sweep(self, write: bool = True) -> dict:
         """一轮实况核对：今天+明天非终态任务 vs 服务端真实占用。
 
@@ -1101,6 +1173,13 @@ class Scheduler:
             self.reconcile_tick,
             CronTrigger(second=45, timezone="Asia/Shanghai"),
             id="reconcile_tick", replace_existing=True,
+            misfire_grace_time=30, coalesce=True,
+        )
+        # 当日补约节拍器：每分钟醒来判断是否到期（默认 15min），到期补提交当日 PENDING
+        self.scheduler.add_job(
+            self.today_backfill_tick,
+            CronTrigger(second=15, timezone="Asia/Shanghai"),
+            id="today_backfill_tick", replace_existing=True,
             misfire_grace_time=30, coalesce=True,
         )
         self.scheduler.start()
