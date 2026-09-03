@@ -34,6 +34,9 @@ class Account:
     # per-seat slots；None = 回退笛卡尔积模式；
     # 值为 dict[星期键, list[str] | "full"]（启动迁移后统一此形态）
     seat_slots: dict[str, dict[str, list[str] | str]] | None = None
+    # 生命周期：active=守护中 / inactive=禁用中（可逆，在途任务继续履约） /
+    # disabled=已删除墓碑（不可逆，全视图不可见）
+    status: str = "active"
 
 
 # ---------- task lifecycle ----------

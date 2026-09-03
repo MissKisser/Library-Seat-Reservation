@@ -500,7 +500,7 @@ class StateStore:
 
     async def get_account(self, acc_id: str) -> Account | None:
         cur = await self.db.execute(
-            "SELECT id, phone, password, slots_json, seat_slots_json, bound_seats_json "
+            "SELECT id, phone, password, slots_json, seat_slots_json, bound_seats_json, status "
             "FROM accounts WHERE id=? AND status!='disabled'",
             (acc_id,),
         )
@@ -527,17 +527,38 @@ class StateStore:
             id=row[0], phone=row[1], password=row[2],
             slots=slots, bound_seats=bound_list,
             seat_slots=seat_slots,
+            status=row[6] or "active",
         )
 
-    async def list_accounts(self) -> list[Account]:
-        cur = await self.db.execute("SELECT id FROM accounts ORDER BY id")
+    async def list_accounts(self, *, include_inactive: bool = False) -> list[Account]:
+        """列出账号，双口径：默认仅守护中(active)；include_inactive=True 追加禁用中(inactive)。
+
+        disabled 为已删除墓碑，任何视图不可见。调度/分配调用点用默认口径即可
+        排除禁用账号；账号管理页用 include_inactive=True。
+        """
+        cur = await self.db.execute(
+            "SELECT id, status FROM accounts WHERE status!='disabled' ORDER BY id"
+        )
         rows = await cur.fetchall()
         out: list[Account] = []
         for r in rows:
+            if not include_inactive and r[1] != "active":
+                continue
             a = await self.get_account(r[0])
             if a:
                 out.append(a)
         return out
+
+    async def set_account_status(self, acc_id: str, status: str) -> None:
+        """设置账号生命周期状态（'active' | 'inactive' | 'disabled'），联动版本探针。"""
+        if status not in ("active", "inactive", "disabled"):
+            raise ValueError(f"invalid account status: {status!r}")
+        self._bump()
+        await self.db.execute(
+            "UPDATE accounts SET status=?, updated_at=? WHERE id=?",
+            (status, int(_time.time() * 1000), acc_id),
+        )
+        await self.db.commit()
 
     async def sync_accounts(self, accounts) -> int:
         """启动时同步账号，已在页面管理的账号以页面为准。

@@ -342,3 +342,25 @@ async def test_today_backfill_silent_outside_window(store, monkeypatch, nosleep)
                         lambda: now_cst().replace(hour=13, minute=0, second=0, microsecond=0))
     await sched.today_backfill_tick()
     assert calls == []
+
+
+async def test_tick_drains_inactive_account(store, monkeypatch):
+    """禁用账号排干：无在途任务→tick 零动作；有进行中 ACTIVE→照常签到。"""
+    sched = Scheduler(make_cfg(), store)
+    await store.set_account_status("zhangsan", "inactive")
+    dummy_idle = DummyClient([])
+    monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy_idle)
+    await sched.tick_account("zhangsan")
+    assert dummy_idle.calls == []
+
+    now = now_cst()
+    t = Task(id=None, account_id="zhangsan", day=today_cst(),
+             start_time=(now - timedelta(minutes=10)).time(),
+             end_time=(now + timedelta(minutes=30)).time(),
+             seat_num="104", status=TaskStatus.ACTIVE, reserve_id=21)
+    t.id = await store.add_task(t)
+    dummy = DummyClient([{"success": True}])
+    monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
+    await sched.tick_account("zhangsan")
+    assert dummy.calls == [("sign", 21)]
+    assert (await store.get_task(t.id)).status == TaskStatus.SIGNED

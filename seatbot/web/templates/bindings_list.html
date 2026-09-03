@@ -389,6 +389,10 @@
    </div>
 
   {# 按策略重排弹层：先预览 diff，确认后调用 /apply #}
+  {% if request.query_params.get('replan_hint') == '1' %}
+  <script>window.addEventListener('DOMContentLoaded', () =>
+    window.dispatchEvent(new CustomEvent('replan-open')));</script>
+  {% endif %}
   <div id="replan-modal" x-data="replanModal()" @replan-open.window="fetchPreview()">
     <div class="modal-backdrop" x-show="open" x-cloak style="display:none" @keydown.escape.window="cancel()">
       <div class="modal max-h-[85vh]" @click.outside="cancel()" style="max-width:560px">

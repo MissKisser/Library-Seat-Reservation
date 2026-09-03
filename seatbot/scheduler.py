@@ -272,6 +272,15 @@ class Scheduler:
             return
         now = now_cst()
         today = today_cst()
+        # 排干守卫: 禁用中账号仅在有在途任务时继续服务签到/签退, 排干后空转。
+        # 禁用账号的 tick job 不被 sync_jobs 摘除 (见 sync_jobs), 靠此处守卫零动作。
+        if acc_cfg.status == "inactive":
+            todays = await self.store.list_tasks(account_id=acc_id, day=today)
+            if not any(
+                t.status in (TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.LEAVING)
+                for t in todays
+            ):
+                return
         has_live_seat = False
         for t in await self.store.list_tasks(account_id=acc_id, day=today):
             if t.status not in (TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.LEAVING):
@@ -1134,7 +1143,8 @@ class Scheduler:
                 f"实况核对: 恢复一致 任务={t.id} {t.seat_num} {t.day}", acc.id)
 
     async def sync_jobs(self) -> None:
-        accounts = await self.store.list_accounts()
+        # 含禁用中账号: 其 tick job 不摘除, 排干守卫 (tick_account) 保证无在途任务时零动作
+        accounts = await self.store.list_accounts(include_inactive=True)
         wanted_ids = {a.id for a in accounts}
         existing_ids = {
             j.id.removeprefix("tick_")
@@ -1203,9 +1213,15 @@ class Scheduler:
         不回退会永久悬挂; LEAVING 回退 ACTIVE 后由 tick 重走签退。
         """
         n_submit = n_leave = 0
-        for acc in await self.store.list_accounts():
+        # 含禁用中账号: 其 PENDING 已无人提交, 启动时收口为 FAILED,
+        # 封堵"禁用瞬间恰有 SUBMITTING、对账回退成 PENDING 后悬空"的缝隙
+        for acc in await self.store.list_accounts(include_inactive=True):
             for t in await self.store.list_tasks(account_id=acc.id):
-                if t.status == TaskStatus.SUBMITTING:
+                if acc.status == "inactive" and t.status == TaskStatus.PENDING:
+                    await self.store.update_task_status(
+                        t.id, TaskStatus.FAILED, last_error="账号已禁用，任务作废",
+                    )
+                elif t.status == TaskStatus.SUBMITTING:
                     await self.store.update_task_status(
                         t.id, TaskStatus.PENDING,
                         last_error="启动对账: 从『提交中』回退, 待补跑",
