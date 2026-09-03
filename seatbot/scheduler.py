@@ -644,26 +644,33 @@ class Scheduler:
         # ★ 事后核验 (仅跨天): 不信提交回执, 用服务端占用状态复核。
         # 核验不一致时保留 ACTIVE (预约号是服务端发的, 大概率真实存在,
         # 标 FAILED 反而会留下无人管理的真预约), 只打 ERROR 进人工视野。
+        # 提交后服务端占用查询存在落库延迟 (实测 14:00 高峰 3/12 撞上),
+        # 首查未覆盖时等待后重查一次再定论。
         if t.day > today_cst():
-            try:
-                used = await client.get_used_times(
-                    self.cfg.library.room_id, t.seat_num, t.day.isoformat(),
-                )
-                s, e = t.start_time.strftime("%H:%M"), t.end_time.strftime("%H:%M")
-                covered = any(us < e and ue > s for us, ue in used)
-                if covered:
+            s, e = t.start_time.strftime("%H:%M"), t.end_time.strftime("%H:%M")
+            for attempt in (1, 2):
+                try:
+                    used = await client.get_used_times(
+                        self.cfg.library.room_id, t.seat_num, t.day.isoformat(),
+                    )
+                except Exception as ex:
+                    await self._warn(f"占用核验异常: {ex}", acc.id)
+                    break
+                if any(us < e and ue > s for us, ue in used):
                     await self._info(
                         f"占用核验一致: {t.day} 座位={t.seat_num} {s}-{e} 预约号#{reserve_id}",
                         acc.id,
                     )
+                    break
+                if attempt == 1:
+                    await asyncio.sleep(5)
                 else:
                     await self._error(
-                        f"占用核验为空: 预约号#{reserve_id} {t.day} 座位={t.seat_num} "
-                        f"{s}-{e}（服务端 used={used}）——保持进行中，请人工复核",
+                        f"占用核验未反映（重查后）: 预约号#{reserve_id} {t.day} 座位={t.seat_num} "
+                        f"{s}-{e}（服务端 used={used}）——预约号已受理，大概率真实，"
+                        f"保持进行中待实况核对复核",
                         acc.id,
                     )
-            except Exception as e:
-                await self._warn(f"占用核验异常: {e}", acc.id)
 
     async def _act_with_relogin(
         self, client: ChaoxingClient, acc: Account, fn, reserve_id: int, label: str,
@@ -893,7 +900,8 @@ class Scheduler:
         """每分钟醒来判断是否到期（默认 15 分钟，秒级可配），到期跑一轮当日补提交。
 
         范围收窄在"今天"：明天的 PENDING 归 _afternoon_bootstrap (14:00) 管，
-        本节拍只兜底 14:00 后新增/改绑产生的当日任务与当日提交失败后的重试候选。
+        本节拍只兜底 14:00 后新增/改绑产生的当日任务与当日提交失败后的重试候选，
+        且只补时段完全未开始的段（已开始的段页面格子不可点，补提交必然被拒）。
         经 _bootstrap_gate 与 14:00 批量/启动补跑互斥；不碰 FAILED（自动重试
         已失败提交会追加违约记录，须人工确认——与启动补跑同一原则）。
         仅在预约窗口（14:00 起）与馆舍开放时段内执行，闭馆静默。
@@ -921,22 +929,26 @@ class Scheduler:
             self._today_backfill_running = False
 
     async def _has_backfillable_today(self, now: datetime) -> bool:
-        """今天存在可补提交的 PENDING 任务（时段尚未结束）。"""
+        """今天存在可补提交的 PENDING 任务（时段**完全未开始**）。
+
+        已开始/进行中的段在超星页面上格子不可点，补提交必然被拒
+        （实弹 14:01 三连拒实证），故只认 start 晚于当前的时段。
+        """
         today = today_cst()
         for t in await self.store.list_tasks(day=today):
             if t.status != TaskStatus.PENDING:
                 continue
-            if at_cst(t.day, t.end_time) > now:
+            if at_cst(t.day, t.start_time) > now:
                 return True
         return False
 
     async def _today_backfill_locked(self, now: datetime) -> None:
-        """补提交当日仍处 PENDING 且时段未结束的任务（调用方已持 _bootstrap_gate）。"""
+        """补提交当日时段完全未开始的 PENDING 任务（调用方已持 _bootstrap_gate）。"""
         today = today_cst()
         accounts = {a.id: a for a in await self.store.list_accounts()}
         n_ok = n_skip = 0
         for t in await self.store.list_tasks(day=today):
-            if t.status != TaskStatus.PENDING or at_cst(t.day, t.end_time) <= now:
+            if t.status != TaskStatus.PENDING or at_cst(t.day, t.start_time) <= now:
                 continue
             acc = accounts.get(t.account_id)
             if not acc:
