@@ -71,7 +71,7 @@ class AccountConfig(BaseModel):
     password: str
     slots: SlotSpec | None = None
     bound_seats: list[str] = Field(default_factory=list)
-    # ★ v2 (2026-08-24): per-seat slots — 同一账号对不同座位可以预约不同时段
+    # per-seat slots — 同一账号对不同座位可以预约不同时段
     # 例如 {"104": ["09:00-11:00"], "105": ["15:00-17:00"]} 表示
     # 该账号对 104 守 09-11,对 105 守 15-17。
     # 与 slots 互斥:同时设置时 planner 用 seat_slots 忽略 slots。
@@ -124,6 +124,8 @@ class RuntimeConfig(BaseModel):
     #: 面板访问令牌。非空时所有请求必须携带 (Authorization: Bearer / X-Auth-Token / ?token= / cookie);
     #: 为空时仅允许本机回环客户端访问, 非回环客户端一律 403。
     web_token: str = ""
+    #: 允许访问面板的额外 Host 标头（如内网穿透域名、反向代理域名）
+    allowed_hosts: list[str] = Field(default_factory=list)
 
     @field_validator("submit_strategy")
     @classmethod
