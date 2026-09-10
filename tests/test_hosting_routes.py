@@ -252,6 +252,79 @@ def test_hosting_add_matrix_auto_registers_target():
     assert "099" in target_nums
 
 
+
+def test_hosting_add_matrix_merges_existing_slots():
+    """账号在同座位已有段时，加新段触发 D4 换绑兜底，全矩阵两段同时并存且原段不被抹除。"""
+    store = FakeHostingStore()
+    # 张三已有 021 在 09:00-11:00；李四无 021 绑定
+    store.accounts[0].seat_slots = {"021": {w: ["09:00-11:00"] for w in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}}
+    store.accounts[1].seat_slots = {}
+    store.hosted.append({
+        "id": 1, "account_id": "张三", "reserve_id": 101,
+        "seat_num": "021", "day": DAY.isoformat(),
+        "start_time": "14:00", "end_time": "16:00",
+        "state": "hosting", "outcome": "", "task_id": None,
+    })
+    client = _make_client(store)
+    r = client.post("/hosting/1/add-matrix", follow_redirects=False)
+    assert r.status_code == 303
+    from seatbot.utils.weekly import slots_for_weekday
+    # 张三保留原段 09:00-11:00
+    zs_slots = slots_for_weekday(store.accounts[0].seat_slots.get("021"), "mon")
+    assert zs_slots == ["09:00-11:00"]
+    # 李四接手新段 14:00-16:00 (D4 换绑)
+    ls_slots = slots_for_weekday(store.accounts[1].seat_slots.get("021"), "mon")
+    assert ls_slots == ["14:00-16:00"]
+    # 座位期望时段两段均已合并追加
+    target = next(t for t in store.targets if t.seat_num == "021")
+    desired = target.desired_slots.get("mon", [])
+    assert "09:00-11:00" not in desired or "14:00-16:00" in desired
+    assert "14:00-16:00" in desired
+
+
+def test_hosting_add_matrix_merges_across_seats():
+    """账号已有其他座位段时，add-matrix 合并写入新座位，同账号多座位段同时存在。"""
+    store = FakeHostingStore()
+    # 张三已有 022 09:00-11:00
+    store.accounts[0].seat_slots = {"022": {w: ["09:00-11:00"] for w in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}}
+    store.hosted.append({
+        "id": 1, "account_id": "张三", "reserve_id": 101,
+        "seat_num": "021", "day": DAY.isoformat(),
+        "start_time": "14:00", "end_time": "16:00",
+        "state": "hosting", "outcome": "", "task_id": None,
+    })
+    client = _make_client(store)
+    r = client.post("/hosting/1/add-matrix", follow_redirects=False)
+    assert r.status_code == 303
+    from seatbot.utils.weekly import slots_for_weekday
+    # 张三同时保有 022 与 021 两个座位的时段（总时长 4h <= 5h）
+    s022 = slots_for_weekday(store.accounts[0].seat_slots.get("022"), "mon")
+    s021 = slots_for_weekday(store.accounts[0].seat_slots.get("021"), "mon")
+    assert s022 == ["09:00-11:00"]
+    assert s021 == ["14:00-16:00"]
+
+def test_hosting_add_matrix_idempotent():
+    """重复执行 add-matrix 同一时段无重复项（幂等）。"""
+    store = FakeHostingStore()
+    store.accounts[0].seat_slots = {"021": {w: ["09:00-11:00"] for w in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}}
+    store.hosted.append({
+        "id": 1, "account_id": "张三", "reserve_id": 101,
+        "seat_num": "021", "day": DAY.isoformat(),
+        "start_time": "09:00", "end_time": "11:00",
+        "state": "hosting", "outcome": "", "task_id": None,
+    })
+    client = _make_client(store)
+    r = client.post("/hosting/1/add-matrix", follow_redirects=False)
+    assert r.status_code == 303
+    from seatbot.utils.weekly import slots_for_weekday
+    slots = slots_for_weekday(store.accounts[0].seat_slots.get("021"), "mon")
+    assert slots == ["09:00-11:00"]
+    # 再次提交
+    r2 = client.post("/hosting/1/add-matrix", follow_redirects=False)
+    assert r2.status_code == 303
+    slots2 = slots_for_weekday(store.accounts[0].seat_slots.get("021"), "mon")
+    assert slots2 == ["09:00-11:00"]
+
 def test_hosting_refresh_throttling():
     store = FakeHostingStore()
     sched = AsyncMock()
