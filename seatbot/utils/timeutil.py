@@ -25,6 +25,16 @@ def at_cst(d: date, t: time) -> datetime:
     return datetime.combine(d, t, tzinfo=CST)
 
 
+def epoch_ms_to_cst_str(value: int | float | None) -> str:
+    """epoch 毫秒 → 'YYYY-MM-DD HH:MM:SS' (CST)。"""
+    if not value:
+        return "—"
+    try:
+        dt = datetime.fromtimestamp(int(value) / 1000, tz=CST)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return "—"
+
 def parse_hhmm(s: str) -> time:
     """Parse 'HH:MM' into a time. Reject 'H:MM' (must be 2-digit hour)."""
     parts = s.split(":")
