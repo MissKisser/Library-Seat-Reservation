@@ -93,8 +93,8 @@
       cancelled: { type: 'success', title: '已取消' },
       signed: { type: 'success', title: '已签到' },
       left: { type: 'success', title: '已签退' },
+      reserved: { type: 'success', title: '已续约' },
       imported: { type: 'success', title: '已导入预约' },
-      error: { type: 'error', title: '操作失败' },
     };
     const params = new URLSearchParams(location.search);
     let shown = false;
