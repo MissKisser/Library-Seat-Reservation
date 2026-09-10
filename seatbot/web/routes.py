@@ -25,7 +25,7 @@ from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
 from seatbot.models import Account, SeatTarget, Task, TaskStatus, TASK_SOURCE_IMPORT
 from seatbot.scheduler import NextRelay
-from seatbot.reconcile import pick_read_account
+from seatbot.reconcile import AUTO_SYNC_NOTE, pick_read_account
 
 from seatbot.utils.timeutil import (
     at_cst, now_cst, parse_hhmm, parse_range, today_cst,
@@ -2344,7 +2344,6 @@ def _hosted_to_view(h: dict, task_status: str | None) -> dict:
     }
 
 @router.get("/hosting", response_class=HTMLResponse)
-
 async def hosting_page(
     request: Request,
     page: int = 1,
@@ -2436,7 +2435,7 @@ async def hosting_toggle(
         # 删 AUTO_SYNC 占位行（保留手动行）
         ur_rows = await store.list_user_reserved(day=day_d, seat_num=row["seat_num"])
         for r in ur_rows:
-            if (r["note"] == "实况自动同步"
+            if (r["note"] == AUTO_SYNC_NOTE
                 and r["account_id"] == row["account_id"]):
                 await store.delete_user_reserved(int(r["id"]))
         # 加手动占位行
@@ -2464,9 +2463,7 @@ async def hosting_toggle(
 @router.post("/hosting/{hosted_id}/regrab")
 async def hosting_regrab(request: Request, hosted_id: int):
     """待决条目原账号重抢：建 READY 任务并立即 _run_submit。"""
-    
     from urllib.parse import quote
-
 
     store = request.app.state.store
     sched = getattr(request.app.state, "sched", None)

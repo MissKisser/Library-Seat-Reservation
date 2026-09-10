@@ -257,7 +257,7 @@ class StateStore:
                 "ALTER TABLE tasks ADD COLUMN seat_num TEXT NOT NULL DEFAULT ''"
             )
             await self.db.commit()
-        # 2b. tasks: 增加 source（v2 手动预约自动托管字段）。
+        # 2b. tasks: 增加 source 字段。
         # 任务来源：matrix / import / adopt / adopt_matrix；缺列则补默认 'matrix'。
         cur = await self.db.execute("PRAGMA table_info(tasks)")
         task_cols = {row[1] for row in await cur.fetchall()}
