@@ -5,7 +5,7 @@ from urllib.parse import unquote
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from seatbot.models import Account, SeatTarget
+from seatbot.models import Account, SeatTarget, Task, TaskStatus
 from seatbot.utils.timeutil import today_cst
 from seatbot.web.app import new_templates
 from seatbot.web.routes import router
@@ -359,3 +359,143 @@ def test_hosting_history_pagination_count():
     r2 = client.get("/hosting?page=2")
     assert r2.status_code == 200
     assert "page=3" not in r2.text
+
+
+def test_hosting_regrab_success():
+    """regrab 成功：提交后置 ACTIVE+reserve_id，行回 hosting 且 task_id 更新。"""
+    from datetime import timedelta
+    store = FakeHostingStore()
+    tomorrow = DAY + timedelta(days=1)
+    store.hosted.append({
+        "id": 1, "account_id": "张三", "reserve_id": 101,
+        "seat_num": "021", "day": tomorrow.isoformat(),
+        "start_time": "14:00", "end_time": "16:00",
+        "state": "pending_decision", "outcome": "App 端取消", "task_id": None,
+    })
+    sched = AsyncMock()
+    async def fake_submit(acc, task):
+        task.status = TaskStatus.ACTIVE
+        task.reserve_id = 8888
+    sched._run_submit = fake_submit
+    client = _make_client(store, sched=sched)
+    r = client.post("/hosting/1/regrab", follow_redirects=False)
+    assert r.status_code == 303
+    h = store.hosted[0]
+    assert h["state"] == "hosting"
+    assert h["outcome"] == ""
+    assert h["task_id"] == 1
+
+
+def test_hosting_regrab_failure_exception():
+    """regrab 失败（提交抛出异常）→ 行 stopped("重抢失败：...")。"""
+    from datetime import timedelta
+    store = FakeHostingStore()
+    tomorrow = DAY + timedelta(days=1)
+    store.hosted.append({
+        "id": 1, "account_id": "张三", "reserve_id": 101,
+        "seat_num": "021", "day": tomorrow.isoformat(),
+        "start_time": "14:00", "end_time": "16:00",
+        "state": "pending_decision", "outcome": "", "task_id": None,
+    })
+    sched = AsyncMock()
+    sched._run_submit.side_effect = RuntimeError("网络超时")
+    client = _make_client(store, sched=sched)
+    r = client.post("/hosting/1/regrab", follow_redirects=False)
+    assert r.status_code == 303
+    h = store.hosted[0]
+    assert h["state"] == "stopped"
+    assert "重抢失败" in h["outcome"]
+
+
+def test_hosting_regrab_failure_no_reserve_id():
+    """regrab 失败（未取得有效预约号）→ 行 stopped("重抢失败")."""
+    from datetime import timedelta
+    store = FakeHostingStore()
+    tomorrow = DAY + timedelta(days=1)
+    store.hosted.append({
+        "id": 1, "account_id": "张三", "reserve_id": 101,
+        "seat_num": "021", "day": tomorrow.isoformat(),
+        "start_time": "14:00", "end_time": "16:00",
+        "state": "pending_decision", "outcome": "", "task_id": None,
+    })
+    sched = AsyncMock()
+    # _run_submit 不设置 reserve_id
+    sched._run_submit = AsyncMock()
+    client = _make_client(store, sched=sched)
+    r = client.post("/hosting/1/regrab", follow_redirects=False)
+    assert r.status_code == 303
+    h = store.hosted[0]
+    assert h["state"] == "stopped"
+    assert h["outcome"] == "重抢失败"
+
+
+def test_hosting_add_matrix_modes_uniform_and_weekly():
+    """add-matrix 模式分叉：uniform 写满 7 天，weekly 仅写对应周几。"""
+    from seatbot.utils.weekly import slots_for_weekday, weekday_key
+    # 1. uniform 模式
+    store_uni = FakeHostingStore()
+    store_uni.settings = {"schedule_mode": "uniform"}
+    store_uni.accounts[0].seat_slots = {}
+    store_uni.hosted.append({
+        "id": 1, "account_id": "张三", "reserve_id": 101,
+        "seat_num": "021", "day": DAY.isoformat(),
+        "start_time": "14:00", "end_time": "16:00",
+        "state": "hosting", "outcome": "", "task_id": None,
+    })
+    client_uni = _make_client(store_uni)
+    r = client_uni.post("/hosting/1/add-matrix", follow_redirects=False)
+    assert r.status_code == 303
+    for wd in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]:
+        assert slots_for_weekday(store_uni.accounts[0].seat_slots.get("021"), wd) == ["14:00-16:00"]
+        assert "14:00-16:00" in (store_uni.targets[0].desired_slots or {}).get(wd, [])
+
+    # 2. weekly 模式
+    store_wk = FakeHostingStore()
+    store_wk.settings = {"schedule_mode": "weekly"}
+    store_wk.accounts[0].seat_slots = {}
+    store_wk.hosted.append({
+        "id": 1, "account_id": "张三", "reserve_id": 102,
+        "seat_num": "021", "day": DAY.isoformat(),
+        "start_time": "14:00", "end_time": "16:00",
+        "state": "hosting", "outcome": "", "task_id": None,
+    })
+    client_wk = _make_client(store_wk)
+    r2 = client_wk.post("/hosting/1/add-matrix", follow_redirects=False)
+    assert r2.status_code == 303
+    today_wd = weekday_key(DAY)
+    for wd in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]:
+        slots = slots_for_weekday(store_wk.accounts[0].seat_slots.get("021"), wd)
+        if wd == today_wd:
+            assert slots == ["14:00-16:00"]
+            assert "14:00-16:00" in (store_wk.targets[0].desired_slots_weekly or {}).get(wd, [])
+        else:
+            assert slots == []
+
+
+def test_hosting_add_matrix_rebind_fallback_and_exhausted():
+    """换绑兜底：行内账号满额自动选其他启用账号；全超额则提示 error。"""
+    from seatbot.utils.weekly import slots_for_weekday
+    store = FakeHostingStore()
+    # 张三在 001、002 各占 2h，已用 4h。若加 2h 则 6h > 5h 每日上限
+    all_wds = {w: ["08:00-10:00"] for w in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
+    all_wds2 = {w: ["10:00-12:00"] for w in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
+    store.accounts[0].seat_slots = {"001": all_wds, "002": all_wds2}
+    # 李四目前无绑定，余量充裕
+    store.accounts[1].seat_slots = {}
+    store.hosted.append({
+        "id": 1, "account_id": "张三", "reserve_id": 101,
+        "seat_num": "021", "day": DAY.isoformat(),
+        "start_time": "14:00", "end_time": "16:00",
+        "state": "hosting", "outcome": "", "task_id": None,
+    })
+    client = _make_client(store)
+    r = client.post("/hosting/1/add-matrix", follow_redirects=False)
+    assert r.status_code == 303
+    assert "李四" in unquote(r.headers.get("location", ""))
+    assert slots_for_weekday(store.accounts[1].seat_slots.get("021"), "mon") == ["14:00-16:00"]
+
+    # 全超额情况：李四也已用 4h
+    store.accounts[1].seat_slots = {"001": all_wds, "002": all_wds2}
+    r2 = client.post("/hosting/1/add-matrix", follow_redirects=False)
+    assert r2.status_code == 303
+    assert "无可用账号" in unquote(r2.headers.get("location", ""))
