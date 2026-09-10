@@ -101,6 +101,31 @@ async def test_log_message(store: StateStore):
     assert rows[0].level == "INFO"
 
 
+async def test_list_logs_by_day(store: StateStore):
+    from seatbot.utils.timeutil import CST, today_cst
+    from datetime import datetime, timedelta
+    today = today_cst()
+    yesterday = today - timedelta(days=1)
+
+    ts_today = int(datetime(today.year, today.month, today.day, 10, 0, tzinfo=CST).timestamp() * 1000)
+    ts_yesterday = int(datetime(yesterday.year, yesterday.month, yesterday.day, 10, 0, tzinfo=CST).timestamp() * 1000)
+
+    await store.db.execute("INSERT INTO logs (ts, level, account_id, message) VALUES (?, ?, ?, ?)", (ts_today, "INFO", "zs", "today log"))
+    await store.db.execute("INSERT INTO logs (ts, level, account_id, message) VALUES (?, ?, ?, ?)", (ts_yesterday, "WARN", "zs", "yesterday log"))
+    await store.db.commit()
+
+    today_logs = await store.list_logs(day=today)
+    assert len(today_logs) == 1
+    assert today_logs[0].message == "today log"
+
+    yesterday_logs = await store.list_logs(day=yesterday.isoformat())
+    assert len(yesterday_logs) == 1
+    assert yesterday_logs[0].message == "yesterday log"
+
+    days = await store.list_log_days()
+    assert today.isoformat() in days
+    assert yesterday.isoformat() in days
+
 async def test_update_task_status_clears_last_error_on_success(store: StateStore):
     """成功路径传 last_error="" 应清空历史错误; None 保持不变。"""
     acc = Account(id="zs", phone="1", password="p", slots="full")
@@ -301,5 +326,126 @@ async def test_account_status_lifecycle(tmp_path):
         await s.set_account_status("ls", "disabled")
         assert {a.id for a in await s.list_accounts(include_inactive=True)} == {"zs"}
         assert await s.get_account("ls") is None
+    finally:
+        await s.close()
+
+
+# ---------- hosted_reservations + tasks.source ----------
+
+async def test_task_source_default_and_explicit(tmp_path):
+    """tasks.source 默认 'matrix'；显式写入 'import' / 'adopt' 等。"""
+    s = StateStore(str(tmp_path / "st.db"))
+    await s.init()
+    try:
+        d = date(2026, 9, 10)
+        # 默认 source
+        t1 = Task(id=None, account_id="zs", day=d,
+                  start_time=time(9, 0), end_time=time(11, 0))
+        t1.id = await s.add_task(t1)
+        loaded = await s.get_task(t1.id)
+        assert loaded.source == "matrix"
+
+        # 显式 source=adopt
+        t2 = Task(id=None, account_id="zs", day=d,
+                  start_time=time(14, 0), end_time=time(16, 0),
+                  source="adopt")
+        t2.id = await s.add_task(t2)
+        loaded2 = await s.get_task(t2.id)
+        assert loaded2.source == "adopt"
+    finally:
+        await s.close()
+
+
+async def test_update_task_status_source_keep_and_set(tmp_path):
+    """update_task_status(source=None) 保持原值；source=显式值覆盖。"""
+    s = StateStore(str(tmp_path / "st.db"))
+    await s.init()
+    try:
+        d = date(2026, 9, 10)
+        t = Task(id=None, account_id="zs", day=d,
+                 start_time=time(9, 0), end_time=time(11, 0),
+                 source="import")
+        t.id = await s.add_task(t)
+        # 保持：None
+        await s.update_task_status(t.id, TaskStatus.ACTIVE, reserve_id=1)
+        loaded = await s.get_task(t.id)
+        assert loaded.source == "import"
+        # 覆盖
+        await s.update_task_status(t.id, TaskStatus.ACTIVE, source="adopt")
+        loaded2 = await s.get_task(t.id)
+        assert loaded2.source == "adopt"
+    finally:
+        await s.close()
+
+
+async def test_hosted_upsert_idempotent(tmp_path):
+    """upsert_hosted 按 (account_id, reserve_id) 命中则 UPDATE，不重插。"""
+    s = StateStore(str(tmp_path / "st.db"))
+    await s.init()
+    try:
+        d = date(2026, 9, 10)
+        id1 = await s.upsert_hosted(
+            "zs", 1001, seat_num="001", day=d,
+            start=time(9, 0), end=time(11, 0),
+            state="hosting", outcome="")
+        # 再次写入：应命中同一行
+        id2 = await s.upsert_hosted(
+            "zs", 1001, seat_num="001", day=d,
+            start=time(9, 0), end=time(11, 0),
+            state="pending_decision", outcome="App 端取消")
+        assert id1 == id2
+        row = await s.get_hosted(id1)
+        assert row["state"] == "pending_decision"
+        assert row["outcome"] == "App 端取消"
+    finally:
+        await s.close()
+
+
+async def test_hosted_list_with_state_filter_and_pagination(tmp_path):
+    """list_hosted 按状态过滤、分页；倒序。"""
+    s = StateStore(str(tmp_path / "st.db"))
+    await s.init()
+    try:
+        d = date(2026, 9, 10)
+        for i in range(5):
+            await s.upsert_hosted(
+                "zs", 2000 + i, seat_num="001", day=d,
+                start=time(9, 0), end=time(10, 0),
+                state="hosting", outcome="")
+        for i in range(3):
+            await s.upsert_hosted(
+                "ls", 3000 + i, seat_num="002", day=d,
+                start=time(11, 0), end=time(12, 0),
+                state="ended", outcome="已履约")
+        # 状态过滤
+        hosting = await s.list_hosted(states=["hosting"])
+        assert len(hosting) == 5
+        ended = await s.list_hosted(states=["ended"])
+        assert len(ended) == 3
+        # 分页
+        page1 = await s.list_hosted(states=["hosting"], limit=2, offset=0)
+        page2 = await s.list_hosted(states=["hosting"], limit=2, offset=2)
+        assert len(page1) == 2 and len(page2) == 2
+        ids_p1 = {h["id"] for h in page1}
+        ids_p2 = {h["id"] for h in page2}
+        assert ids_p1.isdisjoint(ids_p2)
+    finally:
+        await s.close()
+
+
+async def test_find_hosted_by_reserve(tmp_path):
+    """按 (account_id, reserve_id) 查 hosted 行。"""
+    s = StateStore(str(tmp_path / "st.db"))
+    await s.init()
+    try:
+        d = date(2026, 9, 10)
+        await s.upsert_hosted(
+            "zs", 7777, seat_num="001", day=d,
+            start=time(9, 0), end=time(11, 0),
+            state="hosting", outcome="")
+        row = await s.find_hosted_by_reserve("zs", 7777)
+        assert row and row["reserve_id"] == 7777
+        miss = await s.find_hosted_by_reserve("zs", 9999)
+        assert miss is None
     finally:
         await s.close()

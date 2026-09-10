@@ -51,6 +51,15 @@ class TaskStatus(str, Enum):
     COMPLETE = "complete"        # 已签退/取消, 时段结束
     FAILED = "failed"            # 出错
 
+# ---------- task source (v2 扩展: 区分排程 / 导入 / 托管采纳) ----------
+
+# 排程生成的任务（默认；14:00 批量、当日补约、启动补跑均属此列）。
+TASK_SOURCE_MATRIX = "matrix"
+# /tasks 导入页面写入的本地任务（用户在 App 手动抢到的预约号手动登记）。
+TASK_SOURCE_IMPORT = "import"
+# 自动托管采纳后新建的任务（无矩阵/导入历史同键记录时新增）。
+TASK_SOURCE_ADOPT = "adopt"
+TASK_SOURCE_ADOPT_MATRIX = "adopt_matrix"
 
 @dataclass
 class Task:
@@ -65,7 +74,9 @@ class Task:
     last_error: str | None = None
     created_at: int = 0                   # epoch 秒，仅作展示
     updated_at: int = 0                   # epoch 秒，最近一次状态变更
-
+    # ★ 自动托管字段：任务来源（matrix / import / adopt / adopt_matrix）。
+    # matrix = 排程生成；import = /tasks 导入；adopt = 托管新建；adopt_matrix = 托管接附矩阵任务。
+    source: str = TASK_SOURCE_MATRIX
     def chunk_key(self) -> str:
         return (
             f"{self.account_id}|{self.seat_num}|{self.day.isoformat()}"

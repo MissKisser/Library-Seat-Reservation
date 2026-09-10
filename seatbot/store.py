@@ -4,12 +4,13 @@ from __future__ import annotations
 import json
 import time as _time
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 import aiosqlite
 
 from seatbot.models import Account, SeatTarget, Task, TaskStatus
+from seatbot.utils.timeutil import CST, epoch_ms_to_cst_str
 from seatbot.utils.weekly import WEEKDAY_KEYS, normalize_weekly
 # v2 schema:
 #  - accounts:        + bound_seats_json
@@ -49,13 +50,13 @@ CREATE TABLE IF NOT EXISTS tasks (
   status      TEXT NOT NULL,
   reserve_id  INTEGER,
   last_error  TEXT,
+  source      TEXT NOT NULL DEFAULT 'matrix',
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_account_day ON tasks(account_id, day);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 
--- 注:idx_tasks_seat_day 在迁移里强制创建 (依赖新增的 seat_num 列)
 
 CREATE TABLE IF NOT EXISTS actions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,6 +69,24 @@ CREATE TABLE IF NOT EXISTS actions (
   message     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actions_account_ts ON actions(account_id, ts DESC);
+-- 注:idx_tasks_seat_day 在迁移里强制创建 (依赖新增的 seat_num 列)
+CREATE TABLE IF NOT EXISTS hosted_reservations (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id   TEXT NOT NULL,
+  seat_num     TEXT NOT NULL,
+  day          TEXT NOT NULL,
+  start_time   TEXT NOT NULL,
+  end_time     TEXT NOT NULL,
+  reserve_id   INTEGER NOT NULL,
+  state        TEXT NOT NULL,
+  outcome      TEXT NOT NULL DEFAULT '',
+  task_id      INTEGER,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hosted_account_reserve
+  ON hosted_reservations(account_id, reserve_id);
+CREATE INDEX IF NOT EXISTS idx_hosted_state ON hosted_reservations(state);
 
 CREATE TABLE IF NOT EXISTS logs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,6 +257,15 @@ class StateStore:
                 "ALTER TABLE tasks ADD COLUMN seat_num TEXT NOT NULL DEFAULT ''"
             )
             await self.db.commit()
+        # 2b. tasks: 增加 source（v2 手动预约自动托管字段）。
+        # 任务来源：matrix / import / adopt / adopt_matrix；缺列则补默认 'matrix'。
+        cur = await self.db.execute("PRAGMA table_info(tasks)")
+        task_cols = {row[1] for row in await cur.fetchall()}
+        if "source" not in task_cols:
+            await self.db.execute(
+                "ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'matrix'"
+            )
+            await self.db.commit()
 
         # 3. seed target_seats + 回填 tasks.seat_num
         if self._legacy_target_seat_num:
@@ -255,10 +283,14 @@ class StateStore:
             await self.db.execute(
                 "UPDATE tasks SET seat_num=? WHERE seat_num=''", (seat,)
             )
-        # 4. 索引补建 (post-migration,依赖新增的 seat_num 列)
+
+        # 4. 索引补建 (post-migration,依赖新增的 seat_num / source 列)
         try:
             await self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_seat_day ON tasks(seat_num, day)"
+            )
+            await self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_source ON tasks(source)"
             )
         except Exception:
             pass
@@ -456,7 +488,165 @@ class StateStore:
             out.append((time(sh, sm), time(eh, em)))
         return out
 
+
+    # ---------- hosted_reservations (手动预约自动托管表) ----------
+    async def upsert_hosted(
+        self,
+        account_id: str,
+        reserve_id: int,
+        *,
+        seat_num: str,
+        day: date,
+        start: time,
+        end: time,
+        state: str,
+        outcome: str = "",
+        task_id: int | None = None,
+    ) -> int:
+        """按 (account_id, reserve_id) 命中则 UPDATE (新 state/outcome/task_id + updated_at)，否则 INSERT。
+
+        返回行 id；调用方负责 state 合法性（queued/hosting/pending_decision/stopped/ended）。
+        """
+        self._bump()
+        now = int(_time.time() * 1000)
+        sn = seat_num.zfill(3) if seat_num.isdigit() else seat_num
+        ds = day.isoformat()
+        ss = start.strftime("%H:%M")
+        es = end.strftime("%H:%M")
+        cur = await self.db.execute(
+            "SELECT id FROM hosted_reservations WHERE account_id=? AND reserve_id=?",
+            (account_id, reserve_id),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            cur = await self.db.execute(
+                """INSERT INTO hosted_reservations
+                   (account_id, seat_num, day, start_time, end_time,
+                    reserve_id, state, outcome, task_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (account_id, sn, ds, ss, es,
+                 reserve_id, state, outcome, task_id, now, now),
+            )
+            await self.db.commit()
+            return cur.lastrowid or 0
+        await self.db.execute(
+            """UPDATE hosted_reservations SET state=?, outcome=?, task_id=?,
+                   updated_at=? WHERE id=?""",
+            (state, outcome, task_id, now, row[0]),
+        )
+        await self.db.commit()
+        return row[0]
+
+    async def get_hosted(self, hosted_id: int) -> dict | None:
+        """按 hosted_reservations.id 取一行（含全部列）；不存在返回 None。"""
+        cur = await self.db.execute(
+            "SELECT id, account_id, seat_num, day, start_time, end_time, "
+            "reserve_id, state, outcome, task_id, created_at, updated_at "
+            "FROM hosted_reservations WHERE id=?",
+            (hosted_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "account_id": row[1], "seat_num": row[2],
+            "day": row[3], "start_time": row[4], "end_time": row[5],
+            "reserve_id": row[6], "state": row[7], "outcome": row[8],
+            "task_id": row[9], "created_at": row[10], "updated_at": row[11],
+        }
+
+    async def list_hosted(
+        self,
+        states: list[str] | None = None,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        include_final: bool = True,
+    ) -> list[dict]:
+        """列出托管行；states 给定时只返回命中状态集合的行，否则默认含 stopped/ended。
+
+        排序：updated_at 倒序；分页用 limit/offset。
+        """
+        q = ("SELECT id, account_id, seat_num, day, start_time, end_time, "
+             "reserve_id, state, outcome, task_id, created_at, updated_at "
+             "FROM hosted_reservations WHERE 1=1")
+        args: list[Any] = []
+        if states is not None:
+            if not states:
+                return []
+            placeholders = ",".join("?" for _ in states)
+            q += f" AND state IN ({placeholders})"
+            args.extend(states)
+        elif not include_final:
+            q += " AND state IN ('queued', 'hosting', 'pending_decision')"
+        q += " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?"
+        args.extend([limit, offset])
+        cur = await self.db.execute(q, args)
+        rows = await cur.fetchall()
+        return [
+            {
+                "id": r[0], "account_id": r[1], "seat_num": r[2],
+                "day": r[3], "start_time": r[4], "end_time": r[5],
+                "reserve_id": r[6], "state": r[7], "outcome": r[8],
+                "task_id": r[9], "created_at": r[10], "updated_at": r[11],
+            }
+            for r in rows
+        ]
+
+    async def update_hosted(
+        self,
+        hosted_id: int,
+        *,
+        state: str | None = None,
+        outcome: str | None = None,
+        task_id: int | None = None,
+    ) -> None:
+        """更新托管行：state/outcome/task_id 任一非 None 即改，否则保持；同步 updated_at。"""
+        self._bump()
+        sets: list[str] = []
+        args: list[Any] = []
+        if state is not None:
+            sets.append("state=?")
+            args.append(state)
+        if outcome is not None:
+            sets.append("outcome=?")
+            args.append(outcome)
+        if task_id is not None:
+            sets.append("task_id=?")
+            args.append(task_id)
+        if not sets:
+            return
+        sets.append("updated_at=?")
+        args.append(int(_time.time() * 1000))
+        args.append(hosted_id)
+        await self.db.execute(
+            f"UPDATE hosted_reservations SET {', '.join(sets)} WHERE id=?",
+            args,
+        )
+        await self.db.commit()
+
+    async def find_hosted_by_reserve(
+        self, account_id: str, reserve_id: int,
+    ) -> dict | None:
+        """按 (account_id, reserve_id) 查托管行；不存在返回 None。"""
+        cur = await self.db.execute(
+            "SELECT id, account_id, seat_num, day, start_time, end_time, "
+            "reserve_id, state, outcome, task_id, created_at, updated_at "
+            "FROM hosted_reservations WHERE account_id=? AND reserve_id=?",
+            (account_id, reserve_id),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "account_id": row[1], "seat_num": row[2],
+            "day": row[3], "start_time": row[4], "end_time": row[5],
+            "reserve_id": row[6], "state": row[7], "outcome": row[8],
+            "task_id": row[9], "created_at": row[10], "updated_at": row[11],
+        }
+
     # ---------- accounts ----------
+
     async def upsert_account(self, acc: Account) -> None:
         self._bump()
         now = int(_time.time() * 1000)
@@ -825,13 +1015,15 @@ class StateStore:
         cur = await self.db.execute(
             """INSERT INTO tasks
                (account_id, seat_num, day, start_time, end_time, status,
-                reserve_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                reserve_id, source, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.account_id, t.seat_num or "", t.day.isoformat(),
                 t.start_time.isoformat(timespec="minutes"),
                 t.end_time.isoformat(timespec="minutes"),
-                t.status.value, t.reserve_id, now, now,
+                t.status.value, t.reserve_id,
+                t.source or "matrix",
+                now, now,
             ),
         )
         await self.db.commit()
@@ -844,6 +1036,7 @@ class StateStore:
         *,
         reserve_id: int | None = None,
         last_error: str | None = None,   # "" = 显式清空(成功路径); None = 保持不变
+        source: str | None = None,        # None = 保持不变（COALESCE 语义）
     ) -> None:
         self._bump()
         now = int(_time.time() * 1000)
@@ -852,19 +1045,21 @@ class StateStore:
             await self.db.execute(
                 """UPDATE tasks
                    SET status=?, reserve_id=COALESCE(?, reserve_id),
-                       last_error=NULL, updated_at=?
+                       last_error=NULL, source=COALESCE(?, source),
+                       updated_at=?
                    WHERE id=?""",
-                (status.value, reserve_id, now, task_id),
+                (status.value, reserve_id, source, now, task_id),
             )
         else:
             await self.db.execute(
                 """UPDATE tasks
                    SET status=?, reserve_id=COALESCE(?, reserve_id),
-                       last_error=COALESCE(?, last_error), updated_at=?
+                       last_error=COALESCE(?, last_error),
+                       source=COALESCE(?, source),
+                       updated_at=?
                    WHERE id=?""",
-                (status.value, reserve_id, last_error, now, task_id),
+                (status.value, reserve_id, last_error, source, now, task_id),
             )
-        await self.db.commit()
 
     async def shorten_task_end(self, task_id: int, new_end: "time") -> None:
         """缩短任务结束时间（换座释放：时段开始签到后短持即签退）。"""
@@ -887,7 +1082,9 @@ class StateStore:
 
     async def get_task(self, task_id: int) -> Task | None:
         cur = await self.db.execute(
-            "SELECT id, account_id, seat_num, day, start_time, end_time, status, reserve_id, last_error "
+
+            "SELECT id, account_id, seat_num, day, start_time, end_time, "
+            "status, reserve_id, last_error, source "
             "FROM tasks WHERE id=?",
             (task_id,),
         )
@@ -903,10 +1100,11 @@ class StateStore:
     ) -> list[Task]:
         q = (
             "SELECT id, account_id, seat_num, day, start_time, end_time, "
-            "status, reserve_id, last_error, created_at, updated_at "
+            "status, reserve_id, last_error, source, created_at, updated_at "
             "FROM tasks WHERE 1=1"
         )
         args: list[Any] = []
+
         if account_id:
             q += " AND account_id=?"
             args.append(account_id)
@@ -1019,9 +1217,21 @@ class StateStore:
         account_id: str | None = None,
         level: str | None = None,
         limit: int = 200,
+        day: str | date | None = None,
     ) -> list[LogRow]:
         q = "SELECT id, ts, level, account_id, message FROM logs WHERE 1=1"
         args: list[Any] = []
+        if day:
+            try:
+                d = date.fromisoformat(day) if isinstance(day, str) else day
+                start_dt = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=CST)
+                end_dt = start_dt + timedelta(days=1)
+                start_ms = int(start_dt.timestamp() * 1000)
+                end_ms = int(end_dt.timestamp() * 1000)
+                q += " AND ts >= ? AND ts < ?"
+                args.extend([start_ms, end_ms])
+            except Exception:
+                pass
         if account_id:
             q += " AND account_id=?"
             args.append(account_id)
@@ -1033,6 +1243,16 @@ class StateStore:
         cur = await self.db.execute(q, args)
         rows = await cur.fetchall()
         return [LogRow(id=r[0], ts=r[1], level=r[2], account_id=r[3], message=r[4]) for r in rows]
+
+    async def list_log_days(self, limit: int = 30) -> list[str]:
+        """获取最近产生过日志的日期列表 (CST 时区 YYYY-MM-DD)。"""
+        cur = await self.db.execute(
+            "SELECT DISTINCT date(datetime(ts/1000, 'unixepoch', '+8 hours')) as d "
+            "FROM logs ORDER BY d DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cur.fetchall()
+        return [r[0] for r in rows if r[0]]
 
     async def add_notification(self, title: str, body: str = "", level: str = "warn") -> None:
         """落一条用户需要看到的通知（看板 banner 展示，可选 webhook 外推）。
@@ -1067,7 +1287,14 @@ class StateStore:
         )
         rows = await cur.fetchall()
         return [
-            {"id": r[0], "ts": r[1], "level": r[2], "title": r[3], "body": r[4]}
+            {
+                "id": r[0],
+                "ts": r[1],
+                "time_str": epoch_ms_to_cst_str(r[1]),
+                "level": r[2],
+                "title": r[3],
+                "body": r[4],
+            }
             for r in rows
         ]
 
@@ -1134,8 +1361,9 @@ def _row_to_task(row) -> Task:
         status=TaskStatus(row[6]),
         reserve_id=row[7],
         last_error=row[8],
-        created_at=row[9] if len(row) > 9 else 0,
-        updated_at=row[10] if len(row) > 10 else 0,
+        source=row[9] if len(row) > 9 and row[9] else "matrix",
+        created_at=row[10] if len(row) > 10 else 0,
+        updated_at=row[11] if len(row) > 11 else 0,
     )
 
 
