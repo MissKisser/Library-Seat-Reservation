@@ -99,34 +99,30 @@ def test_csrf_same_origin_and_missing_origin_pass():
     assert not ok
 
 
-def test_auth_decision_loopback_mode():
-    ok, _, _, _ = auth_decision(
-        web_token="", client_host="127.0.0.1", host_header="127.0.0.1:8080",
-        presented=None, allowed_hosts=ALLOWED,
-    )
-    assert ok
+def test_auth_decision_no_token_mode():
+    # 无 token 且未配 allowed_hosts: 完全放行, 不做二次拦截
     ok, code, _, _ = auth_decision(
-        web_token="", client_host="10.0.0.9", host_header="127.0.0.1:8080",
-        presented=None, allowed_hosts=ALLOWED,
+        web_token="", client_host="10.0.0.9", host_header="any-domain.com:8080",
+        presented=None, allowed_hosts=None,
     )
-    assert not ok and code == 403
+    assert ok and code == 0
+    # 无 token 但显式配置了 allowed_hosts: 仅做 Host 校验
     ok, code, _, _ = auth_decision(
-        web_token="", client_host=None, host_header="127.0.0.1:8080",
-        presented=None, allowed_hosts=ALLOWED,
-    )
-    assert not ok and code == 403
-    # Host 头不在白名单 (DNS rebinding 防护) 优先拒绝
-    ok, code, _, _ = auth_decision(
-        web_token="", client_host="127.0.0.1", host_header="evil.example.com",
+        web_token="", client_host="10.0.0.9", host_header="evil.example.com",
         presented=None, allowed_hosts=ALLOWED,
     )
     assert not ok and code == 400
+    ok, code, _, _ = auth_decision(
+        web_token="", client_host="10.0.0.9", host_header="seat.viaxv.cn",
+        presented=None, allowed_hosts=ALLOWED | {"seat.viaxv.cn"},
+    )
+    assert ok and code == 0
 
 
-def _panel_app(token: str, host: str = "127.0.0.1") -> FastAPI:
+def _panel_app(token: str, host: str = "127.0.0.1", allowed_hosts: list[str] | None = None) -> FastAPI:
     cfg = Config(
         library=LibraryConfig(room_id=1, room_name="t"),
-        runtime=RuntimeConfig(web_token=token, web_host=host),
+        runtime=RuntimeConfig(web_token=token, web_host=host, allowed_hosts=allowed_hosts or []),
     )
     return make_app(cfg, None, None)
 
@@ -145,11 +141,13 @@ def test_middleware_token_mode_enforced():
     assert fresh.post("/targets/replace", data={}).status_code == 401
 
 
-def test_middleware_loopback_mode_rejects_nonlocal_client():
-    # TestClient 的来源是 "testserver" (非回环): Host 白名单或回环校验必拦其一
+def test_middleware_no_token_open_and_explicit_allowed_hosts():
+    # 未配 token 且未配 allowed_hosts: 直接放行
     client = TestClient(_panel_app(""))
-    assert client.get("/static/style.css").status_code in (400, 403)
-
+    assert client.get("/static/style.css").status_code == 200
+    # 显式配了 allowed_hosts: 拦截不在白名单的 host (TestClient 默认 Host 为 testserver)
+    restricted_client = TestClient(_panel_app("", allowed_hosts=["seat.viaxv.cn"]))
+    assert restricted_client.get("/static/style.css").status_code == 400
 
 # ---------- P0-2 数据库备份 ----------
 

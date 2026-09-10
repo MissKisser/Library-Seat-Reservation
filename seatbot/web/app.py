@@ -24,7 +24,6 @@ TEMPLATES_DIR = WEB_DIR / "templates"
 STATIC_DIR = WEB_DIR / "static"
 
 TOKEN_COOKIE = "seatbot_token"
-LOOPBACK_CLIENT_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 def _host_without_port(host_header: str) -> str:
@@ -55,33 +54,30 @@ def _presented_token(request: Request) -> str | None:
 def auth_decision(
     *,
     web_token: str,
-    client_host: str | None,
-    host_header: str,
-    presented: str | None,
-    allowed_hosts: set[str],
+    client_host: str | None = None,
+    host_header: str = "",
+    presented: str | None = None,
+    allowed_hosts: set[str] | None = None,
 ) -> tuple[bool, int, str, bool]:
     """面板访问判定 (纯函数, 便于单测)。
 
     返回 (允许, 拒绝状态码, 拒绝说明, 需要种 cookie)。
     规则:
-      - 配置了 web_token: 必须携带正确令牌, 否则 401 (不区分来源地址)。
-      - 未配置 web_token: 仅放行本机回环客户端; 非回环 403;
-        同时校验 Host 头防 DNS rebinding (不在白名单 → 400)。
+      - 配置了 web_token: 必须携带正确令牌, 否则 401 (不区分来源 IP 与 Host)。
+      - 未配置 web_token:
+          - 若显式配置了 allowed_hosts, 则校验 Host 头 (不在白名单 → 400);
+          - 若未配置 allowed_hosts, 则直接放行, 不做 Host/IP 二次拦截。
     """
     token = (web_token or "").strip()
     if token:
         if hmac.compare_digest((presented or "").encode(), token.encode()):
             return True, 0, "", True
         return False, 401, "unauthorized: missing or invalid token", False
-    host = _host_without_port(host_header)
-    if host and host not in allowed_hosts:
-        return False, 400, f"bad request: host '{host}' not allowed", False
-    if client_host is not None and client_host not in LOOPBACK_CLIENT_HOSTS:
-        return False, 403, "forbidden: panel has no token set and only allows loopback clients", False
-    if client_host is None:
-        return False, 403, "forbidden: client address unavailable", False
+    if allowed_hosts:
+        host = _host_without_port(host_header)
+        if host and host not in allowed_hosts:
+            return False, 400, f"bad request: host '{host}' not allowed", False
     return True, 0, "", False
-
 
 def _origin_netloc(value: str) -> str:
     """从 Origin/Referer 头提取 host:port（小写，无 scheme/path）；解析失败返回空串。"""
@@ -192,7 +188,7 @@ def make_app(cfg: Config, store: StateStore, sched: Scheduler) -> FastAPI:
     templates = new_templates()
     app.state.templates = templates
 
-    allowed_hosts = {"localhost", "127.0.0.1", "::1", _host_without_port(cfg.runtime.web_host)}
+    allowed_hosts = {_host_without_port(h) for h in (cfg.runtime.allowed_hosts or []) if h}
     app.add_middleware(
         PanelAuthMiddleware,
         web_token=(cfg.runtime.web_token or "").strip(),
