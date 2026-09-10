@@ -1,7 +1,7 @@
 """座位页只读诊断: 验证 day 参数与多格选区行为 (绝不点击"开始使用")。
 
 用法:
-  .venv/Scripts/python.exe scripts/debug_seat_page.py <account_id> <seat_num> <day>
+  .venv/Scripts/python.exe scripts/dev/debug_seat_page.py <account_id> <seat_num> <day>
 
 输出: 页面实际展示的日期、格子 DOM 摘要、逐格点击后的选区指示, + 截图。
 ⚠️ 只加载页面与客户端点选格子, 不点开始使用, 不产生预约。
@@ -11,8 +11,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from playwright.async_api import async_playwright  # noqa: E402
 
@@ -20,7 +20,7 @@ from seatbot.config import load_config  # noqa: E402
 from seatbot.utils.ua import random_ua  # noqa: E402
 from session_cache import authenticated_client  # noqa: E402
 
-OUT = Path(__file__).resolve().parents[1] / "logs_debug"
+OUT = Path(__file__).resolve().parents[2] / "logs_debug"
 
 
 async def probe(client):
