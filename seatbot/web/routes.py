@@ -2632,12 +2632,15 @@ async def hosting_add_matrix(request: Request, hosted_id: int):
 
     # 简化路径：直接走 _matrix_set_day + validate_matrix + upsert_account
     from seatbot.bindings import validate_matrix as _validate
-    reason = ""
-    chosen = None
     for cand in candidates:
         matrix = dict(cand.seat_slots or {})
         for wd in target_wds:
-            matrix = _matrix_set_day(matrix, sn, wd, [rng])
+            existing_raw = slots_for_weekday(matrix.get(sn), wd)
+            existing_slots = list(existing_raw) if isinstance(existing_raw, list) else []
+            merged: list[str] = list(existing_slots)
+            if rng not in merged:
+                merged.append(rng)
+            matrix = _matrix_set_day(matrix, sn, wd, merged)
         try:
             _validate(
                 matrix, max_seg_hours=float(lib.max_reserve_hours),
