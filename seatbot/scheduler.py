@@ -1114,7 +1114,7 @@ class Scheduler:
                     t.reserve_id for t in await self.store.list_tasks(account_id=acc.id)
                     if t.reserve_id
                 }
-                hosted_rows = await self.store.list_hosted()
+                hosted_rows = await self.store.list_hosted(limit=None)
                 for h in hosted_rows:
                     if h["account_id"] == acc.id and h["state"] == "hosting":
                         known.add(int(h["reserve_id"]))

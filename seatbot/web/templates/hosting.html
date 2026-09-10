@@ -133,11 +133,17 @@
     </div>
     {% endfor %}
     <div class="flex justify-between items-center text-xs text-ink-secondary">
-      <a class="btn btn-secondary btn-sm" x-show="hasPrev" href="/hosting?page={{ page - 1 }}">← 上一页</a>
-      <span x-show="!hasPrev"></span>
+      {% if has_prev %}
+      <a class="btn btn-secondary btn-sm" href="/hosting?page={{ page - 1 }}">← 上一页</a>
+      {% else %}
+      <span></span>
+      {% endif %}
       <span class="font-mono">第 {{ page }} 页</span>
-      <a class="btn btn-secondary btn-sm" x-show="hasNext" href="/hosting?page={{ page + 1 }}">下一页 →</a>
-      <span x-show="!hasNext"></span>
+      {% if has_next %}
+      <a class="btn btn-secondary btn-sm" href="/hosting?page={{ page + 1 }}">下一页 →</a>
+      {% else %}
+      <span></span>
+      {% endif %}
     </div>
     {% else %}
     <div class="text-xs text-ink-muted text-center py-8 border border-dashed border-edge-subtle rounded-xl">

@@ -33,8 +33,15 @@ class FakeHostingStore:
             res = [h for h in res if h["state"] in states]
         elif not include_final:
             res = [h for h in res if h["state"] in ("queued", "hosting", "pending_decision")]
+        if limit is None:
+            return res[offset:]
         return res[offset : offset + limit]
 
+    async def count_hosted(self, states=None):
+        res = self.hosted
+        if states is not None:
+            res = [h for h in res if h["state"] in states]
+        return len(res)
     async def get_hosted(self, hosted_id):
         return next((h for h in self.hosted if h["id"] == hosted_id), None)
 
@@ -333,3 +340,22 @@ def test_hosting_refresh_throttling():
     r = client.post("/hosting/refresh", follow_redirects=False)
     assert r.status_code == 303
     assert "同步进行中" in unquote(r.headers["location"])
+
+
+def test_hosting_history_pagination_count():
+    """托管记录页按 count_hosted 计算总数，>50 条时分页链接判定正确。"""
+    store = FakeHostingStore()
+    for i in range(55):
+        store.hosted.append({
+            "id": i + 1, "account_id": "张三", "reserve_id": 3000 + i,
+            "seat_num": "021", "day": DAY.isoformat(),
+            "start_time": "14:00", "end_time": "16:00",
+            "state": "ended", "outcome": "已履约", "task_id": None,
+        })
+    client = _make_client(store)
+    r1 = client.get("/hosting?page=1")
+    assert r1.status_code == 200
+    assert "page=2" in r1.text
+    r2 = client.get("/hosting?page=2")
+    assert r2.status_code == 200
+    assert "page=3" not in r2.text

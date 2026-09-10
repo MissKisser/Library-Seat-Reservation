@@ -2358,7 +2358,7 @@ async def hosting_page(
     now = now_cst()
 
     # 当前列表：state ∈ queued/hosting/pending_decision
-    current_rows = await store.list_hosted(states=list(_HOSTING_STATES_CURRENT))
+    current_rows = await store.list_hosted(states=list(_HOSTING_STATES_CURRENT), limit=None)
     current_view: list[dict] = []
     for h in current_rows:
         task = None
@@ -2386,7 +2386,7 @@ async def hosting_page(
             task = await store.get_task(int(h["task_id"]))
         v = _hosted_to_view(h, task.status.value if task else None)
         history_view.append(v)
-    total_history = len(await store.list_hosted(states=list(_HOSTING_STATES_HISTORY)))
+    total_history = await store.count_hosted(states=list(_HOSTING_STATES_HISTORY))
     has_next = offset + len(history_view) < total_history
     has_prev = page > 1
 

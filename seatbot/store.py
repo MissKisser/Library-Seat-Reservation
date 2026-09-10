@@ -559,13 +559,13 @@ class StateStore:
         self,
         states: list[str] | None = None,
         *,
-        limit: int = 50,
+        limit: int | None = 50,
         offset: int = 0,
         include_final: bool = True,
     ) -> list[dict]:
         """列出托管行；states 给定时只返回命中状态集合的行，否则默认含 stopped/ended。
 
-        排序：updated_at 倒序；分页用 limit/offset。
+        排序：updated_at 倒序；分页用 limit/offset；limit=None 时不设行数上限。
         """
         q = ("SELECT id, account_id, seat_num, day, start_time, end_time, "
              "reserve_id, state, outcome, task_id, created_at, updated_at "
@@ -579,8 +579,12 @@ class StateStore:
             args.extend(states)
         elif not include_final:
             q += " AND state IN ('queued', 'hosting', 'pending_decision')"
-        q += " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?"
-        args.extend([limit, offset])
+        if limit is None:
+            q += " ORDER BY updated_at DESC, id DESC LIMIT -1 OFFSET ?"
+            args.append(offset)
+        else:
+            q += " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?"
+            args.extend([limit, offset])
         cur = await self.db.execute(q, args)
         rows = await cur.fetchall()
         return [
@@ -592,6 +596,20 @@ class StateStore:
             }
             for r in rows
         ]
+
+    async def count_hosted(self, states: list[str] | None = None) -> int:
+        """统计托管行总数，states 给定时只统计指定状态集合。"""
+        q = "SELECT COUNT(*) FROM hosted_reservations WHERE 1=1"
+        args: list[Any] = []
+        if states is not None:
+            if not states:
+                return 0
+            placeholders = ",".join("?" for _ in states)
+            q += f" AND state IN ({placeholders})"
+            args.extend(states)
+        cur = await self.db.execute(q, args)
+        row = await cur.fetchone()
+        return int(row[0] or 0) if row else 0
 
     async def update_hosted(
         self,
