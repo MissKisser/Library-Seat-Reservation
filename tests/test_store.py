@@ -449,3 +449,27 @@ async def test_find_hosted_by_reserve(tmp_path):
         assert miss is None
     finally:
         await s.close()
+
+
+async def test_count_hosted_and_unlimited_list(tmp_path):
+    """count_hosted 统计总数及状态过滤；list_hosted(limit=None) 全量返回。"""
+    s = StateStore(str(tmp_path / "st.db"))
+    await s.init()
+    try:
+        d = date(2026, 9, 10)
+        for i in range(65):
+            st = "stopped" if i < 15 else "ended"
+            await s.upsert_hosted(
+                "zs", 5000 + i, seat_num="001", day=d,
+                start=time(9, 0), end=time(10, 0),
+                state=st, outcome="")
+        assert await s.count_hosted() == 65
+        assert await s.count_hosted(states=["stopped"]) == 15
+        assert await s.count_hosted(states=["ended"]) == 50
+        # 默认 limit=50 只返回 50 行
+        assert len(await s.list_hosted()) == 50
+        # limit=None 全量返回 65 行
+        all_rows = await s.list_hosted(limit=None)
+        assert len(all_rows) == 65
+    finally:
+        await s.close()

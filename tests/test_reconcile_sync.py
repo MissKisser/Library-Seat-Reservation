@@ -655,3 +655,47 @@ def test_sync_inactive_account_no_name_error(tmp_path, monkeypatch):
         finally:
             await store.close()
     asyncio.run(main())
+
+
+def test_sync_more_than_50_hosted_stopped_still_intercepts(tmp_path, monkeypatch):
+    """存量 hosted 超过 50 行时，更旧的 stopped 行仍能被全量查出并拦截重采纳。"""
+    async def main():
+        from seatbot.models import Account
+        from seatbot.scheduler import Scheduler
+        from seatbot.store import StateStore
+
+        store = StateStore(str(tmp_path / "t.db"))
+        await store.init()
+        try:
+            await store.upsert_account(Account(
+                id="张三", phone="1", password="p", slots=[]))
+            day = today_cst()
+            # 插入 1 个 stopped 行 (reserve_id=999)
+            await store.upsert_hosted(
+                "张三", 999, seat_num="042", day=day,
+                start=time(14, 0), end=time(16, 0),
+                state="stopped", outcome="用户停止")
+            # 接着插入 60 个更晚更新的 ended 行，使 stopped 排到第 61 位
+            for i in range(60):
+                await store.upsert_hosted(
+                    "张三", 2000 + i, seat_num="042", day=day,
+                    start=time(8, 0), end=time(10, 0),
+                    state="ended", outcome="已履约")
+            sched = Scheduler(_make_cfg(), store)
+
+            async def fake_client_ready(self, acc):
+                return FakeReserveClient()
+
+            monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
+            # reservelist 出现 999
+            FakeReserveClient.script = [[
+                _entry(999, SEAT_A, day, time(14, 0), time(16, 0), status=0),
+            ]]
+            out = await sched.sync_user_reserved()
+            # 999 被 stopped 拦截，不应被 adopted
+            assert out["adopted"] == 0
+            row = await store.find_hosted_by_reserve("张三", 999)
+            assert row["state"] == "stopped"
+        finally:
+            await store.close()
+    asyncio.run(main())
