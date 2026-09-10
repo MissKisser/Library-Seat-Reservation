@@ -627,3 +627,31 @@ def test_sync_does_not_clear_rows_on_account_failure(tmp_path, monkeypatch):
         finally:
             await store.close()
     asyncio.run(main())
+
+
+def test_sync_inactive_account_no_name_error(tmp_path, monkeypatch):
+    """禁用账号同步：actions 初始化正常，不抛 NameError，日志无 NameError 告警。"""
+    async def main():
+        from seatbot.models import Account
+        from seatbot.scheduler import Scheduler
+        from seatbot.store import StateStore
+
+        store = StateStore(str(tmp_path / "t.db"))
+        await store.init()
+        try:
+            await store.upsert_account(Account(
+                id="张三", phone="1", password="p", slots=[], status="inactive"))
+            sched = Scheduler(_make_cfg(), store)
+
+            async def fake_client_ready(self, acc):
+                return FakeReserveClient()
+
+            monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
+            FakeReserveClient.script = [[]]
+            out = await sched.sync_user_reserved()
+            assert out == {"added": 0, "pruned": 0, "adopted": 0, "queued": 0, "pending": 0, "ended": 0}
+            logs = await store.list_logs()
+            assert not any("NameError" in l.message for l in logs)
+        finally:
+            await store.close()
+    asyncio.run(main())
