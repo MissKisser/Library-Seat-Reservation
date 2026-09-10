@@ -1129,7 +1129,7 @@ class Scheduler:
                     await self.store.delete_user_reserved(rid)
                 added += len(to_add)
                 pruned += len(to_del)
-
+                actions: list = []
                 # ★ 托管采纳：仅启用账号；禁用账号保留既有 user_reserved 同步
                 if acc.status == "active":
                     stopped_ids: set[int] = set()
