@@ -1,7 +1,7 @@
 """诊断登录: 复刻 _login_via_browser, 超时则截图 + dump 可见文本, 用于定性拦截原因。
 
 用法:
-  .venv/Scripts/python.exe scripts/debug_login_shot.py <account_id>
+  .venv/Scripts/python.exe scripts/dev/debug_login_shot.py <account_id>
 
 输出: logs_debug/<acct>_<HHMMSS>.png + 页面文本摘要; 若登录成功则打印 cookies 数。
 ⚠️ 真实账号登录尝试, 仅在用户要求诊断时运行。
@@ -13,19 +13,19 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from playwright.async_api import async_playwright  # noqa: E402
 
 from seatbot.config import load_config  # noqa: E402
 from seatbot.utils.ua import random_ua  # noqa: E402
 
-OUT_DIR = Path(__file__).resolve().parents[1] / "logs_debug"
+OUT_DIR = Path(__file__).resolve().parents[2] / "logs_debug"
 
 
 async def main() -> int:
     acct = sys.argv[1]
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     cfg = load_config(root / "config.yaml")
     con = sqlite3.connect(f"file:{cfg.runtime.db_path}?mode=ro", uri=True)
     phone, password = con.execute(
@@ -80,7 +80,7 @@ async def main() -> int:
         names = sorted({c["name"] for c in cookies})
         if ok:
             # 成功 → 落盘 cookie (与 scripts/session_cache.py 同格式), 供链式脚本复用
-            cache = Path(__file__).resolve().parents[1] / ".session_cache"
+            cache = Path(__file__).resolve().parents[2] / ".session_cache"
             cache.mkdir(exist_ok=True)
             (cache / f"{acct}.json").write_text(
                 json.dumps({c["name"]: c["value"] for c in cookies}), encoding="utf-8"
