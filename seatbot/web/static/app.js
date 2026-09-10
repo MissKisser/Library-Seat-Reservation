@@ -93,7 +93,7 @@
       cancelled: { type: 'success', title: '已取消' },
       signed: { type: 'success', title: '已签到' },
       left: { type: 'success', title: '已签退' },
-      reserved: { type: 'success', title: '已续约' },
+      imported: { type: 'success', title: '已导入预约' },
       error: { type: 'error', title: '操作失败' },
     };
     const params = new URLSearchParams(location.search);
@@ -516,6 +516,9 @@
       /* 首屏动画已注释停用: active 置 false + target 置满, 避免 tick/probe 被 boot 门控卡死 */
       boot: { active: false, display: 100, target: 100, stage: '就绪' },
 
+      formatTs(ts) {
+        return window.formatTs(ts);
+      },
       init() {
         this.timer = setInterval(() => this.tick(), 1000);
         this._clockTimer = setInterval(() => this.tickClock(), 1000);
@@ -712,9 +715,48 @@
     };
   };
 
-  /* ===== 日志页：前端级别即时过滤 ===== */
-  window.logsFilter = function (initialLevel = '') {
-    return { level: initialLevel };
+  /* ===== 自动托管页：标签切换 + 刷新节流 ===== */
+  window.hostingBoard = function (initial) {
+    return {
+      tab: initial.initialTab || 'current',
+      page: initial.page || 1,
+      hasPrev: !!initial.hasPrev,
+      hasNext: !!initial.hasNext,
+      refreshing: false,
+    };
+  };
+  window.formatTs = function (ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return '';
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+
+  /* ===== 日志页：按日期分页与前端级别即时过滤 ===== */
+  window.logsFilter = function (initialLevel = '', currentDay = '', prevDay = '', nextDay = '', todayStr = '') {
+    return {
+      level: initialLevel,
+      currentDay: currentDay,
+      prevDay: prevDay,
+      nextDay: nextDay,
+      todayStr: todayStr,
+      setLevel(lv) {
+        this.level = lv;
+        const url = new URL(window.location.href);
+        if (lv) url.searchParams.set('level', lv);
+        else url.searchParams.delete('level');
+        window.history.replaceState({}, '', url.toString());
+      },
+      goToDay(day) {
+        if (!day) return;
+        const url = new URL(window.location.href);
+        url.searchParams.set('day', day);
+        if (this.level) url.searchParams.set('level', this.level);
+        else url.searchParams.delete('level');
+        window.location.href = url.toString();
+      }
+    };
   };
 
   /* ===== 移动端侧栏开关 ===== */

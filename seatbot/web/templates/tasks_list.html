@@ -75,8 +75,16 @@
             <div class="flex items-center justify-between mb-1">
               <span class="text-xs font-bold font-mono" x-text="t.seat_num + ' · ' + t.start + '–' + t.end"></span>
               <span class="chip" :class="toneOf(t)" x-text="t.status"></span>
+              <template x-if="t.source === 'adopt'">
+                <span class="chip chip-accent text-[11px]">实况托管</span>
+              </template>
+              <template x-if="t.source === 'adopt_matrix'">
+                <span class="chip chip-accent text-[11px]">实况托管·矩阵段</span>
+              </template>
+              <template x-if="t.source === 'import'">
+                <span class="chip chip-warn text-[11px]">手动导入</span>
+              </template>
             </div>
-            <div class="text-xs text-ink-secondary" x-text="'账号 ' + t.account_id"></div>
             <template x-if="t.status === 'failed'">
               <div>
                 <div class="text-xs text-danger mt-1 break-all" x-text="t.last_error || '未知原因'"></div>
