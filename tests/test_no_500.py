@@ -80,13 +80,24 @@ def test_all_get_render_200(tmp_path, monkeypatch):
     c, store = _client(tmp_path, monkeypatch)
     try:
         for path in ["/", "/bindings", "/targets", "/accounts", "/tasks",
-                     "/settings", "/audit", "/logs", "/reservations"]:
+                     "/hosting", "/settings", "/audit", "/logs", "/reservations"]:
             sep = "&" if "?" in path else "?"
             r = c.get(f"{path}{sep}token={TOKEN}",
                       headers={"Host": "127.0.0.1:8080"},
                       follow_redirects=False)
             assert r.status_code == 200, \
                 f"GET {path} -> {r.status_code}:\n{r.text[:600]}"
+    finally:
+        asyncio.run(store.close())
+
+def test_logs_day_query_render_200(tmp_path, monkeypatch):
+    c, store = _client(tmp_path, monkeypatch)
+    try:
+        for day_param in ["2026-09-09", "2026-01-01", "invalid-date", ""]:
+            r = c.get(f"/logs?day={day_param}&token={TOKEN}",
+                      headers={"Host": "127.0.0.1:8080"},
+                      follow_redirects=False)
+            assert r.status_code == 200, f"GET /logs?day={day_param} -> {r.status_code}"
     finally:
         asyncio.run(store.close())
 

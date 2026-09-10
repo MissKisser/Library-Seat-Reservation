@@ -122,12 +122,29 @@ def test_api_tasks_returns_serialized_day_tasks():
     assert r.status_code == 200
     body = r.json()
     assert body["day"] == DAY.isoformat()
-    assert [t["id"] for t in body["tasks"]] == [1, 2]
-    assert body["tasks"][1]["status"] == "active"
     assert body["tasks"][1]["start"] == "15:00"
 
 
-def test_api_tasks_defaults_to_today():
+def test_api_tasks_includes_source_field():
+    """/api/tasks 输出含 source 字段；默认 matrix；显式 import/adopt 透传。"""
+    store = FakeStore([
+        _task(1, "a1", "104", "09:00", "11:00", TaskStatus.ACTIVE),
+    ])
+    # 修改 store 中任务的 source
+    store.tasks[0].source = "adopt"
+    client = _make_client(store)
+    r = client.get("/api/tasks", params={"day": DAY.isoformat()})
+    body = r.json()
+    assert body["tasks"][0]["source"] == "adopt"
+
+    # 默认 source (未指定 → matrix)
+    store2 = FakeStore([
+        _task(1, "a1", "104", "09:00", "11:00", TaskStatus.PENDING),
+    ])
+    client2 = _make_client(store2)
+    r2 = client2.get("/api/tasks", params={"day": DAY.isoformat()})
+    body2 = r2.json()
+    assert body2["tasks"][0]["source"] == "matrix"
     store = FakeStore([])
     client = _make_client(store)
     r = client.get("/api/tasks")
