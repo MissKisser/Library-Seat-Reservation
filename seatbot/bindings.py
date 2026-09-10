@@ -232,17 +232,20 @@ def rebind_candidates(
     weekday: str,
     source_id: str,
     daily_limit_hours: float,
+    max_seg_hours: float = 2.0,
 ) -> list[dict]:
-    """某 (座位, 时段, 星期几) 可接手换绑的账号清单（排除原账号）。
+    """某 (星期几, 座位, 时段) 可接手换绑的账号清单（排除原账号）。
 
     候选条件即超星硬限制：该座位当天未绑、当天累计 ≤ daily_limit_hours、
-    与该账号其他座位当天时段不重叠。时段格式非法抛 ValueError。
-    返回 [{id, remaining_hours}]，按当天余量降序。
+    与该账号其他座位当天时段不重叠；时段本身长于 max_seg_hours 时无候选。
+    时段格式非法抛 ValueError。返回 [{id, remaining_hours}]，按当天余量降序。
     """
     try:
         start, end = parse_range(rng)
     except Exception as exc:
         raise ValueError(f"时段 {rng!r} 格式错误") from exc
+    if _hours(start, end) > max_seg_hours + 1e-9:
+        return []
     return candidate_accounts(
         accounts, seat=seat, start=start, end=end,
         exclude_id=source_id, daily_limit_hours=daily_limit_hours,
@@ -258,6 +261,7 @@ def rebind_candidates_for_days(
     weekdays: list[str],
     source_id: str,
     daily_limit_hours: float,
+    max_seg_hours: float = 2.0,
 ) -> list[dict]:
     """多天换绑的可接手账号：各天候选的交集，余量取各天最小值。
 
@@ -267,7 +271,8 @@ def rebind_candidates_for_days(
     per_day = [
         {c["id"]: c["remaining_hours"] for c in rebind_candidates(
             accounts, seat=seat, rng=rng, weekday=wd,
-            source_id=source_id, daily_limit_hours=daily_limit_hours)}
+            source_id=source_id, daily_limit_hours=daily_limit_hours,
+            max_seg_hours=max_seg_hours)}
         for wd in weekdays
     ]
     if not per_day:

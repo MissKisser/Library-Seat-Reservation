@@ -440,3 +440,14 @@ def test_rebind_matrices_drops_empty_seat_entry():
         src, dst, seat="001", rng="09:00-11:00", weekdays=["mon"],
         max_seg_hours=2.0, daily_limit_hours=5.0)
     assert "001" not in src_m
+
+
+def test_rebind_candidates_empty_when_slot_over_max_seg():
+    """时段本身超过单段上限 → 无候选（避免列出必然被拒的账号）。"""
+    accs = [_acc("src", {"001": {"mon": ["09:00-13:00"]}}), _acc("free", {})]
+    assert rebind_candidates_for_days(
+        accs, seat="001", rng="09:00-13:00", weekdays=["mon"],
+        source_id="src", daily_limit_hours=5.0, max_seg_hours=2.0) == []
+    assert [c["id"] for c in rebind_candidates_for_days(
+        accs, seat="001", rng="09:00-11:00", weekdays=["mon"],
+        source_id="src", daily_limit_hours=5.0, max_seg_hours=2.0)] == ["free"]
