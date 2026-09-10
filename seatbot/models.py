@@ -51,7 +51,7 @@ class TaskStatus(str, Enum):
     COMPLETE = "complete"        # 已签退/取消, 时段结束
     FAILED = "failed"            # 出错
 
-# ---------- task source (v2 扩展: 区分排程 / 导入 / 托管采纳) ----------
+# ---------- task source (区分排程 / 导入 / 托管采纳) ----------
 
 # 排程生成的任务（默认；14:00 批量、当日补约、启动补跑均属此列）。
 TASK_SOURCE_MATRIX = "matrix"
