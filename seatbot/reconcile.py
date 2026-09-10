@@ -96,9 +96,9 @@ def parse_reservations(
             "reserve_id": int(e["id"]),
             "seat_num": seat.zfill(3) if seat.isdigit() else seat,
             "day": day, "start": start, "end": end,
+            "status": int(e["status"]),
         })
     return out
-
 
 def diff_user_reserved(
     parsed: list[dict],
@@ -145,3 +145,139 @@ def diff_user_reserved(
         if key not in parsed_keys:
             to_delete.append(r["id"])
     return to_add, to_delete
+
+
+# ---------- 托管采纳：纯函数 ----------
+
+#: 状态映射：上游生效状态 → 托管任务初始 status。
+# 1 使用中 / 3 暂离中 = 已签到（任务直入 SIGNED，仅管签退）。
+# 0 待履约 / 5 被监督中 = 待签到（任务入 ACTIVE，待时段开始 sign）。
+ADOPT_STATUS_MAP: dict[int, str] = {1: "signed", 3: "signed", 0: "active", 5: "active"}
+
+
+def plan_adoption(
+    account_id: str,
+    parsed: list[dict],
+    known_reserve_ids: set[int],
+    stopped_reserve_ids: set[int],
+    queued_reserve_ids: set[int],
+    account_tasks: list[dict],
+    now: "datetime | None" = None,
+) -> list[dict]:
+    """为实况同步产出的 parsed 候选逐条计算采纳动作。
+
+    入参:
+        parsed: parse_reservations 输出（每条含 reserve_id/ seat_num/day/start/end/status）。
+        known_reserve_ids: 已被本地 tasks.reserve_id 跟踪的预约号（任务层接入，不再托管）。
+        stopped_reserve_ids: hosted_reservations 中 state=stopped 的预约号集合
+            （防"停止→下一轮同步重采纳"死循环；仅经页面 queued 恢复才再采纳）。
+        queued_reserve_ids: hosted_reservations 中 state=queued 的预约号集合
+            （恢复语义：原托管行被转 queued 后本轮同步若仍见则再采纳）。
+        account_tasks: 该账号当日 (account_id, day, seat_num, start_time, status) 的本地任务简表
+            （list[dict]，status 字符串）；供同键查找用。
+        now: 当前 CST 时间；为 None 时取 datetime.now(CST)。仅用于"时段已结束"判断。
+
+    返回: 动作列表，每条形如
+        {"kind": "create"|"convert"|"conflict", "account_id", "reserve_id",
+         "seat_num", "day", "start", "end", "status", "task_id"?, "span"?, "upstream_status"}
+    行为:
+        - reserve_id ∈ known_reserve_ids → 跳过（已被任务托管）。
+        - reserve_id ∈ stopped_reserve_ids 且不在 queued_reserve_ids → 跳过（被用户停止，防重采纳）。
+        - 上游 status 不在 ADOPT_STATUS_MAP → 跳过（防御性，调用方通常已按 ACTIVE_RESERVE_STATUSES 过滤）。
+        - now ≥ end → 跳过（时段已结束，不建任务/行）。
+        - 同键 (account_id, day, seat_num, start) 已有本地任务:
+            - 状态 ∈ {pending, ready} → "convert"（原地接附 reserve_id/status/source）。
+            - 状态 ∈ {failed, complete} → 不阻塞，"create"（新建）。
+            - 状态 ∈ 活跃态且 reserve_id 不同 → "conflict"（理论不可能，平台同座位每天 1 段）。
+        - 未命中 → "create"。
+    """
+    from datetime import datetime
+    if now is None:
+        from seatbot.utils.timeutil import CST
+        now = datetime.now(CST)
+
+    out: list[dict] = []
+
+    for p in parsed:
+        rid = int(p["reserve_id"])
+        if rid in known_reserve_ids:
+            continue
+        if rid in stopped_reserve_ids and rid not in queued_reserve_ids:
+            continue
+        upstream = int(p.get("status", 0))
+        mapped = ADOPT_STATUS_MAP.get(upstream)
+        if mapped is None:
+            continue
+        end_t = p["end"]
+        # 时段已结束（end_t 为 time；与 now 比较）
+        if hasattr(end_t, "hour") and not hasattr(end_t, "date"):
+            from datetime import datetime as _dt
+            from seatbot.utils.timeutil import CST as _CST
+            end_dt = _dt.combine(p["day"], end_t).replace(tzinfo=_CST) if isinstance(p["day"], date) else None
+            if end_dt is not None and now >= end_dt:
+                continue
+        same_key = [
+            t for t in account_tasks
+            if t.get("account_id") == account_id
+            and t["day"] == p["day"]
+            and t["seat_num"] == p["seat_num"]
+            and t["start_time"] == p["start"]
+        ]
+        if same_key:
+            for t in same_key:
+                if t["status"] in ("pending", "ready"):
+                    out.append({
+                        "kind": "convert",
+                        "account_id": account_id,
+                        "reserve_id": rid,
+                        "seat_num": p["seat_num"],
+                        "day": p["day"],
+                        "start": p["start"],
+                        "end": p["end"],
+                        "status": mapped,
+                        "task_id": t["id"],
+                        "upstream_status": upstream,
+                    })
+                    break
+                elif t["status"] in ("failed", "complete"):
+                    out.append({
+                        "kind": "create",
+                        "account_id": account_id,
+                        "reserve_id": rid,
+                        "seat_num": p["seat_num"],
+                        "day": p["day"],
+                        "start": p["start"],
+                        "end": p["end"],
+                        "status": mapped,
+                        "upstream_status": upstream,
+                    })
+                    break
+                else:
+                    if t.get("reserve_id") and int(t["reserve_id"]) != rid:
+                        out.append({
+                            "kind": "conflict",
+                            "account_id": account_id,
+                            "reserve_id": rid,
+                            "seat_num": p["seat_num"],
+                            "day": p["day"],
+                            "start": p["start"],
+                            "end": p["end"],
+                            "task_id": t["id"],
+                            "existing_reserve_id": int(t["reserve_id"]),
+                            "upstream_status": upstream,
+                        })
+                    break
+        else:
+            out.append({
+                "kind": "create",
+                "account_id": account_id,
+                "reserve_id": rid,
+                "seat_num": p["seat_num"],
+                "day": p["day"],
+                "start": p["start"],
+                "end": p["end"],
+                "status": mapped,
+                "upstream_status": upstream,
+            })
+    return out
+
