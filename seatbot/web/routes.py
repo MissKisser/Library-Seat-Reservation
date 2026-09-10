@@ -23,13 +23,13 @@ from seatbot.utils.weekly import (
 from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
-from seatbot.models import Account, SeatTarget, Task, TaskStatus
-from seatbot.reconcile import pick_read_account
+from seatbot.models import Account, SeatTarget, Task, TaskStatus, TASK_SOURCE_IMPORT
 from seatbot.scheduler import NextRelay
+from seatbot.reconcile import pick_read_account
+
 from seatbot.utils.timeutil import (
     at_cst, now_cst, parse_hhmm, parse_range, today_cst,
 )
-
 
 router = APIRouter()
 
@@ -585,7 +585,9 @@ def _serialize_task(t: Task) -> dict:
         "reserve_id": t.reserve_id,
         "last_error": t.last_error,
         "updated_at": t.updated_at,
+        "source": t.source,
     }
+
 
 
 async def _tasks_payload(store, cfg, d: date) -> dict:
@@ -2156,6 +2158,7 @@ async def tasks_import(
         id=None, account_id=acc.id, day=d,
         start_time=s, end_time=e, seat_num=sn,
         status=TaskStatus.ACTIVE, reserve_id=rid,
+        source=TASK_SOURCE_IMPORT,
     ))
     await store.log_action(
         acc.id, "import", str(rid),
@@ -2310,6 +2313,375 @@ async def task_leave(request: Request, task_id: int):
         await store.update_task_status(task_id, t.status, last_error=f"签退失败: {r.get('msg')}")
     return RedirectResponse("/?left=1", status_code=303)
 
+# =========================================================================
+# Hosting — 自动托管页（手动预约自动签到/签退）
+# =========================================================================
+
+_HOSTING_PAGE_SIZE = 50
+_HOSTING_STATES_CURRENT = ("queued", "hosting", "pending_decision")
+_HOSTING_STATES_HISTORY = ("stopped", "ended")
+
+
+def _hosted_to_view(h: dict, task_status: str | None) -> dict:
+    """把 hosted_reservations 行转成模板消费视图：附任务状态、判断锁定。"""
+    
+    start_h, start_m = map(int, h["start_time"].split(":"))
+    end_h, end_m = map(int, h["end_time"].split(":"))
+    return {
+        "id": h["id"],
+        "account_id": h["account_id"],
+        "seat_num": h["seat_num"],
+        "day": h["day"],
+        "start_time": h["start_time"],
+        "end_time": h["end_time"],
+        "reserve_id": h["reserve_id"],
+        "state": h["state"],
+        "outcome": h["outcome"] or "",
+        "task_id": h.get("task_id"),
+        "task_status": task_status,
+        "start_h": start_h, "start_m": start_m,
+        "end_h": end_h, "end_m": end_m,
+    }
+
+@router.get("/hosting", response_class=HTMLResponse)
+
+async def hosting_page(
+    request: Request,
+    page: int = 1,
+):
+    """自动托管页：当前列表（hosting/queued/pending_decision）+ 托管记录（stopped/ended 分页）。"""
+
+
+    store = request.app.state.store
+    error = request.query_params.get("error")
+    msg = request.query_params.get("msg")
+    now = now_cst()
+
+    # 当前列表：state ∈ queued/hosting/pending_decision
+    current_rows = await store.list_hosted(states=list(_HOSTING_STATES_CURRENT))
+    current_view: list[dict] = []
+    for h in current_rows:
+        task = None
+        if h.get("task_id"):
+            task = await store.get_task(int(h["task_id"]))
+        v = _hosted_to_view(h, task.status.value if task else None)
+        # now >= start：锁定置灰（只有 hosting 状态的开关受影响；pending_decision 仍可操作）
+        
+        start_dt = at_cst(date.fromisoformat(h["day"]),
+                            _time(v["start_h"], v["start_m"]))
+        v["locked"] = now >= start_dt
+        current_view.append(v)
+
+    # 记录：stopped/ended 分页
+    page = max(1, int(page or 1))
+    offset = (page - 1) * _HOSTING_PAGE_SIZE
+    history_rows = await store.list_hosted(
+        states=list(_HOSTING_STATES_HISTORY),
+        limit=_HOSTING_PAGE_SIZE, offset=offset,
+    )
+    history_view: list[dict] = []
+    for h in history_rows:
+        task = None
+        if h.get("task_id"):
+            task = await store.get_task(int(h["task_id"]))
+        v = _hosted_to_view(h, task.status.value if task else None)
+        history_view.append(v)
+    total_history = len(await store.list_hosted(states=list(_HOSTING_STATES_HISTORY)))
+    has_next = offset + len(history_view) < total_history
+    has_prev = page > 1
+
+    mode = await _schedule_mode(request)
+    ctx = await _ctx(
+        request, current=current_view, history=history_view,
+        page=page, has_next=has_next, has_prev=has_prev,
+        error=error, msg=msg, active_page="hosting", mode=mode,
+    )
+    return _templates(request).TemplateResponse(request, "hosting.html", ctx)
+
+
+@router.post("/hosting/{hosted_id}/toggle")
+async def hosting_toggle(
+    request: Request,
+    hosted_id: int,
+    enabled: int = Form(...),
+):
+    """单条托管开关：enabled=1 恢复（queued），enabled=0 停止（stopped）。
+
+    关：仅 hosting 且 now < start；任务 FAILED，占位行改手动标记。
+    开：仅 stopped 且 now < end；行转 queued。
+    """
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    row = await store.get_hosted(hosted_id)
+    if not row:
+        raise HTTPException(404, "托管行不存在")
+    day_d = date.fromisoformat(row["day"])
+    start_dt = at_cst(day_d, _time(*map(int, row["start_time"].split(":"))))
+    end_dt = at_cst(day_d, _time(*map(int, row["end_time"].split(":"))))
+    now = now_cst()
+    if enabled == 0:
+        if row["state"] != "hosting":
+            return RedirectResponse(
+                f"/hosting?error={quote('仅托管中条目可关闭')}", status_code=303)
+        if now >= start_dt:
+            return RedirectResponse(
+                f"/hosting?error={quote('时段已开始，托管已锁定')}", status_code=303)
+        # 任务 FAILED（仅在托管任务确实存在时）
+        if row.get("task_id"):
+            await store.update_task_status(
+                int(row["task_id"]), TaskStatus.FAILED,
+                last_error="手动停止托管",
+            )
+        # 删 AUTO_SYNC 占位行（保留手动行）
+        ur_rows = await store.list_user_reserved(day=day_d, seat_num=row["seat_num"])
+        for r in ur_rows:
+            if (r["note"] == "实况自动同步"
+                and r["account_id"] == row["account_id"]):
+                await store.delete_user_reserved(int(r["id"]))
+        # 加手动占位行
+        await store.add_user_reserved(
+            row["account_id"], row["seat_num"], day_d,
+            _time(*map(int, row["start_time"].split(":"))),
+            _time(*map(int, row["end_time"].split(":"))),
+            note="托管停止登记",
+        )
+        await store.update_hosted(hosted_id, state="stopped", outcome="手动停止托管")
+        return RedirectResponse(
+            f"/hosting?msg={quote('已停止托管')}", status_code=303)
+    # enabled == 1：恢复
+    if row["state"] != "stopped":
+        return RedirectResponse(
+            f"/hosting?error={quote('该条目不可恢复')}", status_code=303)
+    if now >= end_dt:
+        return RedirectResponse(
+            f"/hosting?error={quote('时段已结束，无法恢复')}", status_code=303)
+    await store.update_hosted(hosted_id, state="queued", outcome="")
+    return RedirectResponse(
+        f"/hosting?msg={quote('已恢复托管，等待重新采纳')}", status_code=303)
+
+
+@router.post("/hosting/{hosted_id}/regrab")
+async def hosting_regrab(request: Request, hosted_id: int):
+    """待决条目原账号重抢：建 READY 任务并立即 _run_submit。"""
+    
+    from urllib.parse import quote
+
+
+    store = request.app.state.store
+    sched = getattr(request.app.state, "sched", None)
+    if sched is None or not hasattr(sched, "_run_submit"):
+        return RedirectResponse(
+            f"/hosting?error={quote('scheduler 不可用')}", status_code=303)
+    row = await store.get_hosted(hosted_id)
+    if not row:
+        raise HTTPException(404)
+    if row["state"] != "pending_decision":
+        return RedirectResponse(
+            f"/hosting?error={quote('仅待决条目可重抢')}", status_code=303)
+    day_d = date.fromisoformat(row["day"])
+    start_t = _time(*map(int, row["start_time"].split(":")))
+    end_t = _time(*map(int, row["end_time"].split(":")))
+    now = now_cst()
+    if now >= at_cst(day_d, end_t):
+        return RedirectResponse(
+            f"/hosting?error={quote('时段已结束，无法重抢')}", status_code=303)
+    # 校验：每日限额、时段合法、该 (account, day, seat, start) 已存在则放弃
+    lib = request.app.state.config.library
+    from seatbot.utils.timeutil import at_cst as _at_cst
+    hours = (_at_cst(day_d, end_t) - _at_cst(day_d, start_t)).total_seconds() / 3600
+    if hours > float(lib.max_reserve_hours):
+        return RedirectResponse(
+            f"/hosting?error={quote('超过单段时长上限')}", status_code=303)
+    # 每日限额
+    used = 0.0
+    for t in await store.list_tasks(account_id=row["account_id"], day=day_d):
+        if t.status.value not in ("failed", "complete"):
+            used += ((_at_cst(day_d, t.end_time)
+                       - _at_cst(day_d, t.start_time)).total_seconds() / 3600)
+    if used + hours > float(lib.daily_reserve_hours_limit):
+        return RedirectResponse(
+            f"/hosting?error={quote('账号当日余量不足')}", status_code=303)
+    # E4 防护
+    if await store.has_active_task_for_account_day_start(
+        row["account_id"], day_d, start_t, row["seat_num"]):
+        return RedirectResponse(
+            f"/hosting?error={quote('该账号当日同座位同时段已有任务')}", status_code=303)
+    # 建 READY 任务并提交
+    from seatbot.models import TASK_SOURCE_ADOPT as _ADOPT
+    try:
+        new_tid = await store.add_task(Task(
+            id=None, account_id=row["account_id"], day=day_d,
+            start_time=start_t, end_time=end_t, seat_num=row["seat_num"],
+            status=TaskStatus.READY, source=_ADOPT,
+        ))
+    except Exception as e:
+        await store.update_hosted(hosted_id, state="stopped",
+                                   outcome=f"重抢失败：{type(e).__name__}")
+        return RedirectResponse(
+            f"/hosting?error={quote('重抢失败：'+str(e))}", status_code=303)
+    loaded = await store.get_task(new_tid)
+    if loaded:
+        try:
+            await sched._run_submit(
+                await store.get_account(row["account_id"]) or Account(
+                    id=row["account_id"], phone="", password="", slots=[]),
+                loaded,
+            )
+        except Exception as e:
+            await store.update_hosted(hosted_id, state="stopped",
+                                       outcome=f"重抢失败：{type(e).__name__}")
+            return RedirectResponse(
+                f"/hosting?error={quote('重抢失败：'+str(e))}", status_code=303)
+    # 校验 reserve_id 是否成功写入
+    after = await store.get_task(new_tid)
+    if not (after and after.status.value == TaskStatus.ACTIVE.value
+            and after.reserve_id):
+        await store.update_hosted(hosted_id, state="stopped",
+                                   outcome="重抢失败")
+        return RedirectResponse(
+            f"/hosting?error={quote('重抢失败，未取得预约号')}", status_code=303)
+    await store.update_hosted(hosted_id, state="hosting", outcome="",
+                               task_id=new_tid)
+    return RedirectResponse(
+        f"/hosting?msg={quote('已重抢预约')}", status_code=303)
+
+
+@router.post("/hosting/{hosted_id}/abandon")
+async def hosting_abandon(request: Request, hosted_id: int):
+    """待决条目放弃重抢。"""
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    row = await store.get_hosted(hosted_id)
+    if not row:
+        raise HTTPException(404)
+    if row["state"] != "pending_decision":
+        return RedirectResponse(
+            f"/hosting?error={quote('仅待决条目可放弃')}", status_code=303)
+    await store.update_hosted(hosted_id, state="stopped",
+                               outcome="用户放弃重抢")
+    return RedirectResponse(
+        f"/hosting?msg={quote('已放弃重抢')}", status_code=303)
+
+
+@router.post("/hosting/{hosted_id}/add-matrix")
+async def hosting_add_matrix(request: Request, hosted_id: int):
+    """把托管记录写入守护矩阵：座位期望时段 + 账号绑定。
+
+    - 座位未注册：自动注册为目标座位（D7）。
+    - schedule_mode（设置键）：全局统一→7 天；按天自定义→只写当天周几。
+    - 选号：优先行内账号 → 校验（每段 ≤2h、每日 ≤5h、跨座不重叠）→ 不过则换绑；
+      无人可用 → 400 错误提示。
+    - 写入：账号 seat_slots[seat][wd] + 座位 desired_slots[wd] 补时段（幂等）。
+    """
+    from urllib.parse import quote
+    from seatbot.utils.weekly import weekday_key
+
+    store = request.app.state.store
+    row = await store.get_hosted(hosted_id)
+    if not row:
+        raise HTTPException(404)
+    day_d = date.fromisoformat(row["day"])
+    sn = row["seat_num"]
+    start_t = _time(*map(int, row["start_time"].split(":")))
+    end_t = _time(*map(int, row["end_time"].split(":")))
+    rng = f"{start_t.strftime('%H:%M')}-{end_t.strftime('%H:%M')}"
+
+    # 模式
+    mode = await _schedule_mode(request)
+    target_wds = list(WEEKDAY_KEYS) if mode == "uniform" else [weekday_key(day_d)]
+
+    # 座位自动注册
+    existing_seats = {s.seat_num for s in await store.list_target_seats()}
+    if sn not in existing_seats:
+        await store.add_target_seat(sn)
+
+    # 期望时段：补时段
+    seat_obj = next((s for s in await store.list_target_seats()
+                     if s.seat_num == sn), None)
+    is_weekly = (mode == "weekly")
+    if seat_obj:
+
+        # 收集所有要写入的天已有期望时段
+        cur = seat_obj.desired_slots_weekly if is_weekly else seat_obj.desired_slots
+        if not isinstance(cur, dict):
+            cur = {wd: [] for wd in WEEKDAY_KEYS}
+        else:
+            cur = {wd: list(cur.get(wd, [])) for wd in WEEKDAY_KEYS}
+        for wd in target_wds:
+            if rng not in cur.get(wd, []):
+                cur[wd] = list(cur.get(wd, [])) + [rng]
+        await store.set_target_seat_desired(sn, cur, is_weekly=is_weekly)
+
+    # 选号：优先行内账号
+    accounts = await store.list_accounts()
+    primary = next((a for a in accounts if a.id == row["account_id"]), None)
+    chosen = None
+    reason = ""
+    lib = request.app.state.config.library
+    candidates: list[Account] = []
+    if primary and primary.status == "active":
+        candidates.append(primary)
+    for a in accounts:
+        if a.status != "active":
+            continue
+        if primary and a.id == primary.id:
+            continue
+        candidates.append(a)
+
+    # 简化路径：直接走 _matrix_set_day + validate_matrix + upsert_account
+    from seatbot.bindings import validate_matrix as _validate
+    reason = ""
+    chosen = None
+    for cand in candidates:
+        matrix = dict(cand.seat_slots or {})
+        for wd in target_wds:
+            matrix = _matrix_set_day(matrix, sn, wd, [rng])
+        try:
+            _validate(
+                matrix, max_seg_hours=float(lib.max_reserve_hours),
+                daily_limit_hours=float(lib.daily_reserve_hours_limit),
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            continue
+        # 落库
+        cand.seat_slots = matrix
+        cand.bound_seats = sorted(matrix.keys())
+        await store.upsert_account(cand)
+        chosen = cand
+        break
+    if chosen is None:
+        return RedirectResponse(
+            f"/hosting?error={quote('无可用账号：'+reason)}", status_code=303)
+    # 范围说明
+    if mode == "uniform":
+        scope_text = "周一至周日"
+    else:
+        scope_text = f"仅{WEEKDAY_LABELS[weekday_key(day_d)]}"
+    return RedirectResponse(
+        f"/hosting?msg={quote('已加入矩阵：账号 '+chosen.id+'，'+scope_text)}",
+        status_code=303)
+
+
+@router.post("/hosting/refresh")
+async def hosting_refresh(request: Request):
+    """立即刷新实况同步（仅只读 GET，与 reconcile_tick 共用 _reconcile_running 互斥）。"""
+    from urllib.parse import quote
+
+    sched = getattr(request.app.state, "sched", None)
+    if sched is None or not hasattr(sched, "refresh_hosting_now"):
+        return RedirectResponse(
+            f"/hosting?error={quote('scheduler 不可用')}", status_code=303)
+    out = await sched.refresh_hosting_now()
+    if out.get("busy"):
+        return RedirectResponse(
+            f"/hosting?error={quote('同步进行中，请稍候')}", status_code=303)
+    n = out.get("adopted", 0)
+    return RedirectResponse(
+        f"/hosting?msg={quote(f'已刷新，采纳 {n} 条')}", status_code=303)
+
 
 # =========================================================================
 # Reservations — 预约记录（对齐官方 App 预约记录页）
@@ -2453,14 +2825,46 @@ async def logs_view(
     request: Request,
     account_id: str | None = None,
     level: str | None = None,
+    day: str | None = None,
 ):
     store = request.app.state.store
-    rows = await store.list_logs(account_id=account_id, level=level, limit=300)
+    try:
+        d = date.fromisoformat(day) if day else today_cst()
+    except (ValueError, TypeError):
+        d = today_cst()
+
+    day_str = d.isoformat()
+    prev_day = (d - timedelta(days=1)).isoformat()
+    next_day = (d + timedelta(days=1)).isoformat()
+    today_str = today_cst().isoformat()
+
+    rows = await store.list_logs(account_id=account_id, level=level, limit=300, day=d)
+
+    list_days_fn = getattr(store, "list_log_days", None)
+    if callable(list_days_fn):
+        try:
+            available_days = await list_days_fn(limit=30)
+        except Exception:
+            available_days = []
+    else:
+        available_days = []
+    if day_str not in available_days:
+        available_days = sorted(set(available_days + [day_str]), reverse=True)
+
     return _templates(request).TemplateResponse(
         request, "logs.html",
-        await _ctx(request, logs=rows,
-                    filter_account=account_id, filter_level=level,
-                    active_page="logs"),
+        await _ctx(
+            request,
+            logs=rows,
+            current_day=day_str,
+            prev_day=prev_day,
+            next_day=next_day,
+            today_str=today_str,
+            available_days=available_days,
+            filter_account=account_id,
+            filter_level=level,
+            active_page="logs",
+        ),
     )
 
 

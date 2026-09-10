@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}自动托管{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-5"
+     x-data='hostingBoard({
+       initialTab: "{{ initial_tab|default("current") }}",
+       page: {{ page }},
+       hasPrev: {{ "true" if has_prev else "false" }},
+       hasNext: {{ "true" if has_next else "false" }},
+     })'>
+  {% if error %}
+  <div class="card border-danger/40"><div class="card-body text-sm text-danger">{{ error }}</div></div>
+  {% endif %}
+  {% if msg %}
+  <div class="card border-success/40"><div class="card-body text-sm text-success">{{ msg }}</div></div>
+  {% endif %}
+
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">自动托管</h1>
+      <p class="page-sub">启用账号的手动预约自动签到/签退；可手动停止或恢复到矩阵</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <form method="post" action="/hosting/refresh" class="inline">
+        <button class="btn btn-primary btn-sm" type="submit"
+                :disabled="refreshing"
+                x-text="refreshing ? '刷新中…' : '立即刷新'"></button>
+      </form>
+    </div>
+  </div>
+
+  {# 标签切换 #}
+  <div class="flex border border-edge-subtle rounded-lg overflow-hidden text-xs w-fit">
+    <button type="button"
+            @click="tab='current'"
+            :class="tab==='current' ? 'bg-accent text-white font-semibold' : 'text-ink-secondary hover:bg-app-muted'"
+            class="px-3 py-1.5">当前 <span class="ml-1 opacity-75">{{ current|length }}</span></button>
+    <button type="button"
+            @click="tab='history'"
+            :class="tab==='history' ? 'bg-accent text-white font-semibold' : 'text-ink-secondary hover:bg-app-muted'"
+            class="px-3 py-1.5">托管记录 <span class="ml-1 opacity-75">{{ history|length }}</span></button>
+  </div>
+
+  {# 当前列表 #}
+  <div x-show="tab==='current'" class="flex flex-col gap-3">
+    {% if current %}
+    {% for h in current %}
+    <div class="card p-3 flex items-center justify-between gap-3"
+         :class="h.state === 'pending_decision' ? 'border-warn/40' : ''">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="font-mono font-bold">{{ h.account_id }}</span>
+          <span class="chip chip-muted">{{ h.seat_num }}</span>
+          <span class="font-mono text-xs">{{ h.day }} {{ h.start_time }}–{{ h.end_time }}</span>
+          {% if h.state == "hosting" %}<span class="chip chip-accent">托管中</span>
+          {% elif h.state == "pending_decision" %}<span class="chip chip-warn">待决·预约已取消</span>
+          {% elif h.state == "queued" %}<span class="chip chip-muted">待重新采纳</span>
+          {% endif %}
+          {% if h.task_status %}<span class="chip chip-muted text-[11px]">任务 {{ h.task_status }}</span>{% endif %}
+        </div>
+        <div class="text-xs text-ink-secondary">预约号 <span class="font-mono">{{ h.reserve_id }}</span>{% if h.task_id %} · 任务 #{{ h.task_id }}{% endif %}</div>
+        {% if h.outcome %}<div class="text-xs text-ink-muted mt-1">{{ h.outcome }}</div>{% endif %}
+      </div>
+
+      <div class="flex items-center gap-2 shrink-0">
+        {% if h.state == "hosting" %}
+        <form method="post" action="/hosting/{{ h.id }}/toggle" class="inline">
+          <input type="hidden" name="enabled" value="0">
+          <button class="btn btn-secondary btn-sm"
+                  type="submit"
+                  {% if h.locked %}disabled title="时段已开始，托管已锁定"{% endif %}>停止托管</button>
+        </form>
+        {% elif h.state == "stopped" %}
+        <form method="post" action="/hosting/{{ h.id }}/toggle" class="inline">
+          <input type="hidden" name="enabled" value="1">
+          <button class="btn btn-secondary btn-sm" type="submit">恢复托管</button>
+        </form>
+        {% elif h.state == "pending_decision" %}
+        <form method="post" action="/hosting/{{ h.id }}/regrab" class="inline">
+          <button class="btn btn-primary btn-sm" type="submit">重抢</button>
+        </form>
+        <form method="post" action="/hosting/{{ h.id }}/abandon" class="inline">
+          <button class="btn btn-secondary btn-sm" type="submit">放弃</button>
+        </form>
+        {% endif %}
+
+        <form method="post" action="/hosting/{{ h.id }}/add-matrix" class="inline"
+              onsubmit="return window.confirmAction({
+                title: '加入守护矩阵',
+                desc: '将把该时段写入当前账号的 seat_slots 与该座位期望时段（{% if mode == 'weekly' %}按天自定义{% else %}全局统一{% endif %}）。若当前账号余量不足将自动换绑。',
+                confirmText: '加入',
+              })">
+          <button class="btn btn-secondary btn-sm" type="submit">添加到任务</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="text-xs text-ink-muted text-center py-8 border border-dashed border-edge-subtle rounded-xl">
+      暂无当前托管条目
+    </div>
+    {% endif %}
+  </div>
+
+  {# 托管记录 #}
+  <div x-show="tab==='history'" class="flex flex-col gap-3">
+    {% if history %}
+    {% for h in history %}
+    <div class="card p-3">
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-mono font-bold">{{ h.account_id }}</span>
+            <span class="chip chip-muted">{{ h.seat_num }}</span>
+            <span class="font-mono text-xs">{{ h.day }} {{ h.start_time }}–{{ h.end_time }}</span>
+            {% if h.state == "ended" %}<span class="chip chip-success">已结束</span>
+            {% elif h.state == "stopped" %}<span class="chip chip-muted">已停止</span>
+            {% endif %}
+          </div>
+          <div class="text-xs text-ink-secondary">预约号 <span class="font-mono">{{ h.reserve_id }}</span>{% if h.task_id %} · 任务 #{{ h.task_id }}{% endif %}{% if h.task_status %} · 任务状态 {{ h.task_status }}{% endif %}</div>
+          {% if h.outcome %}<div class="text-xs text-ink-muted mt-1">{{ h.outcome }}</div>{% endif %}
+        </div>
+        <form method="post" action="/hosting/{{ h.id }}/add-matrix" class="inline"
+              onsubmit="return window.confirmAction({
+                title: '加入守护矩阵',
+                desc: '将把该时段写入守护矩阵（{% if mode == 'weekly' %}按天自定义{% else %}全局统一{% endif %}）。',
+                confirmText: '加入',
+              })">
+          <button class="btn btn-secondary btn-sm" type="submit">添加到任务</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+    <div class="flex justify-between items-center text-xs text-ink-secondary">
+      <a class="btn btn-secondary btn-sm" x-show="hasPrev" href="/hosting?page={{ page - 1 }}">← 上一页</a>
+      <span x-show="!hasPrev"></span>
+      <span class="font-mono">第 {{ page }} 页</span>
+      <a class="btn btn-secondary btn-sm" x-show="hasNext" href="/hosting?page={{ page + 1 }}">下一页 →</a>
+      <span x-show="!hasNext"></span>
+    </div>
+    {% else %}
+    <div class="text-xs text-ink-muted text-center py-8 border border-dashed border-edge-subtle rounded-xl">
+      暂无托管记录
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
