@@ -185,10 +185,11 @@ def test_hosting_get_empty_renders_200():
 
 
 def test_hosting_toggle_stop_before_start():
+    from datetime import timedelta
     store = FakeHostingStore()
     store.hosted.append({
         "id": 1, "account_id": "张三", "reserve_id": 101,
-        "seat_num": "021", "day": DAY.isoformat(),
+        "seat_num": "021", "day": (DAY + timedelta(days=1)).isoformat(),
         "start_time": "21:00", "end_time": "22:00",
         "state": "hosting", "outcome": "", "task_id": None,
     })
@@ -215,10 +216,11 @@ def test_hosting_toggle_stop_after_start_locked():
 
 
 def test_hosting_toggle_recover():
+    from datetime import timedelta
     store = FakeHostingStore()
     store.hosted.append({
         "id": 1, "account_id": "张三", "reserve_id": 101,
-        "seat_num": "021", "day": DAY.isoformat(),
+        "seat_num": "021", "day": (DAY + timedelta(days=1)).isoformat(),
         "start_time": "20:00", "end_time": "22:00",
         "state": "stopped", "outcome": "已停止", "task_id": None,
     })

@@ -159,7 +159,7 @@ def test_sync_registers_then_prunes(tmp_path, monkeypatch):
         try:
             await store.upsert_account(Account(
                 id="张三", phone="1", password="p", slots=[]))
-            day = today_cst()
+            day = today_cst() + timedelta(days=1)
             tid = await store.add_task(Task(
                 id=None, account_id="张三", day=day,
                 start_time=time(14, 0), end_time=time(16, 0)))
@@ -327,6 +327,9 @@ def test_plan_adoption_creates_new_for_untracked_reservation():
     assert actions[0]["status"] == "active"  # status=0 → active
 
 
+
+
+
 def test_plan_adoption_status_mapping_for_in_progress():
     """status=1/3 → signed（已签到，仅管签退）；status=0/5 → active。"""
     from seatbot.reconcile import plan_adoption
@@ -364,6 +367,7 @@ def test_plan_adoption_skips_known_stopped_and_ended():
     assert a2 == []
     # queued 包含 2 → 允许采纳
     a3 = plan_adoption("zs", parsed[1:], set(), {2}, {2}, [], now=now)
+    assert len(a3) == 1 and a3[0]["kind"] == "create"
 
 def test_plan_adoption_skips_ended():
     """时段已结束（now ≥ end）→ 跳过。"""
@@ -416,7 +420,7 @@ def test_sync_adopts_new_reservation_creates_task_and_hosted(tmp_path, monkeypat
                 return FakeReserveClient()
 
             monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
-            day = today_cst()
+            day = today_cst() + timedelta(days=1)
             FakeReserveClient.script = [[
                 _entry(501, SEAT_A, day, time(14, 0), time(16, 0), status=0),
             ]]
@@ -458,7 +462,7 @@ def test_sync_adopts_in_progress_reservation_marks_signed(tmp_path, monkeypatch)
                 return FakeReserveClient()
 
             monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
-            day = today_cst()
+            day = today_cst() + timedelta(days=1)
             FakeReserveClient.script = [[
                 _entry(601, SEAT_A, day, time(15, 0), time(17, 0), status=1),
             ]]
@@ -490,7 +494,7 @@ def test_sync_pending_decision_when_reservation_disappears(tmp_path, monkeypatch
                 return FakeReserveClient()
 
             monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
-            day = today_cst()
+            day = today_cst() + timedelta(days=1)
             # 第一轮：采纳
             FakeReserveClient.script = [[
                 _entry(701, SEAT_A, day, time(15, 0), time(17, 0), status=0),
@@ -669,7 +673,7 @@ def test_sync_more_than_50_hosted_stopped_still_intercepts(tmp_path, monkeypatch
         try:
             await store.upsert_account(Account(
                 id="张三", phone="1", password="p", slots=[]))
-            day = today_cst()
+            day = today_cst() + timedelta(days=1)
             # 插入 1 个 stopped 行 (reserve_id=999)
             await store.upsert_hosted(
                 "张三", 999, seat_num="042", day=day,
