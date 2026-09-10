@@ -3,16 +3,47 @@
 {% block title %}日志{% endblock %}
 
 {% block content %}
-<div class="flex flex-col gap-5" x-data="logsFilter('{{ filter_level or '' }}')">
+<div class="flex flex-col gap-5" x-data="logsFilter('{{ filter_level or '' }}', '{{ current_day }}', '{{ prev_day }}', '{{ next_day }}', '{{ today_str }}')">
   <div class="page-header">
-    <div><h1 class="page-title">日志</h1><p class="page-sub">调度器与预约执行记录（级别过滤为前端即时过滤）</p></div>
-    <div class="flex items-center gap-2">
-      {% set _levels = [('', '全部'), ('INFO', 'INFO'), ('WARN', 'WARN'), ('ERROR', 'ERROR')] %}
-      {% for lv, label in _levels %}
-      <button type="button" class="chip"
-              :class="level === '{{ lv }}' ? 'chip-accent' : 'chip-muted'"
-              @click="level = '{{ lv }}'">{{ label }}</button>
-      {% endfor %}
+    <div>
+      <h1 class="page-title">日志</h1>
+      <p class="page-sub">调度器与预约执行记录 · <span class="font-mono text-ink-primary font-bold">{{ current_day }}</span> 共 {{ logs|length }} 条</p>
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      {# 日期分页导航 #}
+      <div class="flex items-center gap-1.5">
+        <a class="btn btn-secondary btn-sm" href="/logs?day={{ prev_day }}{% if filter_level %}&level={{ filter_level }}{% endif %}{% if filter_account %}&account_id={{ filter_account }}{% endif %}" title="前一天">← 前一天</a>
+        <input type="date" class="input font-mono" style="height:1.75rem;width:auto;padding:0 0.5rem;font-size:12px;border-radius:0.5rem;"
+               value="{{ current_day }}" @change="goToDay($event.target.value)">
+        <a class="btn btn-secondary btn-sm" href="/logs?day={{ next_day }}{% if filter_level %}&level={{ filter_level }}{% endif %}{% if filter_account %}&account_id={{ filter_account }}{% endif %}" title="后一天">后一天 →</a>
+        {% if current_day != today_str %}
+        <a class="btn btn-secondary btn-sm" href="/logs?day={{ today_str }}{% if filter_level %}&level={{ filter_level }}{% endif %}{% if filter_account %}&account_id={{ filter_account }}{% endif %}" title="返回今天">今天</a>
+        {% endif %}
+      </div>
+
+      {# 快速跳转下拉 #}
+      {% if available_days and available_days|length > 1 %}
+      <div class="flex items-center">
+        <select class="select font-mono" style="height:1.75rem;width:auto;padding:0 0.5rem;font-size:12px;border-radius:0.5rem;"
+                @change="goToDay($event.target.value)">
+          {% for ad in available_days %}
+          <option value="{{ ad }}" {% if ad == current_day %}selected{% endif %}>{{ ad }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+
+      <div class="h-4 w-px bg-border-subtle mx-1 hidden sm:block"></div>
+
+      {# 级别过滤 #}
+      <div class="flex items-center gap-1.5">
+        {% set _levels = [('', '全部'), ('INFO', 'INFO'), ('WARN', 'WARN'), ('ERROR', 'ERROR')] %}
+        {% for lv, label in _levels %}
+        <button type="button" class="chip"
+                :class="level === '{{ lv }}' ? 'chip-accent' : 'chip-muted'"
+                @click="setLevel('{{ lv }}')">{{ label }}</button>
+        {% endfor %}
+      </div>
     </div>
   </div>
 
@@ -34,7 +65,7 @@
             <td class="font-mono text-xs">{{ log.message }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="4">{{ empty(title='暂无日志', hint='系统运行后将产生日志记录') }}</td></tr>
+          <tr><td colspan="4">{{ empty(title='暂无日志', hint=(current_day or '') + ' 暂无日志记录') }}</td></tr>
           {% endfor %}
         </tbody>
       </table>
