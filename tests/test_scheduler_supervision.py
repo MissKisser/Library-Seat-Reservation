@@ -4,7 +4,6 @@ from datetime import time
 
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.utils.timeutil import now_cst, today_cst
-from seatbot.utils.timeutil import today_cst
 from seatbot.scheduler import Scheduler
 
 
@@ -14,9 +13,11 @@ class _FakeStore:
         self.notifications = []
         self.actions = []
         self.statuses = []
+        self.messages = []
 
     async def log_message(self, level, account_id, message):
-        pass
+        self.messages.append((level, account_id, message))
+
 
     async def log_action(self, account_id, action, request, response,
                          success, message=None):
@@ -121,7 +122,10 @@ def test_supervised_reservation_triggers_sign_and_notifications():
     assert "监督已解除" in titles
     warn = [n for n in store.notifications if n["level"] == "warn"]
     assert len(warn) == 1 and "赵六" in warn[0]["body"] and "021" in warn[0]["body"]
-    assert ("赵六", "supervise_sign", "900000001", True) in store.actions
+    assert ("WARN", "赵六", "检测到监督: 座位=021 预约号#900000001，20 分钟窗口内自动重新签到") \
+        in store.messages
+    assert ("INFO", "赵六", "监督已解除: 座位=021 预约号#900000001 自动落座成功") \
+        in store.messages
 
 
 def test_sign_success_marks_matching_active_task_signed():
@@ -141,6 +145,8 @@ def test_detection_notification_fires_once_per_episode():
     detected = [n for n in store.notifications
                 if "检测到监督" in n["title"]]
     assert len(detected) == 1
+    detected_logs = [m for m in store.messages if "检测到监督" in m[2]]
+    assert len(detected_logs) == 1
 
 
 def test_check_skipped_when_no_cookies():

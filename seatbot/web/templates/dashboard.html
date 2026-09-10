@@ -95,8 +95,14 @@
       <template x-for="n in notifications" :key="n.id">
         <div class="banner" :class="n.level === 'error' ? 'banner-error' : (n.level === 'info' ? 'banner-info' : 'banner-warn')">
           <span class="dot"></span>
-          <span><b x-text="n.title"></b><span class="ml-2" x-text="n.body"></span></span>
-          <button type="button" class="btn btn-sm btn-ghost ml-auto"
+          <div class="flex-1 min-w-0">
+            <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <b x-text="n.title"></b>
+              <span class="font-mono text-xs text-ink-muted" x-text="n.time_str || formatTs(n.ts)"></span>
+              <span class="text-ink-secondary break-all" x-text="n.body"></span>
+            </div>
+          </div>
+          <button type="button" class="btn btn-sm btn-ghost ml-auto shrink-0"
                   :disabled="dismissBusy === n.id"
                   @click="dismissNotification(n.id)">忽略</button>
         </div>
