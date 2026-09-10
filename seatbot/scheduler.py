@@ -312,8 +312,8 @@ class Scheduler:
         tick_account 调用; 会话 cookie 为空时跳过 (登录由签到/签退
         动作路径负责, 避免每分钟触发浏览器登录风暴)。
 
-        每个监督回合: 首次检测发 warn 通知, 解除成功发 info 通知并
-        将匹配到的本地 ACTIVE 任务置 SIGNED; 解除失败保持下轮重试。
+        每个监督回合: 首次检测写日志并发 warn 通知, 解除成功写日志、
+        发 info 通知并将匹配到的本地 ACTIVE 任务置 SIGNED; 解除失败保持下轮重试。
         """
         client = await self.client_ready(acc)
         if not client.cookies():
@@ -352,6 +352,9 @@ class Scheduler:
             seat = str(rec.get("seatNum") or "?")
             if self._supervise_seen.get(rid) != "detected":
                 self._supervise_seen[rid] = "detected"
+                await self._warn(
+                    f"检测到监督: 座位={seat} 预约号#{rid}，"
+                    f"20 分钟窗口内自动重新签到", acc.id)
                 await self._notify(
                     "检测到监督：正在自动落座",
                     f"账号={acc.id} 座位={seat} 预约号#{rid}，"
@@ -371,6 +374,8 @@ class Scheduler:
             )
             if sr.get("success"):
                 self._supervise_seen[rid] = "resolved"
+                await self._info(
+                    f"监督已解除: 座位={seat} 预约号#{rid} 自动落座成功", acc.id)
                 await self.store.add_notification(
                     "监督已解除",
                     f"账号={acc.id} 座位={seat} 预约号#{rid} 自动落座成功",
@@ -1068,23 +1073,31 @@ class Scheduler:
 
     async def sync_user_reserved(self) -> dict:
         """实况同步：把各账号 reservelist 中未被本地任务跟踪的生效预约
-        自动补登为 user_reserved，并清退已失效的自动同步行。
+        自动补登为 user_reserved，并清退已失效的自动同步行；同时按
+        启用账号维度自动托管未跟踪预约（建 hosted_reservations 行 +
+        ACTIVE/SIGNED 托管任务）。
 
         随实况核对节拍运行；reservelist 只返回登录账号本人的记录，故
         逐账号各发 1 个只读 GET。补登走与手动登记同一张表（note 带实况
         同步标记），排程生成任务时据此跳过冲突时段；预约取消/履约/违约
         后从 reservelist 消失，对应自动行在下一轮被清退，手动登记行不受
         影响。单账号查询失败仅跳过该账号（本轮不清退其行，防止误删），
-        记 warn 告警。返回 {"added", "pruned"} 计数。
+        记 warn 告警。返回 {"added", "pruned", "adopted", "queued", "pending", "ended"} 计数。
         """
         from seatbot.reconcile import (
             AUTO_SYNC_NOTE,
             diff_user_reserved,
             parse_reservations,
+            plan_adoption,
+        )
+        from seatbot.models import (
+            Task as _Task, TaskStatus,
+            TASK_SOURCE_ADOPT, TASK_SOURCE_ADOPT_MATRIX,
         )
 
         days = {today_cst(), today_cst() + timedelta(days=1)}
-        added = pruned = 0
+        added = pruned = adopted = queued = pending = ended = 0
+        now_dt = now_cst()
         for acc in await self.store.list_accounts():
             if not (acc.phone and acc.password):
                 continue
@@ -1095,9 +1108,16 @@ class Scheduler:
                         continue
                 entries = await client.reserve_list()
                 parsed = parse_reservations(entries, days)
-                known = {t.reserve_id
-                         for t in await self.store.list_tasks(account_id=acc.id)
-                         if t.reserve_id}
+                # ★ 已采纳占位纳入 known：托管期间由采纳方显式维护占位行，
+                # 实况同步不再为已托管预约补登 user_reserved。
+                known = {
+                    t.reserve_id for t in await self.store.list_tasks(account_id=acc.id)
+                    if t.reserve_id
+                }
+                hosted_rows = await self.store.list_hosted()
+                for h in hosted_rows:
+                    if h["account_id"] == acc.id and h["state"] == "hosting":
+                        known.add(int(h["reserve_id"]))
                 existing = [r for r in await self.store.list_user_reserved()
                             if r["account_id"] == acc.id]
                 to_add, to_del = diff_user_reserved(parsed, known, existing)
@@ -1109,14 +1129,235 @@ class Scheduler:
                     await self.store.delete_user_reserved(rid)
                 added += len(to_add)
                 pruned += len(to_del)
-                if to_add or to_del:
+
+                # ★ 托管采纳：仅启用账号；禁用账号保留既有 user_reserved 同步
+                if acc.status == "active":
+                    stopped_ids: set[int] = set()
+                    queued_ids: set[int] = set()
+                    for h in hosted_rows:
+                        if h["account_id"] != acc.id:
+                            continue
+                        if h["state"] == "stopped":
+                            stopped_ids.add(int(h["reserve_id"]))
+                        elif h["state"] == "queued":
+                            queued_ids.add(int(h["reserve_id"]))
+                    tasks_for_acc = await self.store.list_tasks(account_id=acc.id)
+                    account_tasks = [
+                        {
+                            "id": t.id, "account_id": t.account_id,
+                            "day": t.day, "seat_num": t.seat_num,
+                            "start_time": t.start_time,
+                            "status": t.status.value,
+                            "reserve_id": t.reserve_id,
+                        }
+                        for t in tasks_for_acc
+                    ]
+                    actions = plan_adoption(
+                        acc.id, parsed, known,
+                        stopped_ids, queued_ids, account_tasks,
+                        now=now_dt,
+                    )
+                    parsed_reserve_ids = {int(p["reserve_id"]) for p in parsed}
+
+                    for act in actions:
+                        kind = act["kind"]
+                        if kind == "conflict":
+                            await self._warn(
+                                f"托管冲突 reserve_id={act['reserve_id']} "
+                                f"任务={act.get('task_id')} 上游 status={act['upstream_status']}",
+                                acc.id)
+                            continue
+                        rid = int(act["reserve_id"])
+                        if kind == "convert":
+                            await self.store.update_task_status(
+                                int(act["task_id"]),
+                                TaskStatus(act["status"]),
+                                reserve_id=rid,
+                                source=TASK_SOURCE_ADOPT_MATRIX,
+                                last_error="",
+                            )
+                        else:  # create
+                            try:
+                                tid = await self.store.add_task(_Task(
+                                    id=None, account_id=acc.id,
+                                    day=act["day"], start_time=act["start"],
+                                    end_time=act["end"], seat_num=act["seat_num"],
+                                    status=TaskStatus(act["status"]),
+                                    reserve_id=rid,
+                                    source=TASK_SOURCE_ADOPT,
+                                ))
+                                act["_task_id"] = tid
+                            except Exception as e:
+                                await self._warn(
+                                    f"托管采纳建任务失败 reserve_id={rid} "
+                                    f"{type(e).__name__}: {e}", acc.id)
+                                continue
+                        await self.store.upsert_hosted(
+                            acc.id, rid,
+                            seat_num=act["seat_num"],
+                            day=act["day"], start=act["start"], end=act["end"],
+                            state="hosting",
+                            outcome="",
+                            task_id=act.get("_task_id") or act.get("task_id"),
+                        )
+                        # 占位行（仅在该 (seat, day) 无重叠 AUTO_SYNC 行时）
+                        slots = await self.store.get_user_reserved_slot_set(
+                            act["day"], act["seat_num"])
+
+                        new_s = act["start"]
+                        new_e = act["end"]
+                        overlap = False
+                        for s, e in slots:
+                            if not (new_e <= s or new_s >= e):
+                                overlap = True
+                                break
+                        if not overlap:
+                            await self.store.add_user_reserved(
+                                acc.id, act["seat_num"], act["day"],
+                                new_s, new_e, note=AUTO_SYNC_NOTE)
+                        await self.store.log_action(
+                            acc.id, "host_adopt", str(rid),
+                            f"{act['seat_num']} {act['day']} "
+                            f"{new_s.strftime('%H:%M')}-{new_e.strftime('%H:%M')}",
+                            True, f"status={act['status']}",
+                        )
+                        await self._notify(
+                            "已自动托管手动预约",
+                            f"账号={acc.id} 座位={act['seat_num']} "
+                            f"{act['day']} {new_s.strftime('%H:%M')}-"
+                            f"{new_e.strftime('%H:%M')}",
+                            level="info",
+                        )
+                        adopted += 1
+
+                    # 消失检测：托管行 hosting 但本轮 parsed 不见
+                    for h in hosted_rows:
+                        if h["account_id"] != acc.id:
+                            continue
+                        if h["state"] != "hosting":
+                            continue
+                        rid = int(h["reserve_id"])
+                        if rid in parsed_reserve_ids:
+                            continue
+                        from datetime import date as _d3, time as _t3
+                        start_dt = at_cst(_d3.fromisoformat(h["day"]), _t3(*map(int, h["start_time"].split(":"))))
+                        end_dt = at_cst(_d3.fromisoformat(h["day"]), _t3(*map(int, h["end_time"].split(":"))))
+                        # 任务状态
+                        task_id = h.get("task_id")
+                        task = await self.store.get_task(task_id) if task_id else None
+                        if task is None or task.status.value in ("complete", "failed"):
+                            # 归档
+                            outcome = "已履约"
+                            if task and task.status.value == "failed":
+                                outcome = task.last_error or "履约失败"
+                            await self.store.update_hosted(
+                                h["id"], state="ended", outcome=outcome,
+                            )
+                            ended += 1
+                            continue
+                        if now_dt < start_dt:
+                            await self.store.update_task_status(
+                                task_id, TaskStatus.FAILED,
+                                last_error="App 端预约已取消",
+                            )
+                            await self.store.update_hosted(
+                                h["id"], state="pending_decision",
+                                outcome="App 端预约已取消",
+                            )
+                            await self._notify(
+                                "自动托管预约已取消，待决",
+                                f"账号={acc.id} 座位={h['seat_num']} "
+                                f"{h['day']} {h['start_time']}-{h['end_time']} "
+                                f"可在自动托管页重抢或放弃",
+                                level="warn",
+                            )
+                            pending += 1
+                        # now ≥ start：不动（tick 终态自愈），随后归档
+
+                    # 待决超时：pending_decision 行 now ≥ start → stopped
+                    for h in hosted_rows:
+                        if h["account_id"] != acc.id:
+                            continue
+                        if h["state"] != "pending_decision":
+                            continue
+                        from datetime import date as _d3, time as _t3
+                        start_dt = at_cst(_d3.fromisoformat(h["day"]), _t3(*map(int, h["start_time"].split(":"))))
+                        if now_dt < start_dt:
+                            continue
+                        await self.store.update_hosted(
+                            h["id"], state="stopped",
+                            outcome="未确认自动放弃",
+                        )
+                        await self._notify(
+                            "自动托管待决超时已放弃",
+                            f"账号={acc.id} 座位={h['seat_num']} "
+                            f"{h['day']} {h['start_time']}-{h['end_time']}",
+                            level="warn",
+                        )
+
+                    # queued 行：本轮 parsed 仍见且时段未结束 → 走采纳；否则 stopped
+                    for h in hosted_rows:
+                        if h["account_id"] != acc.id:
+                            continue
+                        if h["state"] != "queued":
+                            continue
+                        rid = int(h["reserve_id"])
+                        from datetime import date as _d3, time as _t3
+                        end_dt = at_cst(_d3.fromisoformat(h["day"]), _t3(*map(int, h["end_time"].split(":"))))
+                        if rid in parsed_reserve_ids and now_dt < end_dt:
+                            # 复用采纳路径：状态由上游决定
+                            from seatbot.reconcile import ADOPT_STATUS_MAP
+                            upstream = 0
+                            for p in parsed:
+                                if int(p["reserve_id"]) == rid:
+                                    upstream = int(p["status"])
+                                    break
+                            mapped = ADOPT_STATUS_MAP.get(upstream, "active")
+                            await self.store.upsert_hosted(
+                                acc.id, rid,
+                                seat_num=h["seat_num"], day=h["day"],
+                                start=_t3(*map(int, h["start_time"].split(":"))),
+                                end=_t3(*map(int, h["end_time"].split(":"))),
+                                state="hosting", outcome="",
+                                task_id=h.get("task_id"),
+                            )
+                            if h.get("task_id"):
+                                await self.store.update_task_status(
+                                    h["task_id"], TaskStatus(mapped),
+                                    reserve_id=rid,
+                                    source=TASK_SOURCE_ADOPT,
+                                    last_error="",
+                                )
+                            queued += 1
+                        else:
+                            await self.store.update_hosted(
+                                h["id"], state="stopped", outcome="预约已失效",
+                            )
+                if to_add or to_del or actions:
                     await self._info(
                         f"实况同步: 补登 {len(to_add)} 清退 {len(to_del)} "
-                        f"(账号共 {len(parsed)} 条生效预约)", acc.id)
+                        f"采纳 {len(actions)} (账号共 {len(parsed)} 条生效预约)",
+                        acc.id)
             except Exception as e:
                 await self._warn(
                     f"实况同步: {type(e).__name__}: {e}", acc.id)
-        return {"added": added, "pruned": pruned}
+        return {
+            "added": added, "pruned": pruned,
+            "adopted": adopted, "queued": queued,
+            "pending": pending, "ended": ended,
+        }
+
+    async def refresh_hosting_now(self) -> dict:
+        """Web「立即刷新」入口：跑一轮实况同步，与 reconcile_tick 共用
+`_reconcile_running` 互斥（避免与节拍并发重叠）。"""
+        if self._reconcile_running:
+            return {"busy": True}
+        self._reconcile_running = True
+        try:
+            return await self.sync_user_reserved()
+        finally:
+            self._reconcile_running = False
+
 
     async def _apply_verdict(self, acc: Account, t: Task,
                              ratio: float, bad: bool) -> None:
@@ -1359,9 +1600,7 @@ class Scheduler:
         from seatbot.models import TaskStatus
         tomorrow = today_cst() + timedelta(days=1)
 
-        # ★ P0 修复 (2026-08-25): 旧代码只提交"明天"的 PENDING 任务, 但没有任何
-        # 代码为明天生成任务 (_bootstrap_for_account 的全部调用点都传 today) —
-        # 即使系统常驻运行, 14:00 也永远空转。现在先幂等地为明天生成任务, 再批量提交。
+        # 14:00 批量先幂等地为明天生成任务, 再批量提交。
         seats = [s.seat_num for s in await self.store.list_target_seats()]
         accounts = await self.store.list_accounts()
         for acc in accounts:

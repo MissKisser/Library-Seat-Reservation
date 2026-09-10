@@ -46,6 +46,7 @@ def test_parse_keeps_active_entry_and_normalizes_fields():
     assert parsed == [{
         "reserve_id": 101, "seat_num": "042", "day": day,
         "start": time(19, 30), "end": time(21, 30),
+        "status": 0,
     }]
 
 
@@ -188,8 +189,10 @@ def test_sync_registers_then_prunes(tmp_path, monkeypatch):
             # 下一轮预约消失：自动行被清退，计数正确
             FakeReserveClient.script = [[]]
             out = await sched.sync_user_reserved()
-            assert out == {"added": 0, "pruned": 1}
-            assert await store.list_user_reserved() == []
+            # 102 已被托管采纳；消失后转 pending_decision
+            assert out["added"] == 0 and out["pruned"] == 1
+            assert out["adopted"] == 0 and out["queued"] == 0
+            assert out["pending"] == 1 and out["ended"] == 0
         finally:
             await store.close()
     asyncio.run(main())
@@ -220,7 +223,9 @@ def test_sync_skips_account_on_query_failure(tmp_path, monkeypatch):
 
             monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
             out = await sched.sync_user_reserved()
-            assert out == {"added": 0, "pruned": 0}
+            assert out == {"added": 0, "pruned": 0,
+                           "adopted": 0, "queued": 0,
+                           "pending": 0, "ended": 0}
             assert await store.list_user_reserved() == []
         finally:
             await store.close()
@@ -262,7 +267,9 @@ def test_sync_ignores_manual_rows_and_skips_no_credential_accounts(
 
             monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
             out = await sched.sync_user_reserved()
-            assert out == {"added": 0, "pruned": 0}
+            assert out == {"added": 0, "pruned": 0,
+                           "adopted": 0, "queued": 0,
+                           "pending": 0, "ended": 0}
             # 无凭据账号未发起查询；手动行原样保留
             assert len(calls) == 1
             rows = await store.list_user_reserved()
@@ -298,6 +305,325 @@ def test_tick_runs_sync_after_sweep(tmp_path, monkeypatch):
                                 lambda: at_cst(today_cst(), time(9, 0)))
             await sched.reconcile_tick()
             assert calls == {"sweep": 1, "sync": 1}
+        finally:
+            await store.close()
+    asyncio.run(main())
+
+
+# ---------- plan_adoption 纯函数 ----------
+
+def test_plan_adoption_creates_new_for_untracked_reservation():
+    """未跟踪的 reservelist 条目 → create。"""
+    from seatbot.reconcile import plan_adoption
+    day = today_cst()
+    parsed = [{
+        "reserve_id": 1, "seat_num": "001", "day": day,
+        "start": time(9, 0), "end": time(10, 0), "status": 0,
+    }]
+    actions = plan_adoption("zs", parsed, set(), set(), set(), [],
+                             now=at_cst(day, time(8, 0)))
+    assert len(actions) == 1
+    assert actions[0]["kind"] == "create"
+    assert actions[0]["status"] == "active"  # status=0 → active
+
+
+def test_plan_adoption_status_mapping_for_in_progress():
+    """status=1/3 → signed（已签到，仅管签退）；status=0/5 → active。"""
+    from seatbot.reconcile import plan_adoption
+    day = today_cst()
+    parsed = [
+        {"reserve_id": 1, "seat_num": "001", "day": day,
+         "start": time(9, 0), "end": time(10, 0), "status": 1},
+        {"reserve_id": 2, "seat_num": "001", "day": day,
+         "start": time(11, 0), "end": time(12, 0), "status": 3},
+        {"reserve_id": 3, "seat_num": "001", "day": day,
+         "start": time(13, 0), "end": time(14, 0), "status": 5},
+    ]
+    actions = plan_adoption("zs", parsed, set(), set(), set(), [],
+                             now=at_cst(day, time(8, 0)))
+    statuses = {a["reserve_id"]: a["status"] for a in actions}
+    assert statuses[1] == "signed"
+    assert statuses[2] == "signed"
+    assert statuses[3] == "active"
+def test_plan_adoption_skips_known_stopped_and_ended():
+    """known_reserve_ids / stopped 拦截；queued 允许重新采纳。"""
+    from seatbot.reconcile import plan_adoption
+    day = today_cst()
+    parsed = [
+        {"reserve_id": 1, "seat_num": "001", "day": day,
+         "start": time(9, 0), "end": time(10, 0), "status": 0},
+        {"reserve_id": 2, "seat_num": "001", "day": day,
+         "start": time(11, 0), "end": time(12, 0), "status": 0},
+    ]
+    now = at_cst(day, time(8, 0))
+    # 1 已被任务跟踪 → 跳过
+    a1 = plan_adoption("zs", parsed[:1], {1}, set(), set(), [], now=now)
+    assert a1 == []
+    # 2 被 stopped → 跳过
+    a2 = plan_adoption("zs", parsed[1:], set(), {2}, set(), [], now=now)
+    assert a2 == []
+    # queued 包含 2 → 允许采纳
+    a3 = plan_adoption("zs", parsed[1:], set(), {2}, {2}, [], now=now)
+
+def test_plan_adoption_skips_ended():
+    """时段已结束（now ≥ end）→ 跳过。"""
+    from seatbot.reconcile import plan_adoption
+    day = today_cst()
+    parsed = [{"reserve_id": 1, "seat_num": "001", "day": day,
+                "start": time(9, 0), "end": time(10, 0), "status": 0}]
+    now = at_cst(day, time(11, 0))
+    actions = plan_adoption("zs", parsed, set(), set(), set(), [], now=now)
+    assert actions == []
+
+
+def test_plan_adoption_converts_pending_matrix_task():
+    """同键 PENDING 任务 → convert（不新建任务）。"""
+    from seatbot.reconcile import plan_adoption
+    day = today_cst()
+    parsed = [{"reserve_id": 1, "seat_num": "001", "day": day,
+                "start": time(9, 0), "end": time(10, 0), "status": 0}]
+    now = at_cst(day, time(8, 0))
+    account_tasks = [{
+        "id": 99, "account_id": "zs", "day": day,
+        "seat_num": "001", "start_time": time(9, 0),
+        "status": "pending", "reserve_id": None,
+    }]
+    actions = plan_adoption("zs", parsed, set(), set(), set(),
+                             account_tasks, now=now)
+    assert len(actions) == 1
+    assert actions[0]["kind"] == "convert"
+    assert actions[0]["task_id"] == 99
+
+
+# ---------- sync_user_reserved 托管路径端到端 ----------
+
+def test_sync_adopts_new_reservation_creates_task_and_hosted(tmp_path, monkeypatch):
+    """实况同步：未跟踪预约 → 自动托管（建托管任务 + hosted 行 + 占位行）。"""
+    async def main():
+        from datetime import datetime
+        from seatbot.models import Account
+        from seatbot.scheduler import Scheduler
+        from seatbot.store import StateStore
+
+        store = StateStore(str(tmp_path / "t.db"))
+        await store.init()
+        try:
+            await store.upsert_account(Account(
+                id="张三", phone="1", password="p", slots=[]))
+            sched = Scheduler(_make_cfg(), store)
+
+            async def fake_client_ready(self, acc):
+                return FakeReserveClient()
+
+            monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
+            day = today_cst()
+            FakeReserveClient.script = [[
+                _entry(501, SEAT_A, day, time(14, 0), time(16, 0), status=0),
+            ]]
+            out = await sched.sync_user_reserved()
+            assert out["adopted"] == 1
+            hosted = await store.list_hosted(states=["hosting"])
+            assert len(hosted) == 1
+            assert hosted[0]["reserve_id"] == 501
+            assert hosted[0]["account_id"] == "张三"
+            # 任务应存在
+            tasks = await store.list_tasks(account_id="张三", day=day)
+            adopted = [t for t in tasks if t.reserve_id == 501]
+            assert len(adopted) == 1
+            assert adopted[0].source == "adopt"
+            assert adopted[0].status.value == "active"
+            # 占位行
+            ur = await store.list_user_reserved(day=day, seat_num="042")
+            assert any(r["note"] == "实况自动同步" for r in ur)
+        finally:
+            await store.close()
+    asyncio.run(main())
+
+
+def test_sync_adopts_in_progress_reservation_marks_signed(tmp_path, monkeypatch):
+    """status=1/3 采纳时任务初始状态 = SIGNED。"""
+    async def main():
+        from seatbot.models import Account
+        from seatbot.scheduler import Scheduler
+        from seatbot.store import StateStore
+
+        store = StateStore(str(tmp_path / "t.db"))
+        await store.init()
+        try:
+            await store.upsert_account(Account(
+                id="张三", phone="1", password="p", slots=[]))
+            sched = Scheduler(_make_cfg(), store)
+
+            async def fake_client_ready(self, acc):
+                return FakeReserveClient()
+
+            monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
+            day = today_cst()
+            FakeReserveClient.script = [[
+                _entry(601, SEAT_A, day, time(15, 0), time(17, 0), status=1),
+            ]]
+            await sched.sync_user_reserved()
+            tasks = await store.list_tasks(account_id="张三", day=day)
+            adopted = [t for t in tasks if t.reserve_id == 601]
+            assert len(adopted) == 1
+            assert adopted[0].status.value == "signed"
+        finally:
+            await store.close()
+    asyncio.run(main())
+
+
+def test_sync_pending_decision_when_reservation_disappears(tmp_path, monkeypatch):
+    """托管行 hosting 但 reservelist 消失（未开始）→ 转 pending_decision + 任务 FAILED。"""
+    async def main():
+        from seatbot.models import Account, Task, TaskStatus
+        from seatbot.scheduler import Scheduler
+        from seatbot.store import StateStore
+
+        store = StateStore(str(tmp_path / "t.db"))
+        await store.init()
+        try:
+            await store.upsert_account(Account(
+                id="张三", phone="1", password="p", slots=[]))
+            sched = Scheduler(_make_cfg(), store)
+
+            async def fake_client_ready(self, acc):
+                return FakeReserveClient()
+
+            monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
+            day = today_cst()
+            # 第一轮：采纳
+            FakeReserveClient.script = [[
+                _entry(701, SEAT_A, day, time(15, 0), time(17, 0), status=0),
+            ]]
+            await sched.sync_user_reserved()
+            tasks = await store.list_tasks(account_id="张三", day=day)
+            assert tasks and tasks[0].status.value == "active"
+            # 第二轮：预约从 reservelist 消失，且 now < start → pending_decision
+            FakeReserveClient.script = [[]]
+            out = await sched.sync_user_reserved()
+            assert out["pending"] == 1
+            hosted = await store.list_hosted()
+            assert hosted[0]["state"] == "pending_decision"
+            assert hosted[0]["outcome"] == "App 端预约已取消"
+            t = await store.get_task(tasks[0].id)
+            assert t.status.value == "failed"
+            assert t.last_error == "App 端预约已取消"
+        finally:
+            await store.close()
+    asyncio.run(main())
+
+
+def test_sync_pending_decision_timeout_auto_abandon(tmp_path, monkeypatch):
+    """pending_decision 行 now ≥ start → 自动 stopped + 通知。"""
+    async def main():
+        import seatbot.scheduler as S
+        from seatbot.models import Account, Task, TaskStatus
+        from seatbot.scheduler import Scheduler
+        from seatbot.store import StateStore
+
+        store = StateStore(str(tmp_path / "t.db"))
+        await store.init()
+        try:
+            await store.upsert_account(Account(
+                id="张三", phone="1", password="p", slots=[]))
+            day = today_cst()
+            # 直接预置 pending_decision 行（时段已过）
+            await store.upsert_hosted(
+                "张三", 801, seat_num="042", day=day,
+                start=time(8, 0), end=time(9, 0),
+                state="pending_decision", outcome="App 端取消")
+            sched = Scheduler(_make_cfg(), store)
+
+            async def fake_client_ready(self, acc):
+                return FakeReserveClient()
+
+            monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
+            FakeReserveClient.script = [[]]
+            # now 固定在 11:00（晚于 9:00 end）
+            monkeypatch.setattr(S, "now_cst",
+                                lambda: at_cst(day, time(11, 0)))
+            out = await sched.sync_user_reserved()
+            hosted = await store.list_hosted()
+            assert hosted[0]["state"] == "stopped"
+            assert hosted[0]["outcome"] == "未确认自动放弃"
+        finally:
+            await store.close()
+    asyncio.run(main())
+
+
+def test_sync_archived_ended_after_task_completed(tmp_path, monkeypatch):
+    """托管任务 COMPLETE → hosted 转 ended。"""
+    async def main():
+        from seatbot.models import Account, Task, TaskStatus
+        from seatbot.scheduler import Scheduler
+        from seatbot.store import StateStore
+
+        store = StateStore(str(tmp_path / "t.db"))
+        await store.init()
+        try:
+            await store.upsert_account(Account(
+                id="张三", phone="1", password="p", slots=[]))
+            day = today_cst()
+            await store.upsert_hosted(
+                "张三", 901, seat_num="042", day=day,
+                start=time(15, 0), end=time(16, 0),
+                state="hosting", outcome="")
+            tid = await store.add_task(Task(
+                id=None, account_id="张三", day=day,
+                start_time=time(15, 0), end_time=time(16, 0),
+                seat_num="042", status=TaskStatus.COMPLETE,
+                reserve_id=901, source="adopt"))
+            await store.update_hosted(
+                (await store.list_hosted())[0]["id"], task_id=tid)
+            sched = Scheduler(_make_cfg(), store)
+
+            async def fake_client_ready(self, acc):
+                return FakeReserveClient()
+
+            monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
+            FakeReserveClient.script = [[]]
+            out = await sched.sync_user_reserved()
+            hosted = await store.list_hosted()
+            assert hosted[0]["state"] == "ended"
+            assert hosted[0]["outcome"] == "已履约"
+        finally:
+            await store.close()
+    asyncio.run(main())
+
+
+def test_sync_does_not_clear_rows_on_account_failure(tmp_path, monkeypatch):
+    """单账号查询失败：不清退既有 hosted 行（既有语义保留）。"""
+    async def main():
+        from seatbot.models import Account
+        from seatbot.scheduler import Scheduler
+        from seatbot.store import StateStore
+
+        store = StateStore(str(tmp_path / "t.db"))
+        await store.init()
+        try:
+            await store.upsert_account(Account(
+                id="张三", phone="1", password="p", slots=[]))
+            day = today_cst()
+            await store.upsert_hosted(
+                "张三", 1001, seat_num="042", day=day,
+                start=time(15, 0), end=time(16, 0),
+                state="hosting", outcome="")
+            sched = Scheduler(_make_cfg(), store)
+
+            class DeadClient:
+                def cookies(self):
+                    return {"_uid": "x"}
+
+                async def reserve_list(self):
+                    raise RuntimeError("会话失效")
+
+            async def fake_client_ready(self, acc):
+                return DeadClient()
+
+            monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
+            await sched.sync_user_reserved()
+            hosted = await store.list_hosted()
+            assert hosted[0]["state"] == "hosting"
         finally:
             await store.close()
     asyncio.run(main())
