@@ -6,6 +6,10 @@ from datetime import date, datetime, time, timedelta, timezone
 
 CST = timezone(timedelta(hours=8), name="CST")
 
+#: 超星次日预约开放时刻（CST 14:00）。/manual 等"提交未来预约"的入口
+#  在 14:00 之前禁止选择明天，避免抢预约窗口未开导致的盲提交。
+RESERVE_WINDOW_HOUR = 14
+
 
 def now_cst() -> datetime:
     return datetime.now(CST)

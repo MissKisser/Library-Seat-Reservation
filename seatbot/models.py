@@ -60,6 +60,8 @@ TASK_SOURCE_IMPORT = "import"
 # 自动托管采纳后新建的任务（无矩阵/导入历史同键记录时新增）。
 TASK_SOURCE_ADOPT = "adopt"
 TASK_SOURCE_ADOPT_MATRIX = "adopt_matrix"
+# /manual 手动预约页面写入的任务（用户从面板发起，系统账号走既有 submit 通道）。
+TASK_SOURCE_MANUAL = "manual"
 
 @dataclass
 class Task:
