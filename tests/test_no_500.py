@@ -132,6 +132,8 @@ def test_all_post_empty_not_500(tmp_path, monkeypatch):
             ("/bindings/replan/preview", {}),
             ("/bindings/replan/apply", {}),
             ("/bindings/rebind", {}),
+            ("/manual/reserve", {"account_id": "", "seat_num": "",
+                                 "day": "", "start": "", "end": ""}),
         ]
         for path, data in cases:
             sep = "&" if "?" in path else "?"
