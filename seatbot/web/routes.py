@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from datetime import date, datetime as _dt, timedelta
 from datetime import time as _time
 
@@ -17,18 +18,22 @@ from seatbot.bindings import (
     desired_slots_of, diff_matrices, matrix_windows, plan_matrix, rebind_candidates_for_days,
     rebind_matrices, set_day_slots, validate_matrix,
 )
+from seatbot.manual import (
+    SIGN_DEADLINE_MINUTES, parse_manual_form,
+    used_hours_for_account_day, validate_manual_submission,
+)
 from seatbot.utils.weekly import (
     WEEKDAY_KEYS, WEEKDAY_LABELS, normalize_weekly, slots_for_weekday, weekday_key,
 )
 from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
-from seatbot.models import Account, SeatTarget, Task, TaskStatus, TASK_SOURCE_IMPORT
+from seatbot.models import Account, SeatTarget, Task, TaskStatus, TASK_SOURCE_IMPORT, TASK_SOURCE_MANUAL
 from seatbot.scheduler import NextRelay
 from seatbot.reconcile import AUTO_SYNC_NOTE, pick_read_account
 
 from seatbot.utils.timeutil import (
-    at_cst, now_cst, parse_hhmm, parse_range, today_cst,
+    RESERVE_WINDOW_HOUR, at_cst, now_cst, parse_hhmm, parse_range, today_cst,
 )
 
 router = APIRouter()
@@ -100,6 +105,19 @@ def _fmt_weekly(val) -> list[str]:
 
 def _templates(request: Request):
     return request.app.state.templates
+
+
+def _safe_next(value: str | None) -> str | None:
+    """防开放重定向：仅接受以单 / 开头的同源相对路径。
+
+    返回清洗后的路径；非法输入返回 None，由调用方回退到默认重定向。
+    """
+    if not value:
+        return None
+    v = value.strip()
+    if not v or not v.startswith("/") or v.startswith("//"):
+        return None
+    return v
 
 
 async def _ctx(request: Request, **extra) -> dict:
@@ -1654,7 +1672,7 @@ def _slots_diverged(acc: Account) -> bool:
 def _default_view_weekday(now: _dt | None = None) -> str:
     """守护账号页默认查看的星期键：14:00 前看今天，之后看明天（预约窗口语义）。"""
     now = now or now_cst()
-    day = now.date() + timedelta(days=1) if now.hour >= 14 else now.date()
+    day = now.date() + timedelta(days=1) if now.hour >= RESERVE_WINDOW_HOUR else now.date()
     return weekday_key(day)
 
 
@@ -2270,7 +2288,11 @@ async def task_sign(request: Request, task_id: int):
 
 
 @router.post("/tasks/{task_id}/cancel")
-async def task_cancel(request: Request, task_id: int):
+async def task_cancel(
+    request: Request,
+    task_id: int,
+    next: str = Form(""),
+):
     sched = request.app.state.sched
     store = request.app.state.store
     t = await store.get_task(task_id)
@@ -2288,7 +2310,8 @@ async def task_cancel(request: Request, task_id: int):
         await store.update_task_status(task_id, TaskStatus.COMPLETE)
     else:
         await store.update_task_status(task_id, t.status, last_error=f"取消失败: {r.get('msg')}")
-    return RedirectResponse("/tasks?cancelled=1", status_code=303)
+    target = _safe_next(next) or "/tasks?cancelled=1"
+    return RedirectResponse(target, status_code=303)
 
 
 @router.post("/tasks/{task_id}/leave")
@@ -3038,3 +3061,257 @@ async def audit_check(request: Request):
     except Exception:
         return RedirectResponse("/audit?error=check", status_code=303)
     return RedirectResponse("/audit?checked=1", status_code=303)
+
+
+# =========================================================================
+# Manual reserve page (/manual) — admin-only, real submit, single trigger.
+# =========================================================================
+
+_MANUAL_PAGE_LIMIT = 10
+_MANUAL_TERMINAL = (TaskStatus.FAILED, TaskStatus.COMPLETE)
+
+
+def _manual_non_terminal(tasks: list) -> list:
+    """过滤活跃任务：用于校验和余量统计；与 quick_reserve / reassign 一致。"""
+    return [t for t in tasks if t.status not in _MANUAL_TERMINAL]
+
+
+async def _manual_account_pool(store, daily_limit: float) -> list[dict]:
+    """今日/明日各账号的剩余额度。"""
+    today = today_cst()
+    tomorrow = today + timedelta(days=1)
+    today_tasks = await store.list_tasks(day=today)
+    tomorrow_tasks = await store.list_tasks(day=tomorrow)
+    accounts = [a for a in await store.list_accounts() if a.status == "active"]
+    pool: list[dict] = []
+    for a in accounts:
+        used_today = used_hours_for_account_day(today_tasks, today, a.id)
+        used_tomorrow = used_hours_for_account_day(tomorrow_tasks, tomorrow, a.id)
+        pool.append({
+            "id": a.id,
+            "remaining_today": max(0.0, daily_limit - used_today),
+            "remaining_tomorrow": max(0.0, daily_limit - used_tomorrow),
+        })
+    pool.sort(key=lambda x: (-max(x["remaining_today"], x["remaining_tomorrow"]), x["id"]))
+    return pool
+
+
+@router.get("/manual", response_class=HTMLResponse)
+async def manual_page(
+    request: Request,
+    day: str | None = None,
+    account_id: str | None = None,
+):
+    """手动预约页：账号池（含今/明额度）+ 最近 10 条 manual 任务。"""
+    store = request.app.state.store
+    cfg = request.app.state.cfg
+    now = now_cst()
+    today = today_cst()
+    tomorrow = today + timedelta(days=1)
+    if day:
+        try:
+            view_day = date.fromisoformat(day)
+        except ValueError:
+            view_day = today
+    else:
+        view_day = today
+    pool = await _manual_account_pool(store, float(cfg.library.daily_reserve_hours_limit))
+    manual_tasks = [
+        t for t in await store.list_tasks()
+        if t.source == TASK_SOURCE_MANUAL
+    ]
+    manual_tasks.sort(key=lambda t: (t.day, t.start_time), reverse=True)
+    manual_tasks = manual_tasks[:_MANUAL_PAGE_LIMIT]
+    records = []
+    for t in manual_tasks:
+        records.append({
+            "id": t.id,
+            "account_id": t.account_id,
+            "seat_num": t.seat_num,
+            "day": t.day.isoformat(),
+            "start_time": t.start_time.strftime("%H:%M"),
+            "end_time": t.end_time.strftime("%H:%M"),
+            "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+            "reserve_id": t.reserve_id,
+            "last_error": t.last_error or "",
+        })
+    ctx = await _ctx(request, active_page="manual")
+    ctx.update(
+        pool=pool,
+        today=today.isoformat(),
+        tomorrow=tomorrow.isoformat(),
+        view_day=view_day.isoformat(),
+        now_hour=now.hour,
+        reserve_window_hour=RESERVE_WINDOW_HOUR,
+        sign_deadline_minutes=SIGN_DEADLINE_MINUTES,
+        records=records,
+        open_time=cfg.library.open_time,
+        close_time=cfg.library.close_time,
+        max_seg_hours=float(cfg.library.max_reserve_hours),
+        daily_limit_hours=float(cfg.library.daily_reserve_hours_limit),
+        room_id=cfg.library.room_id,
+        msg=request.query_params.get("msg") or "",
+        error=request.query_params.get("error") or "",
+    )
+    return _templates(request).TemplateResponse(request, "manual.html", ctx)
+
+
+@router.post("/manual/reserve")
+async def manual_reserve(
+    request: Request,
+    account_id: str = Form(...),
+    seat_num: str = Form(...),
+    day: str = Form(...),
+    start: str = Form(...),
+    end: str = Form(...),
+):
+    """手动预约提交：九规则校验 → 预检 1 次占用查询 → READY 任务 → run_submit → 重定向带 msg/error。"""
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    sched = request.app.state.sched
+    cfg = request.app.state.cfg
+    if sched is None:
+        return RedirectResponse(
+            "/manual?error=" + quote("scheduler 未初始化"), status_code=303)
+
+    parsed_day, parsed_start, parsed_end, parsed_seat = parse_manual_form(
+        day_raw=day, start_raw=start, end_raw=end, seat_raw=seat_num,
+    )
+    if parsed_day is None:
+        return RedirectResponse(
+            "/manual?error=" + quote(parsed_seat), status_code=303)
+    d, s, e, sn = parsed_day, parsed_start, parsed_end, parsed_seat
+
+    acc = await store.get_account(account_id)
+    if not acc:
+        raise HTTPException(404, f"account {account_id} not found")
+    if acc.status != "active":
+        return RedirectResponse(
+            "/manual?error=" + quote(f"账号 {acc.id} 未启用"), status_code=303)
+
+    now = now_cst()
+    all_tasks = await store.list_tasks(account_id=acc.id, day=d)
+    non_terminal = _manual_non_terminal(all_tasks)
+    issues = validate_manual_submission(
+        day=d, start=s, end=e, seat_num=sn,
+        seat_slots=acc.seat_slots,
+        existing_tasks=non_terminal,
+        max_seg_hours=float(cfg.library.max_reserve_hours),
+        daily_limit_hours=float(cfg.library.daily_reserve_hours_limit),
+        open_time=cfg.library.open_time,
+        close_time=cfg.library.close_time,
+        now=now,
+    )
+    if issues:
+        return RedirectResponse(
+            "/manual?error=" + quote("；".join(issues)), status_code=303)
+
+    precheck_ok = True
+    try:
+        client = await sched.client_ready(acc)
+        if not client.cookies():
+            await sched.login_and_persist(acc, client, "手动预约")
+        used = await client.get_used_times(
+            cfg.library.room_id, sn, d.isoformat())
+        for us, ue in used:
+            if us < e.strftime("%H:%M") and s.strftime("%H:%M") < ue:
+                precheck_ok = False
+                break
+    except Exception as ex:
+        try:
+            await sched._warn(f"手动预约占用预检异常: {ex}", acc.id)
+        except Exception:
+            pass
+    if not precheck_ok:
+        return RedirectResponse(
+            "/manual?error=" + quote("该时段已被占用（预检）"), status_code=303)
+
+    task = Task(
+        id=None, account_id=acc.id, day=d,
+        start_time=s, end_time=e, seat_num=sn,
+        status=TaskStatus.READY, source=TASK_SOURCE_MANUAL,
+    )
+    try:
+        tid = await store.add_task(task)
+    except sqlite3.IntegrityError:
+        return RedirectResponse(
+            "/manual?error=" + quote("该账号当日该座位已有进行中任务"), status_code=303)
+    loaded = await store.get_task(tid)
+    if loaded:
+        await sched.run_submit(acc, loaded)
+    loaded = await store.get_task(tid)
+    if loaded and loaded.reserve_id and loaded.status == TaskStatus.ACTIVE:
+        msg = f"预约成功（预约号 {loaded.reserve_id}）"
+        return RedirectResponse("/manual?msg=" + quote(msg), status_code=303)
+    err = (loaded.last_error if loaded else "") or "提交未成"
+    return RedirectResponse(
+        "/manual?error=" + quote(f"提交未成：{err}"), status_code=303)
+
+
+@router.get("/api/manual/occupancy")
+async def manual_occupancy(
+    request: Request,
+    account_id: str,
+    seat_num: str,
+    day: str,
+):
+    """手动预约占用预览：1 次 get_used_times + 合并矩阵窗口 + 本人当日任务。
+
+    返回 ``{blocked: [[s,e],...], detail: {occupied, tasks, matrix}}``；参数非法 400，
+    客户端异常 502。
+    """
+    try:
+        d = date.fromisoformat((day or "").strip())
+    except ValueError:
+        raise HTTPException(400, "day must be YYYY-MM-DD")
+
+    sched = request.app.state.sched
+    store = request.app.state.store
+    cfg = request.app.state.cfg
+    if sched is None:
+        raise HTTPException(503, "scheduler not ready")
+    acc = await store.get_account(account_id)
+    if not acc:
+        raise HTTPException(404, f"account {account_id} not found")
+    sn = (seat_num or "").strip().zfill(3)
+    if not sn.isdigit() or not (1 <= len(sn) <= 4):
+        raise HTTPException(400, "seat_num invalid")
+
+    wd = weekday_key(d)
+    matrix: list[list[str]] = []
+    try:
+        for _seat, ms, me, _h in matrix_windows(acc.seat_slots, wd):
+            matrix.append([ms.strftime("%H:%M"), me.strftime("%H:%M")])
+    except ValueError:
+        matrix = []
+
+    tasks: list[list[str]] = []
+    for t in await store.list_tasks(account_id=acc.id, day=d):
+        if t.status in _MANUAL_TERMINAL:
+            continue
+        tasks.append([t.start_time.strftime("%H:%M"), t.end_time.strftime("%H:%M")])
+
+    try:
+        client = await sched.client_ready(acc)
+        if not client.cookies():
+            await sched.login_and_persist(acc, client, "手动预约占用预览")
+        occupied_pairs = await client.get_used_times(
+            cfg.library.room_id, sn, d.isoformat())
+    except Exception as ex:
+        return JSONResponse(
+            {"error": f"占用查询失败: {ex}"}, status_code=502)
+
+    occupied: list[list[str]] = [
+        [str(s_), str(e_)] for s_, e_ in occupied_pairs
+    ]
+    blocked = sorted({tuple(p) for p in (occupied + tasks + matrix)})
+    return JSONResponse({
+        "blocked": [list(p) for p in blocked],
+        "detail": {
+            "occupied": occupied,
+            "tasks": tasks,
+            "matrix": matrix,
+        },
+    })
+
