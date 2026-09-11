@@ -160,7 +160,10 @@ def parse_manual_form(
         e = parse_hhmm((end_raw or "").strip())
     except ValueError as exc:
         return None, None, None, f"时间格式错误: {exc}"
-    sn = (seat_raw or "").strip().zfill(3)
+    sn_raw = (seat_raw or "").strip()
+    if not sn_raw:
+        return None, None, None, "座位号不能为空"
+    sn = sn_raw.zfill(3)
     if not sn.isdigit() or not (1 <= len(sn) <= 4):
         return None, None, None, "座位号必须是 1-4 位数字"
     return d, s, e, sn
