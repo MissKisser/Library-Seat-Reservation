@@ -84,6 +84,9 @@
               <template x-if="t.source === 'import'">
                 <span class="chip chip-warn text-[11px]">手动导入</span>
               </template>
+              <template x-if="t.source === 'manual'">
+                <span class="chip chip-warn text-[11px]">手动预约</span>
+              </template>
             </div>
             <template x-if="t.status === 'failed'">
               <div>
