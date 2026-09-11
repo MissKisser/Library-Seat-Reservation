@@ -20,7 +20,9 @@ TOKEN = "smoke-token"
 
 def test_py_compile_no_syntax_error():
     """改 py 后必须 py_compile 通过（拦截 NameError 前置）。"""
-    for rel in ["seatbot/web/routes.py", "seatbot/store.py", "seatbot/bindings.py"]:
+    for rel in ["seatbot/web/routes.py", "seatbot/store.py", "seatbot/bindings.py",
+                "seatbot/manual.py", "seatbot/models.py",
+                "seatbot/utils/timeutil.py"]:
         p = Path(rel)
         assert p.exists(), rel
         # 抛异常即失败
@@ -80,7 +82,8 @@ def test_all_get_render_200(tmp_path, monkeypatch):
     c, store = _client(tmp_path, monkeypatch)
     try:
         for path in ["/", "/bindings", "/targets", "/accounts", "/tasks",
-                     "/hosting", "/settings", "/audit", "/logs", "/reservations"]:
+                     "/hosting", "/manual", "/settings", "/audit", "/logs",
+                     "/reservations"]:
             sep = "&" if "?" in path else "?"
             r = c.get(f"{path}{sep}token={TOKEN}",
                       headers={"Host": "127.0.0.1:8080"},
