@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block title %}手动预约{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-5"
+     x-data='{
+       today: "{{ today }}",
+       tomorrow: "{{ tomorrow }}",
+       nowHour: {{ now_hour }},
+       reserveWindowHour: {{ reserve_window_hour }},
+       openTime: "{{ open_time }}",
+       closeTime: "{{ close_time }}",
+       maxSegHours: {{ max_seg_hours }},
+       pool: {{ pool|tojson }},
+       records: {{ records|tojson }},
+       tickOptions: (() => {
+         const out = [];
+         const [oh, om] = "{{ open_time }}".split(":").map(Number);
+         const [ch, cm] = "{{ close_time }}".split(":").map(Number);
+         let cur = oh * 60 + om, end = ch * 60 + cm;
+         while (cur <= end) { const h = Math.floor(cur/60), m = cur%60; out.push(String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")); cur += 30; }
+         return out;
+       })(),
+       form: { day: "{{ view_day }}", seat: "", start: "09:00", end: "10:00", accountId: "" },
+       occupancy: null,
+       occupancyLoading: false,
+       occupancyMsg: "",
+       get tomorrowEnabled() { return this.nowHour >= this.reserveWindowHour; },
+       accountHasQuota(a) {
+         return this.form.day === this.today
+           ? a.remaining_today > 0
+           : a.remaining_tomorrow > 0;
+       },
+       get canSubmit() {
+         if (!this.form.day || !this.form.seat || !this.form.start || !this.form.end) return false;
+         if (this.form.day === this.tomorrow && !this.tomorrowEnabled) return false;
+         if (this.form.end <= this.form.start) return false;
+         if (!this.form.accountId) return false;
+         const a = this.pool.find(x => x.id === this.form.accountId);
+         return !!a && this.accountHasQuota(a);
+       },
+       get submitBlockedReason() {
+         if (!this.form.accountId) return "请选择守护账号";
+         if (!this.form.seat) return "请输入座位号";
+         if (this.form.end <= this.form.start) return "结束时间必须晚于开始时间";
+         if (this.form.day === this.tomorrow && !this.tomorrowEnabled) return "次日预约尚未开放";
+         const a = this.pool.find(x => x.id === this.form.accountId);
+         if (a && !this.accountHasQuota(a)) return "所选账号当日额度不足";
+         return "";
+       },
+       badgeTone(s) {
+         return ({
+           active: "chip-success", signed: "chip-success",
+           submitting: "chip-info", leaving: "chip-warn",
+           pending: "chip-muted", ready: "chip-muted",
+           failed: "chip-danger", complete: "chip-faded",
+         })[s] || "chip-muted";
+       },
+       statusLabel(s) {
+         return ({
+           active: "已预约", signed: "已签到", submitting: "提交中",
+           leaving: "签退中", pending: "待执行", ready: "待执行",
+           failed: "失败", complete: "已完成",
+         })[s] || s;
+       },
+       canCancel(r) {
+         return ["active", "signed", "submitting", "leaving", "pending", "ready"].includes(r.status);
+       },
+       async loadOccupancy() {
+         if (!this.form.accountId || !this.form.seat || !this.form.day) return;
+         this.occupancyLoading = true; this.occupancyMsg = "";
+         try {
+           const url = "/api/manual/occupancy?account_id=" + encodeURIComponent(this.form.accountId)
+             + "&seat_num=" + encodeURIComponent(this.form.seat) + "&day=" + encodeURIComponent(this.form.day);
+           const r = await fetch(url, { cache: "no-store" });
+           if (!r.ok) { this.occupancyMsg = "占用查询失败 (" + r.status + ")"; this.occupancy = null; return; }
+           this.occupancy = await r.json();
+         } catch (e) { this.occupancyMsg = "网络错误"; this.occupancy = null; }
+         finally { this.occupancyLoading = false; }
+       },
+     }'>
+
+  {% if msg %}
+  <div class="card border-success/40"><div class="card-body text-sm text-success">{{ msg }}</div></div>
+  {% endif %}
+  {% if error %}
+  <div class="card border-danger/40"><div class="card-body text-sm text-danger">{{ error }}</div></div>
+  {% endif %}
+
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">手动预约</h1>
+      <p class="page-sub">对当前配置房间内任意座位、今天或明天，发起一次真实预约并接入自动签到/签退</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <form method="post" action="/manual/reserve" class="flex flex-col gap-4"
+            @submit="if (!canSubmit) { $event.preventDefault(); window.showToast({type:'error', title:'提交被阻止', desc: submitBlockedReason || '请检查表单'}); }">
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="form-field">
+            <label>日期</label>
+            <div class="flex gap-2">
+              <label class="chip cursor-pointer"
+                     :class="form.day === today ? 'chip-accent' : 'chip-muted'">
+                <input type="radio" name="day" :value="today" x-model="form.day" class="hidden">今天
+              </label>
+              <label class="chip"
+                     :class="[form.day === tomorrow ? 'chip-accent' : 'chip-muted', !tomorrowEnabled && 'opacity-50 cursor-not-allowed']">
+                <input type="radio" name="day" :value="tomorrow" x-model="form.day"
+                       :disabled="!tomorrowEnabled" class="hidden">明天
+              </label>
+            </div>
+            <div class="hint" x-show="!tomorrowEnabled">
+              次日预约需 <span x-text="String(reserveWindowHour).padStart(2,'0') + ':00'"></span> 起开放，当前尚不可选
+            </div>
+          </div>
+
+          <div class="form-field">
+            <label for="seat_num">座位号</label>
+            <input id="seat_num" name="seat_num" type="text" inputmode="numeric" pattern="[0-9]{1,4}"
+                   class="input" x-model="form.seat" placeholder="如 042">
+            <div class="hint">1-4 位数字（提交时按三位补零）</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="form-field">
+            <label for="start">开始时间</label>
+            <select id="start" name="start" class="select" x-model="form.start">
+              <template x-for="t in tickOptions" :key="'s' + t">
+                <option :value="t" x-text="t"></option>
+              </template>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="end">结束时间</label>
+            <select id="end" name="end" class="select" x-model="form.end">
+              <template x-for="t in tickOptions" :key="'e' + t">
+                <option :value="t" x-text="t"></option>
+              </template>
+            </select>
+            <div class="hint">营业时间 <span x-text="openTime"></span>–<span x-text="closeTime"></span>，30 分钟步进，单段 ≤ <span x-text="maxSegHours"></span>h</div>
+          </div>
+        </div>
+
+        <div class="form-field">
+          <label for="account_id">守护账号</label>
+          <select id="account_id" name="account_id" class="select" x-model="form.accountId">
+            <option value="">请选择</option>
+            <template x-for="a in pool" :key="a.id">
+              <option :value="a.id"
+                      :disabled="!accountHasQuota(a)"
+                      x-text="a.id + '（今天余 ' + a.remaining_today + 'h / 明天余 ' + a.remaining_tomorrow + 'h）'"></option>
+            </template>
+          </select>
+          <div class="hint" x-show="form.accountId && pool.length === 0">暂无可用账号</div>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <button class="btn btn-primary" type="submit"
+                  :disabled="!canSubmit">提交预约</button>
+          <button class="btn btn-secondary" type="button"
+                  :disabled="occupancyLoading || !form.accountId || !form.seat"
+                  @click="loadOccupancy()">
+            <span x-text="occupancyLoading ? '查询中…' : '查询占用'"></span>
+          </button>
+          <span class="text-xs text-ink-muted" x-show="occupancyMsg" x-text="occupancyMsg"></span>
+        </div>
+
+        <div x-show="form.day === tomorrow && nowHour >= reserveWindowHour - 1 && nowHour < reserveWindowHour + 1"
+             class="text-xs text-warn">
+          ⚠ 当前距离 <span x-text="String(reserveWindowHour).padStart(2,'0') + ':00'"></span> 抢预约窗口较近，明天提交会与系统自动批量抢预约竞争额度，请确认后再提交
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card" x-show="occupancy">
+    <div class="card-body flex flex-col gap-2">
+      <div class="flex items-center justify-between">
+        <span class="card-title text-sm">占用预览（单次只读请求）</span>
+        <span class="text-xs text-ink-muted" x-show="occupancy && occupancy.detail">
+          <span class="chip chip-muted">平台占用 <span x-text="(occupancy.detail.occupied || []).length"></span></span>
+          <span class="chip chip-muted">本人任务 <span x-text="(occupancy.detail.tasks || []).length"></span></span>
+          <span class="chip chip-muted">矩阵窗口 <span x-text="(occupancy.detail.matrix || []).length"></span></span>
+        </span>
+      </div>
+      <div class="flex items-center gap-1 text-xs font-mono flex-wrap">
+        <template x-for="b in (occupancy?.blocked || [])" :key="b[0]+b[1]">
+          <span class="chip chip-warn" x-text="b[0] + '–' + b[1]"></span>
+        </template>
+        <span x-show="!occupancy || (occupancy.blocked || []).length === 0" class="text-ink-muted">无冲突窗口</span>
+      </div>
+      <div class="text-xs text-ink-secondary">服务端提交仍以校验规则为准（前端提示不可信）</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">本页提交记录（最近 10 条）</span></div>
+    <div class="card-body flex flex-col gap-2">
+      <template x-for="r in records" :key="r.id">
+        <div class="card p-3 flex items-center justify-between gap-3"
+             :class="r.status === 'failed' ? 'border-danger/40' : ''">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1 flex-wrap">
+              <span class="font-mono font-bold" x-text="r.account_id"></span>
+              <span class="chip chip-muted" x-text="r.seat_num"></span>
+              <span class="font-mono text-xs" x-text="r.day + ' ' + r.start_time + '–' + r.end_time"></span>
+              <span class="chip"
+                    :class="badgeTone(r.status)"
+                    x-text="statusLabel(r.status)"></span>
+              <template x-if="r.reserve_id">
+                <span class="chip chip-muted text-[11px]">预约号 <span class="font-mono" x-text="r.reserve_id"></span></span>
+              </template>
+            </div>
+            <div class="text-xs text-ink-muted break-all" x-show="r.last_error" x-text="r.last_error"></div>
+          </div>
+          <template x-if="canCancel(r)">
+            <form method="post" :action="'/tasks/' + r.id + '/cancel'" class="inline">
+              <input type="hidden" name="next" value="/manual">
+              <button class="btn btn-secondary btn-sm" type="submit">取消</button>
+            </form>
+          </template>
+        </div>
+      </template>
+      <div x-show="!records || records.length === 0"
+           class="text-xs text-ink-muted text-center py-6 border border-dashed border-edge-subtle rounded-xl">
+        暂无手动预约记录
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
