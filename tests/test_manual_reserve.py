@@ -100,6 +100,14 @@ def test_parse_manual_form_bad_seat():
     assert d is None and "座位" in reason
 
 
+def test_parse_manual_form_blank_seat_rejected():
+    """空座位号不得经 zfill 静默变成 "000"。"""
+    d, _s, _e, reason = parse_manual_form(
+        day_raw=DAY.isoformat(), start_raw="09:00", end_raw="10:00", seat_raw="  ",
+    )
+    assert d is None and "座位号" in reason
+
+
 # ---------- 纯函数：used_hours_for_account_day ----------
 
 def test_used_hours_excludes_terminal_statuses():
@@ -340,6 +348,10 @@ class FakeManualSched:
         if self.submit_outcome == "ok":
             t.status = TaskStatus.ACTIVE
             t.reserve_id = 999
+        elif self.submit_outcome == "signed":
+            # tick 在提交期间并发签到的竞态形态
+            t.status = TaskStatus.SIGNED
+            t.reserve_id = 999
         else:
             t.status = TaskStatus.FAILED
             t.last_error = "座位已被预约"
@@ -415,7 +427,11 @@ def test_manual_reserve_rule_fail_redirects():
     assert "单段上限" in qs["error"][0]
 
 
-def test_manual_reserve_precheck_occupied_redirects():
+def test_manual_reserve_precheck_occupied_redirects(monkeypatch):
+    """固定时钟到 08:00：真实 now 会让 09:00 段在 08:40 后命中签到截止规则，
+    校验先于预检重定向，断言将被带偏（时段依赖测试）。"""
+    import seatbot.web.routes as R
+    monkeypatch.setattr(R, "now_cst", lambda: at_cst(DAY, time(8, 0)))
     store = FakeManualStore()
     sched = FakeManualSched(occupied=[("09:30", "10:30")])
     c = _make_manual_client(store, sched)
@@ -429,7 +445,9 @@ def test_manual_reserve_precheck_occupied_redirects():
     assert "已被占用" in qs["error"][0]
 
 
-def test_manual_reserve_integrity_error_redirects():
+def test_manual_reserve_integrity_error_redirects(monkeypatch):
+    import seatbot.web.routes as R
+    monkeypatch.setattr(R, "now_cst", lambda: at_cst(DAY, time(8, 0)))
     store = FakeManualStore()
     store.fail_integrity = True
     sched = FakeManualSched()
@@ -465,7 +483,9 @@ def test_manual_reserve_success_redirects_with_reserve_id(monkeypatch):
     assert store.added_initial_status[0] == TaskStatus.READY
 
 
-def test_manual_reserve_failure_redirects_with_error():
+def test_manual_reserve_failure_redirects_with_error(monkeypatch):
+    import seatbot.web.routes as R
+    monkeypatch.setattr(R, "now_cst", lambda: at_cst(DAY, time(8, 0)))
     store = FakeManualStore()
     sched = FakeManualSched(submit_outcome="fail")
     c = _make_manual_client(store, sched)
@@ -479,7 +499,26 @@ def test_manual_reserve_failure_redirects_with_error():
     assert "提交未成" in qs["error"][0]
 
 
-def test_manual_reserve_tomorrow_blocked_before_14():
+def test_manual_reserve_signed_race_still_success(monkeypatch):
+    """提交期间 tick 已把时段签到（SIGNED）→ 仍按成功反馈，不误报"提交未成"。"""
+    import seatbot.web.routes as R
+    monkeypatch.setattr(R, "now_cst", lambda: at_cst(DAY, time(8, 0)))
+    store = FakeManualStore()
+    sched = FakeManualSched(submit_outcome="signed")
+    c = _make_manual_client(store, sched)
+    r = c.post("/manual/reserve", data={
+        "account_id": "张三", "seat_num": "021",
+        "day": DAY.isoformat(), "start": "20:00", "end": "21:00",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    qs = parse_qs(urlparse(r.headers["location"]).query)
+    assert "msg" in qs and "预约成功" in qs["msg"][0]
+
+
+def test_manual_reserve_tomorrow_blocked_before_14(monkeypatch):
+    """固定时钟到上午：14:00 后规则 2 放行，用例会走完整提交链路而误报失败。"""
+    import seatbot.web.routes as R
+    monkeypatch.setattr(R, "now_cst", lambda: at_cst(DAY, time(10, 0)))
     store = FakeManualStore()
     sched = FakeManualSched()
     c = _make_manual_client(store, sched)
