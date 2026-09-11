@@ -3142,6 +3142,7 @@ async def manual_page(
         tomorrow=tomorrow.isoformat(),
         view_day=view_day.isoformat(),
         now_hour=now.hour,
+        now_hhmm=now.strftime("%H:%M"),
         reserve_window_hour=RESERVE_WINDOW_HOUR,
         sign_deadline_minutes=SIGN_DEADLINE_MINUTES,
         records=records,
@@ -3241,7 +3242,9 @@ async def manual_reserve(
     if loaded:
         await sched.run_submit(acc, loaded)
     loaded = await store.get_task(tid)
-    if loaded and loaded.reserve_id and loaded.status == TaskStatus.ACTIVE:
+    # tick 可能在提交期间把已开始的时段签到（SIGNED），同样视为成功
+    if loaded and loaded.reserve_id and loaded.status in (
+            TaskStatus.ACTIVE, TaskStatus.SIGNED):
         msg = f"预约成功（预约号 {loaded.reserve_id}）"
         return RedirectResponse("/manual?msg=" + quote(msg), status_code=303)
     err = (loaded.last_error if loaded else "") or "提交未成"

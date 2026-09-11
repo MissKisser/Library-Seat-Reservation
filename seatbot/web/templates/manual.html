@@ -7,7 +7,9 @@
        today: "{{ today }}",
        tomorrow: "{{ tomorrow }}",
        nowHour: {{ now_hour }},
+       nowHhmm: "{{ now_hhmm }}",
        reserveWindowHour: {{ reserve_window_hour }},
+       signDeadlineMinutes: {{ sign_deadline_minutes }},
        openTime: "{{ open_time }}",
        closeTime: "{{ close_time }}",
        maxSegHours: {{ max_seg_hours }},
@@ -156,7 +158,7 @@
                       x-text="a.id + '（今天余 ' + a.remaining_today + 'h / 明天余 ' + a.remaining_tomorrow + 'h）'"></option>
             </template>
           </select>
-          <div class="hint" x-show="form.accountId && pool.length === 0">暂无可用账号</div>
+          <div class="hint" x-show="pool.length === 0">暂无可用账号</div>
         </div>
 
         <div class="flex items-center gap-2 flex-wrap">
@@ -168,6 +170,11 @@
             <span x-text="occupancyLoading ? '查询中…' : '查询占用'"></span>
           </button>
           <span class="text-xs text-ink-muted" x-show="occupancyMsg" x-text="occupancyMsg"></span>
+        </div>
+
+        <div class="hint text-warn" x-show="form.day === today && form.start <= nowHhmm && nowHhmm < form.end">
+          所选时段可能已开始：提交成功后系统将立即自动签到，开始后
+          <span x-text="signDeadlineMinutes"></span> 分钟内为签到截止，逾期未签到平台将释放该预约
         </div>
 
         <div x-show="form.day === tomorrow && nowHour >= reserveWindowHour - 1 && nowHour < reserveWindowHour + 1"
