@@ -25,6 +25,22 @@ def _overlap(s1, e1, s2, e2) -> bool:
     return not (e1 <= s2 or s1 >= e2)
 
 
+_RECOVERABLE_MSG_KEYS = ("no selectable cell", "page load", "timeout", "seed not found")
+
+
+def _is_recoverable_page_error(msg: str | None) -> bool:
+    """判定页面错误消息是否属于可通过锚点座位重试恢复的瞬态/页面结构错误。
+
+    入参:
+        msg: 服务端或客户端返回的错误字符串。
+
+    返回值:
+        包含任一可恢复关键字时返回 True，否则返回 False。
+    """
+    m = (msg or "").lower()
+    return any(k in m for k in _RECOVERABLE_MSG_KEYS)
+
+
 @dataclass
 class NextRelay:
     at: datetime
@@ -527,10 +543,13 @@ class Scheduler:
                     start_time=t.start_time.strftime("%H:%M"),
                     end_time=t.end_time.strftime("%H:%M"),
                 )
-                if self.anchor_retry_enabled and not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
+                if self.anchor_retry_enabled and not r.get("success") and _is_recoverable_page_error(r.get("msg")):
                     anchor = await self._pick_anchor_seat(client, t.seat_num)
                     if anchor:
-                        await self._warn(f"座位 {t.seat_num} 页面无格子, 改用锚点 {anchor} 重试", acc.id)
+                        await self._warn(
+                            f"座位 {t.seat_num} 页面不可用（{r.get('msg')}）, 改用锚点座位 {anchor} 重试",
+                            acc.id,
+                        )
                         r = await client.submit_via_page_rewrite(
                             phone=acc.phone, password=acc.password,
                             room_id=self.cfg.library.room_id, seat_num=t.seat_num,
@@ -555,10 +574,13 @@ class Scheduler:
                     start_time=t.start_time.strftime("%H:%M"),
                     end_time=t.end_time.strftime("%H:%M"),
                 )
-                if self.anchor_retry_enabled and not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
+                if self.anchor_retry_enabled and not r.get("success") and _is_recoverable_page_error(r.get("msg")):
                     anchor = await self._pick_anchor_seat(client, t.seat_num)
                     if anchor:
-                        await self._warn(f"座位 {t.seat_num} 页面无格子, 改用锚点 {anchor} 重试", acc.id)
+                        await self._warn(
+                            f"座位 {t.seat_num} 页面不可用（{r.get('msg')}）, 改用锚点座位 {anchor} 重试",
+                            acc.id,
+                        )
                         r = await client.submit_via_page_rewrite(
                             phone=acc.phone, password=acc.password,
                             room_id=self.cfg.library.room_id, seat_num=t.seat_num,
@@ -627,11 +649,7 @@ class Scheduler:
                         start_time=t.start_time.strftime("%H:%M"),
                         end_time=t.end_time.strftime("%H:%M"),
                     )
-                    is_recoverable = any(
-                        k in str(r.get("msg") or "").lower()
-                        for k in ("no selectable cell", "page load", "timeout", "seed not found")
-                    )
-                    if self.anchor_retry_enabled and not r.get("success") and is_recoverable:
+                    if self.anchor_retry_enabled and not r.get("success") and _is_recoverable_page_error(r.get("msg")):
                         anchor = await self._pick_anchor_seat(client, t.seat_num)
                         if anchor:
                             await self._warn(

@@ -321,3 +321,32 @@ async def test_submit_direct_consecutive_relogin_failures_trigger_cooldown(tmp_p
     await sched._run_submit(acc, t3)
     assert client.logins == 2
 
+
+async def test_page_rewrite_only_timeout_triggers_anchor_retry(tmp_path):
+    store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
+    sched = Scheduler(make_cfg(submit_strategy="page_rewrite_only"), store)
+    rewrite_calls = 0
+
+    async def submit_via_page_rewrite(**kw):
+        nonlocal rewrite_calls
+        client.calls.append("page_rewrite")
+        rewrite_calls += 1
+        if rewrite_calls == 1:
+            return {
+                "success": False, "reserve_id": None,
+                "msg": "page load failed: Timeout 12000ms exceeded",
+                "channel": "page-rewrite",
+            }
+        return {"success": True, "reserve_id": 777002, "msg": None, "channel": "page-rewrite"}
+
+    client = RoutingClient(used_times=[("09:00", "11:00")])
+    client.submit_via_page_rewrite = submit_via_page_rewrite
+    sched._clients["zhangsan"] = client
+    acc = await store.get_account("zhangsan")
+    await sched._run_submit(acc, t)
+
+    assert client.calls == ["page_rewrite", "getused", "page_rewrite", "getused"]
+    after = await store.get_task(t.id)
+    assert after.status == TaskStatus.ACTIVE and after.reserve_id == 777002
+
+
