@@ -480,3 +480,55 @@ async def test_standby_remains_when_recent_heartbeat(fake_peer, tmp_path):
         assert rt.backup_state == "standby"
     finally:
         await store.close()
+
+async def test_primary_full_lifecycle_resilience_regression(fake_peer, tmp_path):
+    """状态机全生命周期回归：warming不可达保持 -> grace超时兜底active -> 基线初始化防抖动 -> 超时自检失败suspended -> 心跳恢复active。"""
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "reg.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "warming"
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        fake_peer.fail_all = True
+        sched = type("S", (), {})()
+
+        # Step 1: warming 探测失败且未超 grace -> 保持 warming
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "warming"
+        assert rt.can_act() is False
+
+        # Step 2: 超过 failback_grace -> 兜底转 active
+        rt.tick(200.0)
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "active"
+        assert rt.active_since is not None
+        assert rt.last_heartbeat_sent_ok is not None
+        assert rt.can_act() is True
+
+        # Step 3: 单次瞬时失败 -> 基线已初始化，未超 TTL，保持 active
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "active"
+
+        # Step 4: 持续失联超 TTL + 隧道失败 -> 转 suspended
+        rt.tick(350.0)
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "suspended"
+        assert rt.can_act() is False
+
+        # Step 5: 心跳恢复 -> 回到 active
+        fake_peer.fail_all = False
+        fake_peer.heartbeat_response = {"role": "backup", "active_since": None}
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "active"
+        assert rt.can_act() is True
+    finally:
+        await store.close()
