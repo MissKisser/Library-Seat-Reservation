@@ -102,12 +102,12 @@ ALLOCATION_STRATEGY_HELP: dict[str, dict[str, str]] = {
     "safe": {
         "label": "安全模式（摊薄）",
         "badge": "默认",
-        "desc": "把每天的任务摊给尽可能多账号，单账号故障爆炸半径 ≤ 1 段（≤2h）。",
+        "desc": "任务优先摊给当天已用小时最少的账号，尽量缩小单账号故障的影响面。",
     },
     "minimal": {
         "label": "最简模式（打包）",
         "badge": "省账号",
-        "desc": "覆盖全部期望时段前提下，最少动用账号数（周内轮换）；单账号最多 2 段（4h/天）。",
+        "desc": "覆盖全部期望时段前提下，最少动用账号数（周内轮换）；单账号可承包同座全天多段（受每日限额约束）。",
     },
 }
 
@@ -120,7 +120,7 @@ DEFAULTS: dict[str, object] = {
     "anchor_scan_limit": 12,
     # 馆舍限额（可在页面调整，未调整时沿用馆舍配置）
     "max_reserve_hours": 2.0,
-    "daily_reserve_hours_limit": 5.0,
+    "daily_reserve_hours_limit": 14.0,
     "notify_webhook": "",
     "reconcile_interval_seconds": 300,
     "schedule_mode": "uniform",
@@ -267,8 +267,8 @@ def validate_all(patch: dict[str, object]) -> dict[str, str]:
                     raise ValueError("须为 60–86400 内整数")
             elif k in ("max_reserve_hours", "daily_reserve_hours_limit"):
                 fv = float(str(v).strip()) if isinstance(v, str) else float(v)  # type: ignore[arg-type]
-                if not (0.5 <= fv <= 12):
-                    raise ValueError("须为 0.5–12")
+                if not (0.5 <= fv <= 24):
+                    raise ValueError("须为 0.5–24")
             elif k == "notify_webhook":
                 s = str(v).strip()
                 if s and not (s.startswith("http://") or s.startswith("https://")):

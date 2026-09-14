@@ -157,7 +157,7 @@
         </div>
         <div class="form-field">
           <label for="daily_reserve_hours_limit">每日限额（小时）<span class="req">*</span></label>
-          <input id="daily_reserve_hours_limit" name="daily_reserve_hours_limit" type="number" min="0.5" max="12" step="0.5" class="input" value="{{ eff.daily_reserve_hours_limit }}">
+          <input id="daily_reserve_hours_limit" name="daily_reserve_hours_limit" type="number" min="0.5" max="24" step="0.5" class="input" value="{{ eff.daily_reserve_hours_limit }}">
           <div class="hint">每账号每天累计上限，默认 5.0；单段不应超过此值</div>
           {% if "daily_reserve_hours_limit" in overridden %}<div class="text-xs text-target">已自定义</div>{% endif %}
         </div>

@@ -114,3 +114,10 @@ def test_allocation_strategy_storage_roundtrip():
     assert _settings.parse_stored("allocation_strategy", "garbage", "safe") == "safe"
     # parse_stored 在 None 时回 fallback
     assert _settings.parse_stored("allocation_strategy", None, "safe") == "safe"
+
+
+def test_validate_daily_limit_range_up_to_24():
+    assert _settings.validate_all({"daily_reserve_hours_limit": 14.0}) == {}
+    assert _settings.validate_all({"daily_reserve_hours_limit": 24.0}) == {}
+    assert "daily_reserve_hours_limit" in _settings.validate_all(
+        {"daily_reserve_hours_limit": 25.0})
