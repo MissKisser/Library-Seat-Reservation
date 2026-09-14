@@ -76,3 +76,188 @@ def test_can_act_matrix():
 
 def test_null_runtime_always_true():
     assert NullHaRuntime().can_act()
+
+
+# ---------- Task 7: 主力看护协程 ----------
+
+class _FakePeer:
+    """内存假对端：记录 heartbeat/snapshot 推送，可编排响应/异常。"""
+
+    def __init__(self) -> None:
+        self.heartbeats: list[dict] = []
+        self.snapshots: list[bytes] = []
+        self.fail_bk: bool = False
+        self.fail_all: bool = False
+        self.status_response: dict = {"instance_id": "peer-1", "active_since": None}
+        self.heartbeat_response: dict | None = None
+        self.raise_exc: Exception | None = None
+
+
+@pytest.fixture
+def fake_peer(monkeypatch):
+    from seatbot import ha as _ha
+    peer = _FakePeer()
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, content=None, json=None, timeout=None):
+            if peer.fail_all or (peer.fail_bk and "/api/ha/bk/" in url):
+                if peer.raise_exc:
+                    raise peer.raise_exc
+                raise RuntimeError("peer dead")
+            if "/api/ha/bk/heartbeat" in url:
+                peer.heartbeats.append(json or {})
+                if peer.heartbeat_response is not None:
+                    return _Resp(200, peer.heartbeat_response)
+                return _Resp(200, {"role": "backup", "active_since": None})
+            if "/api/ha/bk/snapshot" in url:
+                peer.snapshots.append(content or b"")
+                return _Resp(200, {"applied": True, "tables": ["accounts"]})
+            if "/api/ha/restore" in url:
+                return _Resp(200, {"applied": True})
+            return _Resp(404, {})
+
+        async def get(self, url, headers=None, timeout=None):
+            if peer.fail_all or (peer.fail_bk and "/api/ha/bk/" in url):
+                if peer.raise_exc:
+                    raise peer.raise_exc
+                raise RuntimeError("peer dead")
+            if "/api/ha/status" in url:
+                return _Resp(200, peer.status_response)
+            return _Resp(404, {})
+
+    class _Resp:
+        def __init__(self, code: int, body: dict):
+            self.status_code = code
+            self._body = body
+
+        def json(self):
+            return self._body
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"http {self.status_code}")
+
+    monkeypatch.setattr(_ha.httpx, "AsyncClient", _FakeAsyncClient)
+    return peer
+
+
+async def test_primary_normal_warming_to_active(fake_peer, tmp_path):
+    from seatbot import ha as _ha
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "warming"
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        fake_peer.status_response = {"instance_id": "peer-1", "active_since": None}
+        sched = type("S", (), {})()
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "active"
+        assert rt.active_since is not None
+    finally:
+        await store.close()
+
+
+async def test_primary_suspends_when_peer_and_tunnel_dead(fake_peer, tmp_path):
+    from seatbot import ha as _ha
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "active"
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        # 模拟时钟已经走远
+        rt.last_heartbeat_sent_ok = 0.0
+        fake_peer.fail_all = True
+        sched = type("S", (), {})()
+        # 推 8 次心跳；中途公网自检也失败 → suspended
+        for _ in range(8):
+            await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "suspended"
+    finally:
+        await store.close()
+
+
+async def test_primary_stays_active_when_only_peer_process_dead(fake_peer, tmp_path):
+    """备用进程挂但隧道仍在（公网自检应答者是自己）→ 主力保持 active，只记日志。"""
+    from seatbot import ha as _ha
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "active"
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        rt.last_heartbeat_sent_ok = 0.0
+        fake_peer.fail_bk = True   # /bk/* 挂
+        # status 仍能通；应答 instance_id 是主力自己（隧道活着）
+        fake_peer.status_response = {"instance_id": rt.cfg.instance_id, "active_since": None}
+        sched = type("S", (), {})()
+        for _ in range(8):
+            await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "active"
+    finally:
+        await store.close()
+
+
+async def test_primary_demotes_to_warming_on_active_backup_heartbeat(fake_peer, tmp_path):
+    """心跳应答 active_since 非空 → 主力让位进 warming。"""
+    from seatbot import ha as _ha
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "active"
+        rt.active_since = 100.0
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        fake_peer.heartbeat_response = {"role": "backup", "active_since": 123.0}
+        sched = type("S", (), {})()
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "warming"
+        assert rt.active_since is None
+    finally:
+        await store.close()
