@@ -239,6 +239,45 @@ async def test_primary_suspends_when_peer_and_tunnel_dead(fake_peer, tmp_path):
         assert rt.primary_state == "suspended"
     finally:
         await store.close()
+async def test_primary_suspended_recovers_to_active_on_heartbeat_success(fake_peer, tmp_path):
+    """suspended 态每 tick 继续发心跳，心跳恢复后转入 active。"""
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "suspended"
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        fake_peer.fail_all = True
+        sched = type("S", (), {})()
+
+        # 1) 对端持续失败：保持 suspended
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "suspended"
+        assert rt.can_act() is False
+
+        # 2) 对端心跳恢复：恢复 active，重置 last_heartbeat_sent_ok 并发通知
+        fake_peer.fail_all = False
+        fake_peer.heartbeat_response = {"role": "backup", "active_since": None}
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "active"
+        assert rt.active_since is not None
+        assert rt.last_heartbeat_sent_ok is not None
+        assert rt.can_act() is True
+
+        notifs = await store.list_notifications()
+        assert any(n["title"] == "主力恢复" for n in notifs)
+    finally:
+        await store.close()
+
 
 
 async def test_primary_stays_active_when_only_peer_process_dead(fake_peer, tmp_path):

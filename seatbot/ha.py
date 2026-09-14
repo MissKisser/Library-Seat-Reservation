@@ -362,8 +362,36 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
                 logger.info("ha: warming awaiting failback (backup active_since=%s)", active_since)
         return
 
+    if runtime.primary_state == "suspended":
+        if peer:
+            try:
+                async with httpx.AsyncClient(timeout=5, trust_env=False) as c:
+                    r = await c.post(
+                        f"{peer}/api/ha/bk/heartbeat",
+                        headers={"X-HA-Key": runtime.cfg.key},
+                        json={"instance_id": runtime.cfg.instance_id},
+                    )
+                    if r.status_code == 200:
+                        runtime.primary_state = "active"
+                        runtime.active_since = now
+                        runtime.last_heartbeat_sent_ok = now
+                        runtime.last_heartbeat_seen = now
+                        runtime.last_primary_contact = now
+                        logger.info("ha: suspended -> active (heartbeat recovered)")
+                        try:
+                            await store.add_notification(
+                                "主力恢复",
+                                "心跳恢复，主力已重新接管调度。",
+                                level="info",
+                            )
+                        except Exception:
+                            pass
+            except Exception as exc:
+                logger.debug("ha: suspended heartbeat probe failed: %s", exc)
+        return
+
     if runtime.primary_state != "active":
-        return  # suspended: 暂停推送，等对端恢复
+        return
 
     # 2) 心跳推送
     if not peer:
