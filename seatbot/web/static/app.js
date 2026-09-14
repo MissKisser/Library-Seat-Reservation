@@ -767,10 +767,11 @@
     return { open: false, toggle() { this.open = !this.open; } };
   };
 
-  /* ===== 系统设置页：检测表单变更，自动亮起左下角浮动保存按钮 ===== */
+  /* ===== 系统设置页：检测表单变更，底部保存按钮滚出视口时才浮出悬浮保存条 ===== */
   window.settingsDirty = function () {
     return {
       dirty: false,
+      saveVisible: true,
       init() {
         const form = this.$root.querySelector('form[action="/settings"]');
         if (!form) return;
@@ -780,6 +781,12 @@
         form.addEventListener('input', () => { this.dirty = snapshot() !== baseline; });
         form.addEventListener('change', () => { this.dirty = snapshot() !== baseline; });
         form.addEventListener('submit', () => { this.dirty = false; });
+        const anchor = document.getElementById('save-anchor');
+        if (anchor && 'IntersectionObserver' in window) {
+          new IntersectionObserver((entries) => {
+            this.saveVisible = entries[entries.length - 1].isIntersecting;
+          }, { threshold: 0.1 }).observe(anchor);
+        }
       },
     };
   };
