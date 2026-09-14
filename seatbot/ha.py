@@ -260,6 +260,8 @@ async def run_ha_supervisor(store, sched, cfg: HaConfig, runtime: HaRuntime) -> 
 
     内部捕获所有异常记日志，不退出（确保任何瞬时网络抖动不杀进程）。
     """
+    logger.info("ha: supervisor starting mode=%s key_present=%s", runtime.mode,
+                bool(runtime.cfg and runtime.cfg.key))
     while True:
         try:
             interval = min(runtime.cfg.heartbeat_interval if runtime.cfg else 15, 5)

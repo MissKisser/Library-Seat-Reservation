@@ -49,13 +49,20 @@ async def bk_heartbeat(request: Request, runtime: HaRuntime = Depends(_require_h
     now = runtime.now()
     runtime.last_heartbeat_seen = now
     runtime.last_primary_contact = now
-    # 备用正在接管时收到心跳 → 进入 failback 协商
+    # 备用正在接管时收到心跳 → 进入 failback 协商 + 启动 push 循环
     if runtime.mode == "backup" and runtime.backup_state == "active":
         runtime.backup_state = "failback_pending"
+        store = getattr(request.app.state, "store", None)
         try:
             logger.info("ha: backup entered failback_pending after heartbeat")
         except Exception:
             pass
+        if store is not None:
+            try:
+                from seatbot.ha import _push_restore_loop
+                asyncio.create_task(_push_restore_loop(store, runtime))
+            except Exception as exc:
+                logger.warning("ha: schedule push_restore_loop failed: %s", exc)
     return {
         "role": runtime.mode if runtime.mode in ("primary", "backup") else "standalone",
         "active_since": runtime.active_since,
