@@ -110,9 +110,58 @@ async def test_direct_failure_falls_back_to_page_rewrite(tmp_path):
     sched._clients["zhangsan"] = client
     acc = await store.get_account("zhangsan")
     await sched._run_submit(acc, t)
-    assert client.calls == ["direct", "page_rewrite", "getused"]
+    assert client.calls == ["direct", "getused", "direct", "page_rewrite", "getused"]
     after = await store.get_task(t.id)
     assert after.status == TaskStatus.ACTIVE and after.reserve_id == 999001
+
+
+async def test_direct_seed_not_found_retries_with_anchor_direct_success(tmp_path):
+    store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
+    sched = Scheduler(make_cfg(), store)
+    client = RoutingClient(used_times=[("09:00", "11:00")])
+    direct_calls = 0
+
+    async def submit_direct(**kw):
+        nonlocal direct_calls
+        client.calls.append("direct")
+        direct_calls += 1
+        if direct_calls == 1:
+            return {"success": False, "reserve_id": None, "msg": "submit_enc seed not found on seat page", "channel": "direct"}
+        return {"success": True, "reserve_id": 888001, "msg": None, "channel": "direct"}
+
+    client.submit_direct = submit_direct
+    sched._clients["zhangsan"] = client
+    acc = await store.get_account("zhangsan")
+    await sched._run_submit(acc, t)
+    assert client.calls == ["direct", "getused", "direct", "getused"]
+    after = await store.get_task(t.id)
+    assert after.status == TaskStatus.ACTIVE and after.reserve_id == 888001
+
+
+async def test_page_rewrite_timeout_triggers_anchor_retry(tmp_path):
+    store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
+    sched = Scheduler(make_cfg(), store)
+    rewrite_calls = 0
+
+    async def submit_via_page_rewrite(**kw):
+        nonlocal rewrite_calls
+        client.calls.append("page_rewrite")
+        rewrite_calls += 1
+        if rewrite_calls == 1:
+            return {"success": False, "reserve_id": None, "msg": "page load failed: Timeout 12000ms exceeded", "channel": "page-rewrite"}
+        return {"success": True, "reserve_id": 777001, "msg": None, "channel": "page-rewrite"}
+
+    client = RoutingClient(
+        direct_result={"success": False, "reserve_id": None, "msg": "submit rejected", "channel": "direct"},
+        used_times=[("09:00", "11:00")],
+    )
+    client.submit_via_page_rewrite = submit_via_page_rewrite
+    sched._clients["zhangsan"] = client
+    acc = await store.get_account("zhangsan")
+    await sched._run_submit(acc, t)
+    assert client.calls == ["direct", "page_rewrite", "getused", "page_rewrite", "getused"]
+    after = await store.get_task(t.id)
+    assert after.status == TaskStatus.ACTIVE and after.reserve_id == 777001
 
 
 async def test_all_channels_fail_without_anchor_marks_failed(tmp_path):

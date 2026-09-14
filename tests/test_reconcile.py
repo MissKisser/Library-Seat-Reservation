@@ -276,3 +276,16 @@ def test_dashboard_fresh_bypass_and_throttle(monkeypatch):
 
     assert asyncio.run(main()) == [_date(2026, 9, 1)]
     R._OCC_CACHE.clear()
+
+def test_pick_read_account_health_and_cooldown():
+    from seatbot.reconcile import pick_read_account
+    a1 = Account(id="a1", phone="1", password="p", slots=[], status="active")
+    a2 = Account(id="a2", phone="2", password="p", slots=[], status="active")
+    a3 = Account(id="a3", phone="3", password="p", slots=[], status="inactive")
+    recency = {"a1": 200, "a2": 100, "a3": 300}
+
+    # a3 虽最新但为 inactive，自动排除选 a1
+    assert pick_read_account([a1, a2, a3], recency).id == "a1"
+
+    # a1 处于冷却排除中，避让选 a2
+    assert pick_read_account([a1, a2, a3], recency, exclude_ids={"a1"}).id == "a2"

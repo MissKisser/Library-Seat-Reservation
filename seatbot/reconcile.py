@@ -56,20 +56,32 @@ def classify_task(
 def pick_read_account(
     accounts: list["Account"],
     cookie_recency: dict[str, int] | None = None,
+    exclude_ids: set[str] | None = None,
 ) -> "Account | None":
-    """选只读查询账号：优先会话最新的账号，回退第一个有凭据的账号。
+    """选只读查询账号：优先排除失效或冷却中的账号，选会话最新的可用账号。
 
-    cookie_recency: account_id → account_cookies.updated_at，由调用方
-    动态查库传入；不依赖任何具体账号，账号增删后自动重选，已删账号
-    的残留记录被自然忽略。并列时取 accounts 列表序（list_accounts
-    为 ORDER BY id，稳定）。
+    cookie_recency: account_id → account_cookies.updated_at，由调用方动态查库传入；
+    exclude_ids: 可选排除账号集合（如会话失效或处于冷却期的账号）。
     """
-    cred = [a for a in accounts if a.phone and a.password]
+    excludes = exclude_ids or set()
+    cred = [
+        a for a in accounts
+        if a.phone and a.password
+        and getattr(a, "status", None) != "inactive"
+        and a.id not in excludes
+    ]
+    if not cred and excludes:
+        cred = [
+            a for a in accounts
+            if a.phone and a.password
+            and getattr(a, "status", None) != "inactive"
+        ]
+    if not cred:
+        cred = [a for a in accounts if a.phone and a.password]
     if not cred:
         return None
     rec = cookie_recency or {}
     return max(cred, key=lambda a: rec.get(a.id, 0))
-
 
 def parse_reservations(
     entries: list[dict], days: set[date],

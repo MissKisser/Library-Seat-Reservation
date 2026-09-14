@@ -6,6 +6,7 @@ import json
 import random
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+import time as _time
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -68,6 +69,8 @@ class Scheduler:
         # 14:00 批量预约两个入口 (cron misfire 补跑 / 启动补跑) 共用的互斥闸，
         # 防止同批 PENDING 任务被两条路径并发提交成双份真实预约
         self._bootstrap_gate = asyncio.Lock()
+        self._relogin_cooldown: dict[str, float] = {}  # account_id -> monotonic timestamp
+        self._relogin_fail_count: dict[str, int] = {}  # account_id -> consecutive fail count
 
     async def load_runtime_settings(self) -> dict[str, object]:
         try:
@@ -586,6 +589,38 @@ class Scheduler:
                         start_time=t.start_time.strftime("%H:%M"),
                         end_time=t.end_time.strftime("%H:%M"),
                     )
+                    if not r.get("success") and "未登录" in str(r.get("msg") or ""):
+                        await self._warn("直连提交: 会话过期 → 重登重试", acc.id)
+                        client.reset_session()
+                        if await self.login_and_persist(acc, client, "直连重登"):
+                            r = await client.submit_direct(
+                                phone=acc.phone,
+                                password=acc.password,
+                                room_id=self.cfg.library.room_id,
+                                seat_num=t.seat_num,
+                                day=t.day.isoformat(),
+                                start_time=t.start_time.strftime("%H:%M"),
+                                end_time=t.end_time.strftime("%H:%M"),
+                            )
+                    if self.anchor_retry_enabled and not r.get("success") and "seed not found" in str(r.get("msg") or ""):
+                        anchor = await self._pick_anchor_seat(client, t.seat_num)
+                        if anchor:
+                            await self._warn(
+                                f"座位 {t.seat_num} 自身扫码页无种子, 改用锚点 {anchor} 取种子直连重试",
+                                acc.id,
+                            )
+                            r_anchor = await client.submit_direct(
+                                phone=acc.phone,
+                                password=acc.password,
+                                room_id=self.cfg.library.room_id,
+                                seat_num=t.seat_num,
+                                day=t.day.isoformat(),
+                                start_time=t.start_time.strftime("%H:%M"),
+                                end_time=t.end_time.strftime("%H:%M"),
+                                anchor_seat=anchor,
+                            )
+                            if r_anchor.get("success"):
+                                r = r_anchor
                     if not r.get("success"):
                         await self._warn(
                             f"直连提交未成（{r.get('msg')}），改走页面改写通道",
@@ -600,11 +635,15 @@ class Scheduler:
                             start_time=t.start_time.strftime("%H:%M"),
                             end_time=t.end_time.strftime("%H:%M"),
                         )
-                        if self.anchor_retry_enabled and not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
+                        is_recoverable = any(
+                            k in str(r.get("msg") or "").lower()
+                            for k in ("no selectable cell", "page load", "timeout", "seed not found")
+                        )
+                        if self.anchor_retry_enabled and not r.get("success") and is_recoverable:
                             anchor = await self._pick_anchor_seat(client, t.seat_num)
                             if anchor:
                                 await self._warn(
-                                    f"座位 {t.seat_num} 页面无格子, 改用锚点座位 {anchor} 重试",
+                                    f"座位 {t.seat_num} 页面不可用（{r.get('msg')}）, 改用锚点座位 {anchor} 重试",
                                     acc.id,
                                 )
                                 r = await client.submit_via_page_rewrite(
@@ -689,19 +728,38 @@ class Scheduler:
     async def _act_with_relogin(
         self, client: ChaoxingClient, acc: Account, fn, reserve_id: int, label: str,
     ) -> dict:
-        """执行 sign/leave; 服务端报"未登录"时清 cookie 重登并重试一次。
-
-        背景 (2026-08-25 actions #2): httpx jar 里若残留陈旧 cookie,
-        `_run_sign` 的 lazy-login 分支 (只在 jar 为空时登录) 不会触发,
-        sign 会以 "您当前未登录" 失败且无自愈。
-        """
+        """执行 sign/leave; 服务端报未登录时清 cookie 重登并重试一次，防频繁重登死循环。"""
         sr = await fn(reserve_id)
         msg = str(sr.get("msg") or "")
         if not sr.get("success") and "未登录" in msg:
+            now_m = _time.monotonic()
+            cd = self._relogin_cooldown.get(acc.id, 0.0)
+            if now_m < cd:
+                await self._warn(
+                    f"{label}: 会话过期但在重登冷却期内（剩余 {int(cd - now_m)}s），跳过浏览器重登",
+                    acc.id,
+                )
+                return sr
+
             await self._warn(f"{label}: 会话过期（未登录）→ 重置会话并重登重试", acc.id)
             client.reset_session()
-            if await self.login_and_persist(acc, client, f"{label}重登"):
+            login_ok = await self.login_and_persist(acc, client, f"{label}重登")
+            if login_ok:
                 sr = await fn(reserve_id)
+                new_msg = str(sr.get("msg") or "")
+                if sr.get("success") or "未登录" not in new_msg:
+                    self._relogin_fail_count[acc.id] = 0
+                    self._relogin_cooldown.pop(acc.id, None)
+                    return sr
+
+            fails = self._relogin_fail_count.get(acc.id, 0) + 1
+            self._relogin_fail_count[acc.id] = fails
+            if fails >= 2:
+                self._relogin_cooldown[acc.id] = _time.monotonic() + 300.0
+                await self._warn(
+                    f"{label}: 账号 {acc.id} 连续 {fails} 次重登后仍未生效，进入 5 分钟重登冷却",
+                    acc.id,
+                )
         return sr
 
     async def _run_sign(self, acc: Account, t: Task) -> None:
@@ -999,9 +1057,12 @@ class Scheduler:
         tasks = [t for d in days
                  for t in await self.store.list_tasks(day=d)
                  if t.status in live]
+        now_m = _time.monotonic()
+        cooling = {aid for aid, until in self._relogin_cooldown.items() if now_m < until}
         acc = pick_read_account(
             await self.store.list_accounts(),
             await self.store.cookie_recency(),
+            exclude_ids=cooling,
         )
         self._reconcile_last_at = now_cst()
         if acc is None or not tasks:
@@ -1021,10 +1082,12 @@ class Scheduler:
 
         out = await self._sweep_once(acc, client, groups, write)
         if not just_logged_in and not out["fetch_ok"] and out["checked"] == 0:
-            # 全部分组查询失败 = 会话失效特征: 重置会话重登一次再试
             client.reset_session()
-            if await self.login_and_persist(acc, client, "实况核对重登"):
+            relogin_ok = await self.login_and_persist(acc, client, "实况核对重登")
+            if relogin_ok:
                 out = await self._sweep_once(acc, client, groups, write)
+            if not relogin_ok or (not out["fetch_ok"] and out["checked"] == 0):
+                self._relogin_cooldown[acc.id] = _time.monotonic() + 300.0
         return out
 
     async def _sweep_once(self, acc: Account, client,
