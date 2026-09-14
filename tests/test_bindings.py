@@ -226,6 +226,23 @@ def test_auto_assign_leaves_no_empty_seat_residue():
     assert "001" not in matrices["b"]
 
 
+def test_auto_assign_one_account_takes_multiple_slots_same_seat():
+    accs = [_acc("a", {})]
+    desired = {"001": {"mon": ["08:00-10:00", "10:00-12:00"]}}
+    matrices, unfillable = auto_assign(
+        accs, desired, max_seg_hours=2.0, daily_limit_hours=8.0)
+    assert unfillable == []
+    assert matrices["a"]["001"]["mon"] == ["08:00-10:00", "10:00-12:00"]
+
+
+def test_auto_assign_appends_to_existing_binding_same_seat():
+    accs = [_acc("a", {"001": {"mon": ["08:00-10:00"]}})]
+    desired = {"001": {"mon": ["08:00-10:00", "14:00-16:00"]}}
+    matrices, unfillable = auto_assign(
+        accs, desired, max_seg_hours=2.0, daily_limit_hours=8.0)
+    assert unfillable == []
+    assert matrices["a"]["001"]["mon"] == ["08:00-10:00", "14:00-16:00"]
+
 # ---------- plan_matrix / diff_matrices ----------
 
 from seatbot.bindings import diff_matrices, plan_matrix
