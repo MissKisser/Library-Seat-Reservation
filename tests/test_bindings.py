@@ -60,13 +60,15 @@ def test_validate_matrix_per_day_one_slot_per_seat():
     validate_matrix(ok, max_seg_hours=2.0, daily_limit_hours=5.0)
 
 
-def test_validate_matrix_two_slots_same_day_rejected():
-    bad = {"001": {"mon": ["09:00-11:00"]}, "002": {"mon": ["15:00-17:00"], "sat": ["19:00-21:00"]}}
-    validate_matrix(bad, max_seg_hours=2.0, daily_limit_hours=5.0)
-    bad2 = {"001": {"mon": ["09:00-10:00", "11:00-12:00"]}}
-    with pytest.raises(ValueError, match="周一.*最多绑定 1 个时段"):
-        validate_matrix(bad2, max_seg_hours=2.0, daily_limit_hours=5.0)
+def test_validate_matrix_same_seat_multi_slots_allowed():
+    m = {"001": {"mon": ["08:00-10:00", "10:00-12:00", "14:00-16:00"]}}
+    validate_matrix(m, max_seg_hours=2.0, daily_limit_hours=8.0)
 
+
+def test_validate_matrix_same_seat_overlap_rejected():
+    bad = {"001": {"mon": ["09:00-11:00", "10:00-12:00"]}}
+    with pytest.raises(ValueError, match="周一.*重叠"):
+        validate_matrix(bad, max_seg_hours=2.0, daily_limit_hours=8.0)
 
 def test_validate_matrix_two_slots_different_days_ok():
     ok = {"001": {"mon": ["09:00-11:00"], "tue": ["09:00-11:00", ]}}
