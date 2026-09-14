@@ -183,6 +183,34 @@ async def test_run_sign_relogin_on_not_logged_in(store, monkeypatch):
     assert (await store.get_task(t.id)).status == TaskStatus.SIGNED
 
 
+async def test_act_with_relogin_cooldown_prevents_infinite_login(store, monkeypatch):
+    dummy = DummyClient([
+        {"success": False, "msg": "您当前未登录"},
+        {"success": False, "msg": "您当前未登录"},
+        {"success": False, "msg": "您当前未登录"},
+        {"success": False, "msg": "您当前未登录"},
+    ])
+    monkeypatch.setattr(Scheduler, "_client_for", lambda self, acc: dummy)
+    sched = Scheduler(make_cfg(), store)
+    acc = await store.get_account("zhangsan")
+    t = Task(id=None, account_id="zhangsan", day=today_cst(),
+             start_time=time(9, 0), end_time=time(11, 0),
+             seat_num="104", status=TaskStatus.ACTIVE, reserve_id=7)
+    t.id = await store.add_task(t)
+
+    # 第一次触发未登录：重登 1 次，重试仍未登录
+    await sched._run_sign(acc, t)
+    assert dummy.logins == 1
+
+    # 第二次触发未登录：重登第 2 次，重试仍未登录，进入冷却
+    await sched._run_sign(acc, t)
+    assert dummy.logins == 2
+    assert sched._relogin_cooldown.get("zhangsan", 0) > 0
+
+    # 第三次：处于冷却期内，跳过浏览器重登
+    await sched._run_sign(acc, t)
+    assert dummy.logins == 2  # 未增加
+
 # ---------- leave 终态语义 ----------
 
 async def test_run_leave_without_reserve_marks_failed(store, monkeypatch):

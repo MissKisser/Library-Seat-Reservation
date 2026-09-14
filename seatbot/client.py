@@ -123,12 +123,18 @@ class ChaoxingClient:
                 name, value,
                 domain=".chaoxing.com", path="/",
             )
-
         if not any(c.name in ("_uid", "vc3") for c in self._cookie_jar.jar):
             raise ChaoxingError("login succeeded but no auth cookies set")
         import time as _time
         self._logged_at = _time.monotonic()
-
+        try:
+            await self._client.get(
+                f"{self.OFFICE_BASE}/front/third/apps/seat/index",
+                headers={"Referer": f"{self.PASSPORT_BASE}/"},
+                timeout=5.0,
+            )
+        except Exception:
+            pass
     @staticmethod
     async def _dismiss_consent_dialog(page) -> None:
         """点"登录"后可能弹出隐私协议确认框,必须点"已阅读并同意"登录才会继续。
@@ -189,6 +195,15 @@ class ChaoxingClient:
                 err_text = (await err_el.inner_text()) if err_el else "(no auth cookie)"
                 await browser.close()
                 raise ChaoxingError(f"browser login failed: {err_text!r}")
+            try:
+                if "office.chaoxing.com" not in page.url:
+                    await page.goto(
+                        f"{self.OFFICE_BASE}/front/third/apps/seat/index",
+                        wait_until="domcontentloaded",
+                        timeout=8000,
+                    )
+            except Exception:
+                pass
             for c in await ctx.cookies():
                 captured[c["name"]] = c["value"]
             await browser.close()
@@ -304,10 +319,16 @@ class ChaoxingClient:
                     f"{self.OFFICE_BASE}/front/apps/seat/code"
                     f"?id={room_id}&seatNum={seat_num}&day={day}"
                 )
-                await page.goto(url)
-                await page.wait_for_load_state("networkidle")
-                await page.wait_for_timeout(500)
-
+                try:
+                    await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=6000)
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(500)
+                except Exception as e:
+                    result["msg"] = f"page load failed: {e}"
+                    return result
                 # ★ 会话自愈: 预注入的 cookie 已过期时, 座位页会把我们重定向
                 # 到 passport 登录页 (症状: 后续 "start cell not clickable")。
                 # 在页内补登录后重新加载座位页再继续。
@@ -322,10 +343,16 @@ class ChaoxingClient:
                         )
                     import time as _time
                     self._logged_at = _time.monotonic()
-                    await page.goto(url)
-                    await page.wait_for_load_state("networkidle")
-                    await page.wait_for_timeout(500)
-
+                    try:
+                        await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=6000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(500)
+                    except Exception as e:
+                        result["msg"] = f"page reload failed: {e}"
+                        return result
                 # click start (逐格验证选中态 — R2 加固, 见 _click_cell_verified)
                 if not await self._click_cell_verified(page, cells[0]):
                     result["msg"] = f"start cell {cells[0]} not clickable"
@@ -482,9 +509,10 @@ class ChaoxingClient:
         password: str,
         room_id: int,
         seat_num: str,
-        day: str,            # 'YYYY-MM-DD' — 目标日期 (可为未来日期)
-        start_time: str,     # 'HH:MM'
-        end_time: str,       # 'HH:MM'
+        day: str,
+        start_time: str,
+        end_time: str,
+        anchor_seat: str | None = None,
     ) -> dict[str, Any]:
         """直连提交通道: 不做任何页面交互, 纯 httpx 构造并提交预约表单。
 
@@ -504,9 +532,10 @@ class ChaoxingClient:
         if not self.cookies():
             await self.login(phone, password)
 
+        seed_seat = anchor_seat or seat_num
         page_url = (
             f"{self.OFFICE_BASE}/front/apps/seat/code"
-            f"?id={room_id}&seatNum={seat_num}"
+            f"?id={room_id}&seatNum={seed_seat}"
         )
         try:
             page_html = (await self._client.get(page_url)).text
@@ -524,7 +553,8 @@ class ChaoxingClient:
                 seed = m.group(1)
                 break
         if not seed:
-            result["msg"] = "submit_enc seed not found on seat page"
+            seat_desc = f"anchor seat {anchor_seat}" if anchor_seat else "seat"
+            result["msg"] = f"submit_enc seed not found on {seat_desc} page"
             return result
 
         # 字段集 = 页面 doSubmit 的 paramObj 九件套; enc = md5(按 key 排序的
@@ -676,10 +706,16 @@ class ChaoxingClient:
                     f"{self.OFFICE_BASE}/front/apps/seat/code"
                     f"?id={room_id}&seatNum={anchor_seat or seat_num}"
                 )
-                await page.goto(url)
-                await page.wait_for_load_state("networkidle")
-                await page.wait_for_timeout(500)
-
+                try:
+                    await page.goto(url, timeout=12000, wait_until="domcontentloaded")
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=6000)
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(500)
+                except Exception as e:
+                    result["msg"] = f"page load failed: {e}"
+                    return result
                 # 会话失效自愈: 页内补登录后重进座位页 (route 注册不受导航影响)
                 if "passport2.chaoxing.com" in page.url:
                     if not await self._login_in_page(page, phone, password):
@@ -692,10 +728,16 @@ class ChaoxingClient:
                         )
                     import time as _time
                     self._logged_at = _time.monotonic()
-                    await page.goto(url)
-                    await page.wait_for_load_state("networkidle")
-                    await page.wait_for_timeout(500)
-
+                    try:
+                        await page.goto(url, timeout=12000, wait_until="domcontentloaded")
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=6000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(500)
+                    except Exception as e:
+                        result["msg"] = f"page reload failed: {e}"
+                        return result
                 # 捕获服务端渲染的 enc 种子 (隐藏域 #submit_enc = verifyParam 的盐)
                 try:
                     page_state["enc_seed"] = await page.locator(
@@ -876,6 +918,14 @@ class ChaoxingClient:
             r for r in records
             if r.get("status") == self.RESERVE_STATUS_SUPERVISED
         ]
+
+    async def verify_session(self) -> bool:
+        """验证当前会话在办公端座位系统是否有效。"""
+        try:
+            await self.reserve_list(page_size=1)
+            return True
+        except Exception:
+            return False
 
     # ---------- occupancy lookup ----------
     async def get_used_times(
