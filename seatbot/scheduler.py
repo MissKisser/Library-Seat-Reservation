@@ -516,117 +516,83 @@ class Scheduler:
             await self.login_and_persist(acc, client, "登录")
 
         try:
-            if t.day > today_cst():
-                strat = self.submit_strategy
-                if strat == "page_rewrite_only":
-                    r = await client.submit_via_page_rewrite(
-                        phone=acc.phone,
-                        password=acc.password,
-                        room_id=self.cfg.library.room_id,
-                        seat_num=t.seat_num,
-                        day=t.day.isoformat(),
-                        start_time=t.start_time.strftime("%H:%M"),
-                        end_time=t.end_time.strftime("%H:%M"),
-                    )
-                    if self.anchor_retry_enabled and not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
-                        anchor = await self._pick_anchor_seat(client, t.seat_num)
-                        if anchor:
-                            await self._warn(f"座位 {t.seat_num} 页面无格子, 改用锚点 {anchor} 重试", acc.id)
-                            r = await client.submit_via_page_rewrite(
-                                phone=acc.phone, password=acc.password,
-                                room_id=self.cfg.library.room_id, seat_num=t.seat_num,
-                                day=t.day.isoformat(),
-                                start_time=t.start_time.strftime("%H:%M"),
-                                end_time=t.end_time.strftime("%H:%M"),
-                                anchor_seat=anchor,
-                            )
-                elif strat == "direct_only":
-                    r = await client.submit_direct(
-                        phone=acc.phone, password=acc.password,
-                        room_id=self.cfg.library.room_id, seat_num=t.seat_num,
-                        day=t.day.isoformat(),
-                        start_time=t.start_time.strftime("%H:%M"),
-                        end_time=t.end_time.strftime("%H:%M"),
-                    )
-                elif strat == "page_rewrite_first":
-                    r = await client.submit_via_page_rewrite(
-                        phone=acc.phone, password=acc.password,
-                        room_id=self.cfg.library.room_id, seat_num=t.seat_num,
-                        day=t.day.isoformat(),
-                        start_time=t.start_time.strftime("%H:%M"),
-                        end_time=t.end_time.strftime("%H:%M"),
-                    )
-                    if self.anchor_retry_enabled and not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
-                        anchor = await self._pick_anchor_seat(client, t.seat_num)
-                        if anchor:
-                            await self._warn(f"座位 {t.seat_num} 页面无格子, 改用锚点 {anchor} 重试", acc.id)
-                            r = await client.submit_via_page_rewrite(
-                                phone=acc.phone, password=acc.password,
-                                room_id=self.cfg.library.room_id, seat_num=t.seat_num,
-                                day=t.day.isoformat(),
-                                start_time=t.start_time.strftime("%H:%M"),
-                                end_time=t.end_time.strftime("%H:%M"),
-                                anchor_seat=anchor,
-                            )
-                    if not r.get("success"):
-                        await self._warn(f"模拟点击未成（{r.get('msg')}），回退直连通道", acc.id)
-                        r2 = await client.submit_direct(
+            strat = self.submit_strategy
+            if strat == "page_rewrite_only":
+                r = await client.submit_via_page_rewrite(
+                    phone=acc.phone,
+                    password=acc.password,
+                    room_id=self.cfg.library.room_id,
+                    seat_num=t.seat_num,
+                    day=t.day.isoformat(),
+                    start_time=t.start_time.strftime("%H:%M"),
+                    end_time=t.end_time.strftime("%H:%M"),
+                )
+                if self.anchor_retry_enabled and not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
+                    anchor = await self._pick_anchor_seat(client, t.seat_num)
+                    if anchor:
+                        await self._warn(f"座位 {t.seat_num} 页面无格子, 改用锚点 {anchor} 重试", acc.id)
+                        r = await client.submit_via_page_rewrite(
                             phone=acc.phone, password=acc.password,
                             room_id=self.cfg.library.room_id, seat_num=t.seat_num,
                             day=t.day.isoformat(),
                             start_time=t.start_time.strftime("%H:%M"),
                             end_time=t.end_time.strftime("%H:%M"),
+                            anchor_seat=anchor,
                         )
-                        if r2.get("success"):
-                            r = r2
-                else:  # direct_first (default, 含旧 direct_submit_enabled=true 的等价行为)
-                    r = await client.submit_direct(
-                        phone=acc.phone,
-                        password=acc.password,
-                        room_id=self.cfg.library.room_id,
-                        seat_num=t.seat_num,
+            elif strat == "direct_only":
+                r = await client.submit_direct(
+                    phone=acc.phone, password=acc.password,
+                    room_id=self.cfg.library.room_id, seat_num=t.seat_num,
+                    day=t.day.isoformat(),
+                    start_time=t.start_time.strftime("%H:%M"),
+                    end_time=t.end_time.strftime("%H:%M"),
+                )
+            elif strat == "page_rewrite_first":
+                r = await client.submit_via_page_rewrite(
+                    phone=acc.phone, password=acc.password,
+                    room_id=self.cfg.library.room_id, seat_num=t.seat_num,
+                    day=t.day.isoformat(),
+                    start_time=t.start_time.strftime("%H:%M"),
+                    end_time=t.end_time.strftime("%H:%M"),
+                )
+                if self.anchor_retry_enabled and not r.get("success") and "no selectable cell" in str(r.get("msg") or ""):
+                    anchor = await self._pick_anchor_seat(client, t.seat_num)
+                    if anchor:
+                        await self._warn(f"座位 {t.seat_num} 页面无格子, 改用锚点 {anchor} 重试", acc.id)
+                        r = await client.submit_via_page_rewrite(
+                            phone=acc.phone, password=acc.password,
+                            room_id=self.cfg.library.room_id, seat_num=t.seat_num,
+                            day=t.day.isoformat(),
+                            start_time=t.start_time.strftime("%H:%M"),
+                            end_time=t.end_time.strftime("%H:%M"),
+                            anchor_seat=anchor,
+                        )
+                if not r.get("success"):
+                    await self._warn(f"模拟点击未成（{r.get('msg')}），回退直连通道", acc.id)
+                    r2 = await client.submit_direct(
+                        phone=acc.phone, password=acc.password,
+                        room_id=self.cfg.library.room_id, seat_num=t.seat_num,
                         day=t.day.isoformat(),
                         start_time=t.start_time.strftime("%H:%M"),
                         end_time=t.end_time.strftime("%H:%M"),
                     )
-                    if not r.get("success") and "未登录" in str(r.get("msg") or ""):
-                        await self._warn("直连提交: 会话过期 → 重登重试", acc.id)
-                        client.reset_session()
-                        if await self.login_and_persist(acc, client, "直连重登"):
-                            r = await client.submit_direct(
-                                phone=acc.phone,
-                                password=acc.password,
-                                room_id=self.cfg.library.room_id,
-                                seat_num=t.seat_num,
-                                day=t.day.isoformat(),
-                                start_time=t.start_time.strftime("%H:%M"),
-                                end_time=t.end_time.strftime("%H:%M"),
-                            )
-                    if self.anchor_retry_enabled and not r.get("success") and "seed not found" in str(r.get("msg") or ""):
-                        anchor = await self._pick_anchor_seat(client, t.seat_num)
-                        if anchor:
-                            await self._warn(
-                                f"座位 {t.seat_num} 自身扫码页无种子, 改用锚点 {anchor} 取种子直连重试",
-                                acc.id,
-                            )
-                            r_anchor = await client.submit_direct(
-                                phone=acc.phone,
-                                password=acc.password,
-                                room_id=self.cfg.library.room_id,
-                                seat_num=t.seat_num,
-                                day=t.day.isoformat(),
-                                start_time=t.start_time.strftime("%H:%M"),
-                                end_time=t.end_time.strftime("%H:%M"),
-                                anchor_seat=anchor,
-                            )
-                            if r_anchor.get("success"):
-                                r = r_anchor
-                    if not r.get("success"):
-                        await self._warn(
-                            f"直连提交未成（{r.get('msg')}），改走页面改写通道",
-                            acc.id,
-                        )
-                        r = await client.submit_via_page_rewrite(
+                    if r2.get("success"):
+                        r = r2
+            else:  # direct_first (default, 全日期统一优先直连提交)
+                r = await client.submit_direct(
+                    phone=acc.phone,
+                    password=acc.password,
+                    room_id=self.cfg.library.room_id,
+                    seat_num=t.seat_num,
+                    day=t.day.isoformat(),
+                    start_time=t.start_time.strftime("%H:%M"),
+                    end_time=t.end_time.strftime("%H:%M"),
+                )
+                if not r.get("success") and "未登录" in str(r.get("msg") or ""):
+                    await self._warn("直连提交: 会话过期 → 重登重试", acc.id)
+                    client.reset_session()
+                    if await self.login_and_persist(acc, client, "直连重登"):
+                        r = await client.submit_direct(
                             phone=acc.phone,
                             password=acc.password,
                             room_id=self.cfg.library.room_id,
@@ -635,37 +601,60 @@ class Scheduler:
                             start_time=t.start_time.strftime("%H:%M"),
                             end_time=t.end_time.strftime("%H:%M"),
                         )
-                        is_recoverable = any(
-                            k in str(r.get("msg") or "").lower()
-                            for k in ("no selectable cell", "page load", "timeout", "seed not found")
+                if self.anchor_retry_enabled and not r.get("success") and "seed not found" in str(r.get("msg") or ""):
+                    anchor = await self._pick_anchor_seat(client, t.seat_num)
+                    if anchor:
+                        await self._warn(
+                            f"座位 {t.seat_num} 自身扫码页无种子, 改用锚点 {anchor} 取种子直连重试",
+                            acc.id,
                         )
-                        if self.anchor_retry_enabled and not r.get("success") and is_recoverable:
-                            anchor = await self._pick_anchor_seat(client, t.seat_num)
-                            if anchor:
-                                await self._warn(
-                                    f"座位 {t.seat_num} 页面不可用（{r.get('msg')}）, 改用锚点座位 {anchor} 重试",
-                                    acc.id,
-                                )
-                                r = await client.submit_via_page_rewrite(
-                                    phone=acc.phone,
-                                    password=acc.password,
-                                    room_id=self.cfg.library.room_id,
-                                    seat_num=t.seat_num,
-                                    day=t.day.isoformat(),
-                                    start_time=t.start_time.strftime("%H:%M"),
-                                    end_time=t.end_time.strftime("%H:%M"),
-                                    anchor_seat=anchor,
-                                )
-            else:
-                r = await client.submit_in_browser(
-                    phone=acc.phone,
-                    password=acc.password,
-                    room_id=self.cfg.library.room_id,
-                    seat_num=t.seat_num,           # ★ v2: per-task
-                    day=t.day.isoformat(),
-                    start_time=t.start_time.strftime("%H:%M"),
-                    end_time=t.end_time.strftime("%H:%M"),
-                )
+                        r_anchor = await client.submit_direct(
+                            phone=acc.phone,
+                            password=acc.password,
+                            room_id=self.cfg.library.room_id,
+                            seat_num=t.seat_num,
+                            day=t.day.isoformat(),
+                            start_time=t.start_time.strftime("%H:%M"),
+                            end_time=t.end_time.strftime("%H:%M"),
+                            anchor_seat=anchor,
+                        )
+                        if r_anchor.get("success"):
+                            r = r_anchor
+                if not r.get("success"):
+                    await self._warn(
+                        f"直连提交未成（{r.get('msg')}），改走页面改写通道",
+                        acc.id,
+                    )
+                    r = await client.submit_via_page_rewrite(
+                        phone=acc.phone,
+                        password=acc.password,
+                        room_id=self.cfg.library.room_id,
+                        seat_num=t.seat_num,
+                        day=t.day.isoformat(),
+                        start_time=t.start_time.strftime("%H:%M"),
+                        end_time=t.end_time.strftime("%H:%M"),
+                    )
+                    is_recoverable = any(
+                        k in str(r.get("msg") or "").lower()
+                        for k in ("no selectable cell", "page load", "timeout", "seed not found")
+                    )
+                    if self.anchor_retry_enabled and not r.get("success") and is_recoverable:
+                        anchor = await self._pick_anchor_seat(client, t.seat_num)
+                        if anchor:
+                            await self._warn(
+                                f"座位 {t.seat_num} 页面不可用（{r.get('msg')}）, 改用锚点座位 {anchor} 重试",
+                                acc.id,
+                            )
+                            r = await client.submit_via_page_rewrite(
+                                phone=acc.phone,
+                                password=acc.password,
+                                room_id=self.cfg.library.room_id,
+                                seat_num=t.seat_num,
+                                day=t.day.isoformat(),
+                                start_time=t.start_time.strftime("%H:%M"),
+                                end_time=t.end_time.strftime("%H:%M"),
+                                anchor_seat=anchor,
+                            )
         except Exception as e:
             await self._error(f"提交异常: {e}", acc.id)
             await self.store.update_task_status(t.id, TaskStatus.FAILED, last_error=str(e))

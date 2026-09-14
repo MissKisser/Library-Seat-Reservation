@@ -1,10 +1,10 @@
-"""_run_submit 日期分流测试。
+"""_run_submit 提交通道与策略分流测试。
 
 覆盖:
-  - 未来日期任务 → submit_direct 直连优先, 成功即不再走页面/浏览器通道
+  - 任务提交统一走直连四策略通道 (direct_first 默认直连优先, 成功即不再走改写通道)
   - 直连失败 → 回退 submit_via_page_rewrite; 仍"无格子"且无锚点 → FAILED
   - page_rewrite_only → 仅页面通道, 绝不直连; direct_only → 仅直连, 失败即 FAILED
-  - 今天任务 → submit_in_browser (浏览器通道)
+  - 今天任务 → 统一走直连四策略通道 (默认优先直连提交)
   - 提交成功但占用核验为空 → 保留 ACTIVE + ERROR 日志 (人工复核)
 """
 from __future__ import annotations
@@ -47,10 +47,6 @@ class RoutingClient:
     async def submit_via_page_rewrite(self, **kw):
         self.calls.append("page_rewrite")
         return dict(self.rewrite_result)
-
-    async def submit_in_browser(self, **kw):
-        self.calls.append("browser")
-        return dict(self.direct_result)
 
     async def get_used_times(self, room_id, seat_num, day):
         self.calls.append("getused")
@@ -189,17 +185,16 @@ async def test_all_channels_fail_without_anchor_marks_failed(tmp_path):
     assert "no selectable cell" in (after.last_error or "")
 
 
-async def test_today_routes_to_browser(tmp_path):
+async def test_today_routes_to_direct(tmp_path):
     store, t = await _seed(tmp_path, today_cst())
     sched = Scheduler(make_cfg(), store)
     client = RoutingClient()
     sched._clients["zhangsan"] = client
     acc = await store.get_account("zhangsan")
     await sched._run_submit(acc, t)
-    assert client.calls == ["browser"]
+    assert client.calls == ["direct"]
     after = await store.get_task(t.id)
-    assert after.status == TaskStatus.ACTIVE
-
+    assert after.status == TaskStatus.ACTIVE and after.reserve_id == 999001
 
 async def test_page_rewrite_only_never_touches_direct(tmp_path):
     store, t = await _seed(tmp_path, today_cst() + timedelta(days=1))
