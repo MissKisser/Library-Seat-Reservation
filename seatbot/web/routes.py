@@ -1402,6 +1402,90 @@ async def bindings_delete(
         f"/bindings?msg={quote(f'已解绑 {account_id} × {sn}{day_part}')}", status_code=303)
 
 
+@router.post("/bindings/assign-seat")
+async def bindings_assign_seat(
+    request: Request,
+    seat_num: str = Form(...),
+    account_id: str = Form(...),
+):
+    """整座指派：把某座位全部期望时段承包给指定账号（纯本地，无外呼）。
+
+    目标账号该座位矩阵替换为其全部期望时段；其他账号让出该座位；
+    所有人该座位上未提交且不在新期望集的未来任务作废（置 FAILED），
+    在途真预约保持不动。目标矩阵经 validate_matrix 复核，容量或重叠
+    不足时整单拒绝，不产生半成品状态。
+    """
+    from urllib.parse import quote
+
+    store = request.app.state.store
+    lib = request.app.state.cfg.library
+    sn = seat_num.strip().zfill(3)
+    seat_map = {s.seat_num: s for s in await store.list_target_seats()}
+    if sn not in seat_map:
+        return RedirectResponse(
+            f"/bindings?error={quote(f'座位 {sn} 不是已注册目标')}", status_code=303)
+    acc = await store.get_account(account_id)
+    if not acc:
+        raise HTTPException(404, f"account {account_id} not found")
+    if acc.status != "active":
+        return RedirectResponse(
+            f"/bindings?error={quote(f'账号 {acc.id} 未启用')}", status_code=303)
+
+    is_weekly = (await _schedule_mode(request) == "weekly")
+    per_day = {wd: desired_slots_of(seat_map[sn], wd, is_weekly=is_weekly)
+               for wd in WEEKDAY_KEYS}
+    if not any(per_day.values()):
+        return RedirectResponse(
+            f"/bindings?error={quote(f'座位 {sn} 未配置期望时段，无从指派')}",
+            status_code=303)
+
+    matrix = {k: v for k, v in (acc.seat_slots or {}).items() if k != sn}
+    matrix[sn] = {wd: list(per_day[wd]) for wd in WEEKDAY_KEYS}
+    try:
+        validate_matrix(
+            matrix, max_seg_hours=lib.max_reserve_hours,
+            daily_limit_hours=lib.daily_reserve_hours_limit,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            f"/bindings?error={quote(f'{acc.id} 无法承包 {sn}：{exc}')}",
+            status_code=303)
+
+    acc.seat_slots = matrix
+    acc.bound_seats = sorted(matrix.keys())
+    await store.upsert_account(acc)
+
+    for other in await store.list_accounts():
+        if other.id == acc.id or sn not in (other.seat_slots or {}):
+            continue
+        m = {k: v for k, v in (other.seat_slots or {}).items() if k != sn}
+        other.seat_slots = m
+        other.bound_seats = sorted(m.keys())
+        await store.upsert_account(other)
+
+    voided = 0
+    today = today_cst()
+    for t in await store.list_tasks(seat_num=sn):
+        if t.day < today or t.reserve_id:
+            continue
+        if t.status not in (TaskStatus.PENDING, TaskStatus.READY):
+            continue
+        rng = f"{t.start_time.strftime('%H:%M')}-{t.end_time.strftime('%H:%M')}"
+        if t.account_id == acc.id and rng in per_day.get(weekday_key(t.day), []):
+            continue
+        await store.update_task_status(
+            t.id, TaskStatus.FAILED, last_error="整座指派，任务作废")
+        voided += 1
+    await store.log_action(
+        acc.id, "assign-seat", sn,
+        f"整座指派: {acc.id} 承包 {sn}; voided={voided}", True, "",
+    )
+    msg = f"已把 {sn} 整座指派给 {acc.id}"
+    if voided:
+        msg += f"；作废陈旧未提交任务 {voided} 条"
+    return RedirectResponse(f"/bindings?msg={quote(msg)}", status_code=303)
+
+
 @router.post("/bindings/rebind")
 async def bindings_rebind(
     request: Request,

@@ -235,3 +235,67 @@ def test_bindings_manual_appends_second_slot(tmp_path):
         assert acc.seat_slots["001"]["tue"] == ["09:00-11:00"]
     finally:
         asyncio.run(store.close())
+
+
+def test_assign_seat_covers_desired_and_voids_stale(tmp_path):
+    """整座指派：目标账号吃下期望段，其他账号让位，陈旧未提交任务作废。"""
+    today = date.today()
+    day = today.fromordinal(today.toordinal() + ((7 - today.weekday()) % 7 or 7))
+    c, store = _client(tmp_path, [
+        _acc("张三", {"001": dict(ALL_DAYS)}),
+        _acc("李四", {"002": dict(ALL_DAYS)}),
+    ], tasks=[
+        _task("张三", day),                        # 001 09:00-11:00 PENDING
+        Task(id=None, account_id="李四", day=day, seat_num="001",
+             start_time=_t(13, 0), end_time=_t(15, 0), status=TaskStatus.PENDING),
+        Task(id=None, account_id="李四", day=day, seat_num="001",
+             start_time=_t(15, 0), end_time=_t(17, 0), status=TaskStatus.ACTIVE,
+             reserve_id=123),
+        Task(id=None, account_id="李四", day=day, seat_num="001",
+             start_time=_t(17, 0), end_time=_t(19, 0), status=TaskStatus.PENDING),
+    ])
+    try:
+        asyncio.run(store.set_target_seat_desired(
+            "001", {"mon": ["13:00-15:00"]}, is_weekly=False))
+        r = c.post("/bindings/assign-seat", headers=_AUTH, data={
+            "seat_num": "001", "account_id": "李四",
+        }, follow_redirects=False)
+        assert r.status_code == 303
+        assert "msg=" in r.headers["location"]
+        zhang = asyncio.run(store.get_account("张三"))
+        li = asyncio.run(store.get_account("李四"))
+        assert "001" not in (zhang.seat_slots or {})
+        assert li.seat_slots["001"]["mon"] == ["13:00-15:00"]
+        assert li.seat_slots["001"]["tue"] == []
+        assert li.seat_slots["002"]["mon"] == ["09:00-11:00"]
+        tasks = [t for t in asyncio.run(store.list_tasks(seat_num="001"))
+                 if t.day == day]
+        by_key = {(t.account_id, t.start_time.hour): t for t in tasks}
+        assert by_key[("张三", 9)].status == TaskStatus.FAILED    # 让位账号任务作废
+        assert by_key[("李四", 13)].status == TaskStatus.PENDING  # 在新期望集内保留
+        assert by_key[("李四", 15)].status == TaskStatus.ACTIVE   # 在途真预约不动
+        assert by_key[("李四", 17)].status == TaskStatus.FAILED   # 不在期望集 → 作废
+    finally:
+        asyncio.run(store.close())
+
+
+def test_assign_seat_rejects_over_capacity(tmp_path):
+    """目标账号容量不足（5h 限额装不下既有 6h + 期望 6h）→ 整单拒绝、矩阵不变。"""
+    c, store = _client(tmp_path, [
+        _acc("张三", {"001": dict(ALL_DAYS)}),
+        _acc("李四", {"002": {w: ["13:00-15:00", "15:00-17:00",
+                                  "17:00-19:00"] for w in WEEKDAY_KEYS}}),
+    ])
+    try:
+        asyncio.run(store.set_target_seat_desired(
+            "001", {"mon": ["09:00-11:00", "11:00-13:00", "19:00-21:00"]},
+            is_weekly=False))
+        r = c.post("/bindings/assign-seat", headers=_AUTH, data={
+            "seat_num": "001", "account_id": "李四",
+        }, follow_redirects=False)
+        assert r.status_code == 303
+        assert "error=" in r.headers["location"]
+        zhang = asyncio.run(store.get_account("张三"))
+        assert zhang.seat_slots["001"]["mon"] == ["09:00-11:00"]
+    finally:
+        asyncio.run(store.close())

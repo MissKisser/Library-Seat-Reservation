@@ -258,14 +258,24 @@
             {% if diverged[s.seat_num] %}<span class="chip chip-warn ml-1">各天不一致</span>{% endif %}
           {% endif %}
         </span>
-        {% if mode == 'weekly' %}
-        <div class="flex gap-1">
-          <template x-for="wd in wds" :key="wd">
-            <button type="button" class="chip" :class="active === wd ? 'chip-accent' : 'chip-muted'"
-                    @click="active = wd" x-text="labels[wd]"></button>
-          </template>
+        <div class="flex items-center gap-2">
+          {% if mode == 'weekly' %}
+          <div class="flex gap-1">
+            <template x-for="wd in wds" :key="wd">
+              <button type="button" class="chip" :class="active === wd ? 'chip-accent' : 'chip-muted'"
+                      @click="active = wd" x-text="labels[wd]"></button>
+            </template>
+          </div>
+          {% endif %}
+          <form method="post" action="/bindings/assign-seat" class="flex items-center gap-1 shrink-0"
+                title="把该座位全部期望时段指派给选定账号；其他账号自动让位，未提交任务作废">
+            <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
+            <select name="account_id" class="select text-xs" required>
+              {% for a in accounts %}<option value="{{ a.id }}">{{ a.id }}</option>{% endfor %}
+            </select>
+            <button class="btn btn-ghost btn-sm" type="submit">整座指派</button>
+          </form>
         </div>
-        {% endif %}
       </div>
       {% if mode == 'weekly' %}
       <div class="card-body flex flex-col gap-1">
