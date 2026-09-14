@@ -147,8 +147,8 @@ def test_rebind_rejects_account_over_daily_limit(tmp_path):
         asyncio.run(store.close())
 
 
-def test_rebind_rejects_same_seat_already_bound(tmp_path):
-    """接手账号该座位当天已有别的时段（每座位每天 1 段）→ 拒绝。"""
+def test_rebind_same_seat_nonoverlap_now_allowed(tmp_path):
+    """接手账号同座已有非重叠时段 → 允许换绑并追加。"""
     c, store = _client(tmp_path, [
         _acc("张三", {"001": dict(ALL_DAYS)}),
         _acc("李四", {"001": {"mon": ["13:00-15:00"]}}),
@@ -159,9 +159,11 @@ def test_rebind_rejects_same_seat_already_bound(tmp_path):
             "seat_num": "001", "slot": "09:00-11:00", "weekday": "mon",
         }, follow_redirects=False)
         assert r.status_code == 303
-        assert "error=" in r.headers["location"]
+        assert "msg=" in r.headers["location"]
         dst = asyncio.run(store.get_account("李四"))
-        assert dst.seat_slots["001"]["mon"] == ["13:00-15:00"]
+        assert dst.seat_slots["001"]["mon"] == ["13:00-15:00", "09:00-11:00"]
+        src = asyncio.run(store.get_account("张三"))
+        assert src.seat_slots["001"]["mon"] == []
     finally:
         asyncio.run(store.close())
 
