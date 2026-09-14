@@ -252,6 +252,32 @@ def _full_weekday(slot: str) -> dict[str, list[str]]:
     """全周统一时段（list 形态）→ 内部会按 normalize 展开为 7 键 dict。"""
     return {wd: [slot] for wd in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
 
+def test_plan_matrix_minimal_single_account_covers_seat():
+    """单账号容量足够时，minimal 用 1 个账号承包整座全天多段。"""
+    accs = [_acc("a", {}), _acc("b", {})]
+    desired = {"001": {"mon": ["08:00-10:00", "10:00-12:00",
+                               "14:00-16:00", "16:00-18:00"]}}
+    m, bad = plan_matrix(
+        accs, desired, max_seg_hours=2.0, daily_limit_hours=8.0,
+        mode="minimal", account_order=["a", "b"])
+    assert bad == []
+    assert m["a"]["001"]["mon"] == ["08:00-10:00", "10:00-12:00",
+                                    "14:00-16:00", "16:00-18:00"]
+    assert m["b"] == {}
+    for aid in m:
+        validate_matrix(m[aid], max_seg_hours=2.0, daily_limit_hours=8.0)
+
+
+def test_plan_matrix_minimal_cross_seat_overlap_still_needs_two():
+    """跨座同时间窗口仍互斥：两个座位同一时段必须两个账号。"""
+    accs = [_acc("a", {}), _acc("b", {})]
+    desired = {"001": {"mon": ["09:00-11:00"]}, "002": {"mon": ["09:00-11:00"]}}
+    m, bad = plan_matrix(
+        accs, desired, max_seg_hours=2.0, daily_limit_hours=8.0, mode="minimal")
+    assert bad == []
+    assert m["a"]["001"]["mon"] == ["09:00-11:00"]
+    assert m["b"]["002"]["mon"] == ["09:00-11:00"]
+
 
 def test_plan_matrix_safe_covers_exact():
     """safe 模式：与 auto_assign 同样按 (wd, seat, slot) 精确覆盖。"""
@@ -272,9 +298,9 @@ def test_plan_matrix_safe_covers_exact():
 
 
 def test_plan_matrix_minimal_uses_min_accounts():
-    """minimal：动用账号数应等于理论下限（每段独立账号、最少摊薄）。"""
+    """minimal：动用账号数应等于容量下限（8h/5h → 2 个账号）。"""
     accs = [_acc("a", {}), _acc("b", {}), _acc("c", {}), _acc("d", {})]
-    # 每天 4 段、2 座位（互不重叠约束要求每账号最多 2 段），理论下限 = ceil(4/2)=2
+    # 每天 4 段（4 座位互不重叠），8h 总量 / 5h 限额 → 容量下限 = 2
     desired = {
         "001": {"mon": ["09:00-11:00"]},
         "002": {"mon": ["11:00-13:00"]},
@@ -295,7 +321,7 @@ def test_plan_matrix_minimal_uses_min_accounts():
 def test_plan_matrix_minimal_pool_truncation():
     """minimal：池成员由 account_order 前 K 截取；池不足时返回空 + 错误文案。"""
     accs = [_acc("a", {}), _acc("b", {}), _acc("c", {}), _acc("d", {})]
-    # 单天 5 段互不重叠（每段 2h），单账号上限 2 段 → 至少需 3 个账号；池只 2 时必失败
+    # 10h 总量 / 5h 限额 → 容量下限 2，但 2×5h 无法容纳 5 个互不重叠 2h 段（奇数段切不匀）→ 池 2 人必失败
     desired = {
         "001": {"mon": ["09:00-11:00"]},
         "002": {"mon": ["11:00-13:00"]},
@@ -356,15 +382,15 @@ def test_plan_matrix_minimal_two_seats_multi_window():
 
 
 def test_plan_matrix_minimal_tight_quota():
-    """紧配额场景：池 < 期望下限 → unfillable 含「需至少」。
+    """紧配额场景：池容量 < 期望总时长 → unfillable 含「需至少」。
 
-    同座位多窗口必须不同账号 → 4 窗口 = 至少 4 个账号，K=2 必失败。
+    4 段 ×2h = 8h，每日限额 3h → 每账号最多 1 段（2h），池 2 人最多 4h < 8h。
     """
     accs = [_acc("a", {}), _acc("b", {}), _acc("c", {}), _acc("d", {})]
     m, bad = plan_matrix(
         accs, desired={"001": {"mon": ["09:00-11:00", "11:00-13:00",
                                       "13:00-15:00", "15:00-17:00"]}},
-        max_seg_hours=2.0, daily_limit_hours=5.0,
+        max_seg_hours=2.0, daily_limit_hours=3.0,
         mode="minimal", account_order=["a", "b"],  # 池只 2 人
     )
     assert m == {}

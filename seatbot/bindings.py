@@ -513,8 +513,8 @@ def plan_matrix(
     的账号，无回溯——某天放不下的输出 unfillable；目标 min-max 单账号单日小时数。
     mode='minimal'（打包）：逐天迭代加深 DFS 求"动用账号数最少"解；
     池成员按 account_order 截取（默认 id 稳定序），单池无法覆盖某天时扩大池。
+    单账号可承包同座全天多段（受每日限额与跨座重叠约束）。
     池超过账号总数 → 输出 unfillable（文案含"需至少 N 个账号"）。
-    两模式产出均逐账号通过 validate_matrix。
     """
     eps = 1e-9
     if not accounts:
@@ -577,16 +577,11 @@ def plan_matrix(
         )
 
     def _solve_minimal(K: int) -> dict | None:
-        """迭代加深 DFS：每天派活给不同账号（同一座位多窗口必须不同账号），
+        """迭代加深 DFS：容量 + 跨座重叠约束下求最少账号解，
         用 daily_active 计数每天动用账号数；目标最小化 max(daily_active)。
         池成员 = pool[:K]；K 不足以满足某天 L(wd) 时由调用方扩池重试。
         """
         pool_ids = pool[:K]
-        # 每账号 × 每天：已绑定座位集合（保证同账号同座位当天 ≤1 段）
-        acc_seat: dict[str, dict[str, set[str]]] = {
-            aid: {wd: set() for wd in WEEKDAY_KEYS}
-            for aid in pool_ids
-        }
         # 每账号 × 每天：已用小时数 / 已占时段（容量 + 重叠查重）
         st_used: dict[str, dict[str, float]] = {
             aid: {wd: 0.0 for wd in WEEKDAY_KEYS}
@@ -608,17 +603,17 @@ def plan_matrix(
                     jobs_by_day[wd], key=lambda x: -x[4]):
                 flat_jobs.append((wd, seat, want, ws, we, wh))
 
-        # 下限 L(wd) = max(ceil(jobs/2), 同座位最多段数)
         from math import ceil
 
         def _lower(wd: str) -> int:
             n = len(jobs_by_day[wd])
             if n == 0:
                 return 0
-            per_seat: dict[str, int] = {}
-            for seat, _w, _ws, _we, _wh in jobs_by_day[wd]:
-                per_seat[seat] = per_seat.get(seat, 0) + 1
-            return max(ceil(n / 2), max(per_seat.values()))
+            total = sum(j[4] for j in jobs_by_day[wd])
+            cap = ceil(total / daily_limit_hours - eps)
+            peak = max((sum(1 for o in jobs_by_day[wd] if o[2] <= j[2] < o[3])
+                        for j in jobs_by_day[wd]), default=0)
+            return max(1, cap, peak)
 
         assignment: list[tuple[str, str, str, str]] = []
 
@@ -629,9 +624,6 @@ def plan_matrix(
             limit = _lower(wd)
             cands: list[str] = []
             for aid in pool_ids:
-                # 同账号同座位当天 ≤1 段
-                if seat in acc_seat[aid][wd]:
-                    continue
                 # 容量 / 重叠
                 if (st_used[aid][wd] + wh > daily_limit_hours + eps
                         or any(ws < e and s < we for s, e in st_ranges[aid][wd])):
@@ -648,7 +640,6 @@ def plan_matrix(
                 was_active = aid in daily_active[wd]
                 if not was_active:
                     daily_active[wd].add(aid)
-                acc_seat[aid][wd].add(seat)
                 st_used[aid][wd] += wh
                 st_ranges[aid][wd].append((ws, we))
                 week_used[aid] += wh
@@ -659,7 +650,6 @@ def plan_matrix(
                 week_used[aid] -= wh
                 st_ranges[aid][wd].pop()
                 st_used[aid][wd] -= wh
-                acc_seat[aid][wd].discard(seat)
                 if not was_active:
                     daily_active[wd].discard(aid)
             return False
@@ -687,15 +677,14 @@ def plan_matrix(
             cands = sorted(
                 (a for a in accounts
                  if used[a.id][wd] + wh <= daily_limit_hours + eps
-                 and not any(ws < e and s < we for s, e in ranges[a.id][wd])
-                 and not m[a.id].get(seat, {}).get(wd)),
+                 and not any(ws < e and s < we for s, e in ranges[a.id][wd])),
                 key=lambda a: (weekly[a.id], used[a.id][wd], a.id),
             )
             if not cands:
                 bad.append(f"{WEEKDAY_LABELS[wd]}{seat} {want}：无可用账号")
                 continue
             a = cands[0]
-            m[a.id].setdefault(seat, {})[wd] = [want]
+            m[a.id].setdefault(seat, {}).setdefault(wd, []).append(want)
             used[a.id][wd] += wh
             ranges[a.id][wd].append((ws, we))
             weekly[a.id] += wh
@@ -718,10 +707,11 @@ def plan_matrix(
             n = len(jobs_by_day[wd])
             if n == 0:
                 continue
-            per_seat: dict[str, int] = {}
-            for seat, _w, _ws, _we, _wh in jobs_by_day[wd]:
-                per_seat[seat] = per_seat.get(seat, 0) + 1
-            mx = max(mx, max(ceil(n / 2), max(per_seat.values())))
+            total = sum(j[4] for j in jobs_by_day[wd])
+            cap = ceil(total / daily_limit_hours - eps)
+            peak = max((sum(1 for o in jobs_by_day[wd] if o[2] <= j[2] < o[3])
+                        for j in jobs_by_day[wd]), default=0)
+            mx = max(mx, max(1, cap, peak))
         return mx
 
     lo = _max_lower()
