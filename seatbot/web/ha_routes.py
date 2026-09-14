@@ -136,8 +136,10 @@ async def ha_restore(request: Request, runtime: HaRuntime = Depends(_require_ha_
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"restore rejected: {exc}") from exc
     # 应用成功：进入 active（与 _push_restore_loop 互补；这里给端点直调路径兜底）
+    now = runtime.now()
     runtime.primary_state = "active"
-    runtime.active_since = runtime.now()
+    runtime.active_since = now
+    runtime.last_heartbeat_sent_ok = now
     return result
 
 

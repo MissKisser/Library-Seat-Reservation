@@ -278,6 +278,35 @@ async def test_primary_suspended_recovers_to_active_on_heartbeat_success(fake_pe
     finally:
         await store.close()
 
+async def test_primary_transient_heartbeat_failure_does_not_suspend(fake_peer, tmp_path):
+    """心跳基线已初始化时，单次瞬时心跳失败未超 TTL 不得触发 suspended。"""
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "active"
+        rt.active_since = rt.now()
+        rt.last_heartbeat_sent_ok = rt.now()
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        fake_peer.fail_all = True
+        sched = type("S", (), {})()
+
+        # 瞬时失败 1 次：距上次 ok 仅 0 秒，远小于 lease_ttl 90 秒，保持 active
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "active"
+        assert rt.can_act() is True
+    finally:
+        await store.close()
+
 
 
 async def test_primary_stays_active_when_only_peer_process_dead(fake_peer, tmp_path):
