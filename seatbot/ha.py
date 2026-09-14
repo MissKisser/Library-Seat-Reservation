@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
+
+import httpx
 
 
 HA_MODES: tuple[str, ...] = ("standalone", "primary", "backup")
@@ -247,15 +250,281 @@ class NullHaRuntime:
         }
 
 
-# Task 7/8 占用位：真正的看护协程在后续任务实装。
+# Task 7/8 实装：看护协程 + 主力 tick + 备用 tick
+
+logger = logging.getLogger(__name__)
+
+
 async def run_ha_supervisor(store, sched, cfg: HaConfig, runtime: HaRuntime) -> None:
-    """占位：完整实装在 Task 7/8。"""
-    raise NotImplementedError("实装见 Task 7/8")
+    """HA 看护协程主循环：每 min(heartbeat_interval, 5) 秒 tick 一次。
+
+    内部捕获所有异常记日志，不退出（确保任何瞬时网络抖动不杀进程）。
+    """
+    while True:
+        try:
+            interval = min(runtime.cfg.heartbeat_interval if runtime.cfg else 15, 5)
+            await asyncio.sleep(max(1, interval))
+            try:
+                await ensure_ha_bootstrap(store)
+                cfg = await load_ha_config(store)
+                runtime.apply_config(cfg)
+            except Exception as exc:
+                logger.warning("ha: reload config failed: %s", exc)
+            if runtime.mode == "primary":
+                try:
+                    await _primary_tick(store, sched, runtime)
+                except Exception as exc:
+                    logger.warning("ha: primary tick failed: %s", exc)
+            elif runtime.mode == "backup":
+                try:
+                    await _backup_tick(store, sched, runtime)
+                except Exception as exc:
+                    logger.warning("ha: backup tick failed: %s", exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("ha: supervisor loop caught: %s", exc)
+            await asyncio.sleep(1)
+
+
+async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
+    """主力侧一个 tick：状态机推进 + 心跳/快照推送 + 公网自检。
+
+    状态机表（spec §6 主力表）：
+      warming: 探测备用可达 → 常规重启 / 接管中 → 转 active 让位协商
+      active: 心跳失败超 TTL + 公网自检失败 → suspended
+      active: 心跳应答 active_since 非空 → 让位 warming
+      active: snapshot_requested 或间隔到 → build_snapshot + POST
+    """
+    if runtime.cfg is None:
+        return
+    now = runtime.now()
+    interval = runtime.cfg.heartbeat_interval
+    ttl = runtime.cfg.lease_ttl
+    peer = (runtime.cfg.peer_url or "").rstrip("/")
+
+    # 1) 决定是否进入下一态
+    if runtime.primary_state == "warming":
+        # 先发一个 heartbeat 让备用刷 last_heartbeat_seen
+        if peer:
+            try:
+                async with httpx.AsyncClient(timeout=5) as c:
+                    r = await c.post(
+                        f"{peer}/api/ha/bk/heartbeat",
+                        headers={"X-HA-Key": runtime.cfg.key},
+                        json={"instance_id": runtime.cfg.instance_id},
+                    )
+                    payload = r.json() if r.status_code == 200 else {}
+            except Exception as exc:
+                logger.info("ha: warming peer probe failed: %s", exc)
+                payload = {}
+        else:
+            payload = {}
+        active_since = payload.get("active_since")
+        if not peer:
+            # 双端皆死兜底：直进 active
+            runtime.primary_state = "active"
+            runtime.active_since = now
+            logger.warning("ha: warming -> active (no peer_url configured)")
+        elif active_since is None:
+            # 备用待命，常规重启秒级恢复
+            runtime.primary_state = "active"
+            runtime.active_since = now
+            logger.warning("ha: warming -> active (backup standby)")
+        else:
+            # 备用正在接管 → 反复 heartbeat 直到 active_since 清空（claim 成功）
+            if payload.get("role") != "backup" or active_since is None:
+                runtime.primary_state = "active"
+                runtime.active_since = now
+            else:
+                logger.info("ha: warming awaiting failback (backup active_since=%s)", active_since)
+        return
+
+    if runtime.primary_state != "active":
+        return  # suspended: 暂停推送，等对端恢复
+
+    # 2) 心跳推送
+    if not peer:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.post(
+                f"{peer}/api/ha/bk/heartbeat",
+                headers={"X-HA-Key": runtime.cfg.key},
+                json={"instance_id": runtime.cfg.instance_id},
+            )
+            if r.status_code == 200:
+                body = r.json()
+                runtime.last_heartbeat_sent_ok = now
+                runtime.last_heartbeat_seen = now
+                runtime.last_primary_contact = now
+                if body.get("active_since") is not None:
+                    # 应答者展示备用仍活跃 → 分区愈合让位
+                    runtime.primary_state = "warming"
+                    runtime.active_since = None
+                    logger.warning("ha: demoting to warming (backup still active)")
+                    return
+            else:
+                raise RuntimeError(f"heartbeat http {r.status_code}")
+    except Exception as exc:
+        # 心跳失败 → 检查 ttl 是否超期
+        last = runtime.last_heartbeat_sent_ok or 0.0
+        if now - last >= ttl:
+            # 公网自检：GET /api/ha/status
+            try:
+                async with httpx.AsyncClient(timeout=5) as c:
+                    r = await c.get(
+                        f"{peer}/api/ha/status",
+                        headers={"X-HA-Key": runtime.cfg.key},
+                    )
+                    status_body = r.json() if r.status_code == 200 else {}
+            except Exception as exc2:
+                logger.warning("ha: tunnel probe failed: %s", exc2)
+                status_body = {}
+            responder = status_body.get("instance_id") if isinstance(status_body, dict) else None
+            if responder and responder != runtime.cfg.instance_id:
+                # 应答者是备用或第三方 → 备用进程在跑，公网活着，但 /bk/* 挂
+                logger.warning("ha: tunnel alive but backup /bk/* dead; stay active")
+            elif responder == runtime.cfg.instance_id:
+                # 公网自检应答者是自己 → frps 隧道在、备用进程挂了
+                logger.warning("ha: backup process unreachable, stay active (warn-only)")
+            else:
+                runtime.primary_state = "suspended"
+                logger.warning("ha: -> suspended (peer + tunnel dead)")
+                try:
+                    await store.add_notification(
+                        "主力暂停",
+                        f"心跳失败且公网自检失败；已停止真实调度。可在设置页恢复。",
+                        level="error",
+                    )
+                except Exception:
+                    pass
+        return
+
+    # 3) 快照推送
+    need_snap = runtime.consume_snapshot_request()
+    if not need_snap and runtime.last_snapshot_at is None:
+        need_snap = True
+    if not need_snap and runtime.last_snapshot_at is not None:
+        if now - runtime.last_snapshot_at >= runtime.cfg.snapshot_interval:
+            need_snap = True
+    if need_snap:
+        try:
+            from seatbot.ha_sync import build_snapshot
+            payload, _ = await build_snapshot(store)
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.post(
+                    f"{peer}/api/ha/bk/snapshot",
+                    headers={"X-HA-Key": runtime.cfg.key},
+                    content=payload,
+                )
+                if r.status_code == 200:
+                    runtime.last_snapshot_at = now
+                else:
+                    logger.warning("ha: snapshot push http %s", r.status_code)
+        except Exception as exc:
+            logger.warning("ha: snapshot push failed: %s", exc)
+
+
+async def _backup_tick(store, sched, runtime: HaRuntime) -> None:
+    """Task 8 实装：备用看门狗 + 激活自愈 + failback_pending 处理。"""
+    if runtime.cfg is None:
+        return
+    now = runtime.now()
+    ttl = runtime.cfg.lease_ttl
+    buf = runtime.cfg.activation_buffer
+    grace = runtime.cfg.failback_grace
+
+    if runtime.backup_state == "standby":
+        last = runtime.last_heartbeat_seen or runtime.boot_monotonic
+        if now - last >= ttl + buf:
+            # 进入 active
+            runtime.backup_state = "active"
+            runtime.active_since = now
+            logger.warning("ha: backup -> active (heartbeat silence)")
+            try:
+                await store.add_notification(
+                    "备用接管",
+                    f"心跳静默 {int(now - last)}s 超阈值（{ttl}+{buf}），开始接管调度。",
+                    level="warn",
+                )
+            except Exception:
+                pass
+            try:
+                asyncio.create_task(_after_activation(store, sched))
+            except Exception:
+                pass
+        return
+
+    if runtime.backup_state == "active":
+        # 收到心跳的逻辑在 bk_heartbeat 路由已转 failback_pending；这里仅超时回活
+        return
+
+    if runtime.backup_state == "failback_pending":
+        last = runtime.last_primary_contact or 0.0
+        if now - last >= grace:
+            runtime.backup_state = "active"
+            runtime.active_since = now
+            logger.warning("ha: failback_pending -> active (grace exceeded)")
+            try:
+                await store.add_notification(
+                    "回切超时回活",
+                    "备用处于 failback_pending 超 grace 未完成 → 重新接管",
+                    level="warn",
+                )
+            except Exception:
+                pass
+        return
+
+
+async def _after_activation(store, sched) -> None:
+    """激活后自愈：对账 + 用户硬预约同步。"""
+    try:
+        if sched is not None and hasattr(sched, "reconcile_sweep"):
+            await sched.reconcile_sweep(write=True)
+    except Exception as exc:
+        logger.warning("ha: reconcile_sweep failed: %s", exc)
+    try:
+        if sched is not None and hasattr(sched, "sync_user_reserved"):
+            await sched.sync_user_reserved()
+    except Exception as exc:
+        logger.warning("ha: sync_user_reserved failed: %s", exc)
 
 
 async def _push_restore_loop(store, runtime: HaRuntime) -> None:
-    """占位：Task 8 实装真正的循环。"""
-    return None
+    """Task 8 实装：循环推送自身快照回主力，等主力确认后 standby。"""
+    if runtime.cfg is None or runtime.mode != "backup":
+        return
+    peer = (runtime.cfg.peer_url or "").rstrip("/")
+    if not peer:
+        return
+    from seatbot.ha_sync import build_snapshot
+    deadline = runtime.now() + runtime.cfg.failback_grace
+    while runtime.now() < deadline and runtime.backup_state == "failback_pending":
+        try:
+            payload, _ = await build_snapshot(store)
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.post(
+                    f"{peer}/api/ha/restore",
+                    headers={"X-HA-Key": runtime.cfg.key},
+                    content=payload,
+                )
+                if r.status_code == 200:
+                    runtime.backup_state = "standby"
+                    runtime.active_since = None
+                    logger.warning("ha: backup -> standby (restore accepted)")
+                    try:
+                        await store.add_notification(
+                            "备用退位",
+                            "主力回暖成功接管，备用退回 standby。",
+                            level="info",
+                        )
+                    except Exception:
+                        pass
+                    return
+        except Exception as exc:
+            logger.warning("ha: push restore failed: %s", exc)
+        await asyncio.sleep(5)
 
 
 __all__ = [
