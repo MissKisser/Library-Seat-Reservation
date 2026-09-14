@@ -579,28 +579,21 @@ class Scheduler:
                     if r2.get("success"):
                         r = r2
             else:  # direct_first (default, 全日期统一优先直连提交)
-                r = await client.submit_direct(
-                    phone=acc.phone,
-                    password=acc.password,
-                    room_id=self.cfg.library.room_id,
-                    seat_num=t.seat_num,
-                    day=t.day.isoformat(),
-                    start_time=t.start_time.strftime("%H:%M"),
-                    end_time=t.end_time.strftime("%H:%M"),
+                async def _do_submit_direct():
+                    return await client.submit_direct(
+                        phone=acc.phone,
+                        password=acc.password,
+                        room_id=self.cfg.library.room_id,
+                        seat_num=t.seat_num,
+                        day=t.day.isoformat(),
+                        start_time=t.start_time.strftime("%H:%M"),
+                        end_time=t.end_time.strftime("%H:%M"),
+                    )
+
+                r = await _do_submit_direct()
+                r = await self._handle_unauthorized_retry(
+                    acc, client, "直连提交", r, _do_submit_direct
                 )
-                if not r.get("success") and "未登录" in str(r.get("msg") or ""):
-                    await self._warn("直连提交: 会话过期 → 重登重试", acc.id)
-                    client.reset_session()
-                    if await self.login_and_persist(acc, client, "直连重登"):
-                        r = await client.submit_direct(
-                            phone=acc.phone,
-                            password=acc.password,
-                            room_id=self.cfg.library.room_id,
-                            seat_num=t.seat_num,
-                            day=t.day.isoformat(),
-                            start_time=t.start_time.strftime("%H:%M"),
-                            end_time=t.end_time.strftime("%H:%M"),
-                        )
                 if self.anchor_retry_enabled and not r.get("success") and "seed not found" in str(r.get("msg") or ""):
                     anchor = await self._pick_anchor_seat(client, t.seat_num)
                     if anchor:
@@ -714,13 +707,28 @@ class Scheduler:
                         acc.id,
                     )
 
-    async def _act_with_relogin(
-        self, client: ChaoxingClient, acc: Account, fn, reserve_id: int, label: str,
+    async def _handle_unauthorized_retry(
+        self,
+        acc: Account,
+        client: ChaoxingClient,
+        label: str,
+        result: dict,
+        retry_fn,
     ) -> dict:
-        """执行 sign/leave; 服务端报未登录时清 cookie 重登并重试一次，防频繁重登死循环。"""
-        sr = await fn(reserve_id)
-        msg = str(sr.get("msg") or "")
-        if not sr.get("success") and "未登录" in msg:
+        """处理未登录结果的重登重试与冷却保护。
+
+        入参:
+            acc: 目标账号实例。
+            client: 超星客户端实例。
+            label: 动作日志标识。
+            result: 初次执行返回的字典结果。
+            retry_fn: 无参异步调用，重登成功后重新执行原操作。
+
+        返回值:
+            重试后的结果字典，或跳过/失败时的原/新结果字典。
+        """
+        msg = str(result.get("msg") or "")
+        if not result.get("success") and "未登录" in msg:
             now_m = _time.monotonic()
             cd = self._relogin_cooldown.get(acc.id, 0.0)
             if now_m < cd:
@@ -728,18 +736,19 @@ class Scheduler:
                     f"{label}: 会话过期但在重登冷却期内（剩余 {int(cd - now_m)}s），跳过浏览器重登",
                     acc.id,
                 )
-                return sr
+                return result
 
             await self._warn(f"{label}: 会话过期（未登录）→ 重置会话并重登重试", acc.id)
             client.reset_session()
             login_ok = await self.login_and_persist(acc, client, f"{label}重登")
             if login_ok:
-                sr = await fn(reserve_id)
-                new_msg = str(sr.get("msg") or "")
-                if sr.get("success") or "未登录" not in new_msg:
+                new_result = await retry_fn()
+                new_msg = str(new_result.get("msg") or "")
+                if new_result.get("success") or "未登录" not in new_msg:
                     self._relogin_fail_count[acc.id] = 0
                     self._relogin_cooldown.pop(acc.id, None)
-                    return sr
+                    return new_result
+                result = new_result
 
             fails = self._relogin_fail_count.get(acc.id, 0) + 1
             self._relogin_fail_count[acc.id] = fails
@@ -749,7 +758,16 @@ class Scheduler:
                     f"{label}: 账号 {acc.id} 连续 {fails} 次重登后仍未生效，进入 5 分钟重登冷却",
                     acc.id,
                 )
-        return sr
+        return result
+
+    async def _act_with_relogin(
+        self, client: ChaoxingClient, acc: Account, fn, reserve_id: int, label: str,
+    ) -> dict:
+        """执行 sign/leave; 服务端报未登录时清 cookie 重登并重试一次，防频繁重登死循环。"""
+        sr = await fn(reserve_id)
+        return await self._handle_unauthorized_retry(
+            acc, client, label, sr, lambda: fn(reserve_id)
+        )
 
     async def _run_sign(self, acc: Account, t: Task) -> None:
         """签到 (幂等: 成功或签到窗口已过 → SIGNED, 终止每分钟重试)。"""
