@@ -163,6 +163,83 @@ def test_key_regenerate_endpoint(store):
     assert len(cfg.key) >= 32
 
 
+def test_settings_page_has_editable_ha_key(store):
+    from fastapi.testclient import TestClient
+    from seatbot.ha import HaConfig, HaRuntime
+    rt = HaRuntime()
+    rt.mode = "standalone"
+    rt.cfg = HaConfig(
+        mode="standalone", key="MY_KEY", instance_id="I", peer_url="",
+        heartbeat_interval=15, lease_ttl=90, activation_buffer=60,
+        snapshot_interval=300, failback_grace=180,
+    )
+    app = _build_app(store, rt)
+    client = TestClient(app)
+    r = client.get("/settings")
+    assert r.status_code == 200
+    assert 'name="ha.key"' in r.text
+
+
+def test_save_backup_with_explicit_key(store):
+    from fastapi.testclient import TestClient
+    from seatbot.ha import HaConfig, HaRuntime, load_ha_config
+    import asyncio
+    rt = HaRuntime()
+    rt.mode = "standalone"
+    rt.cfg = HaConfig(
+        mode="standalone", key="", instance_id="I", peer_url="",
+        heartbeat_interval=15, lease_ttl=90, activation_buffer=60,
+        snapshot_interval=300, failback_grace=180,
+    )
+    app = _build_app(store, rt)
+    client = TestClient(app)
+    r = client.post(
+        "/settings",
+        data={
+            "ha.mode": "backup",
+            "ha.peer_url": "https://peer.example",
+            "ha.key": "COPIED_KEY_FROM_PRIMARY",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert "saved=1" in r.headers.get("location", "")
+    cfg = asyncio.run(load_ha_config(store))
+    assert cfg.mode == "backup"
+    assert cfg.key == "COPIED_KEY_FROM_PRIMARY"
+    assert cfg.peer_url == "https://peer.example"
+
+
+def test_save_backup_empty_key_keeps_existing(store):
+    from fastapi.testclient import TestClient
+    from seatbot.ha import HaConfig, HaRuntime, load_ha_config
+    import asyncio
+    asyncio.run(store.set_settings({"ha.key": "EXISTING_KEY"}))
+    rt = HaRuntime()
+    rt.mode = "standalone"
+    rt.cfg = HaConfig(
+        mode="standalone", key="EXISTING_KEY", instance_id="I", peer_url="",
+        heartbeat_interval=15, lease_ttl=90, activation_buffer=60,
+        snapshot_interval=300, failback_grace=180,
+    )
+    app = _build_app(store, rt)
+    client = TestClient(app)
+    r = client.post(
+        "/settings",
+        data={
+            "ha.mode": "backup",
+            "ha.peer_url": "https://peer.example",
+            "ha.key": "",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert "saved=1" in r.headers.get("location", "")
+    cfg = asyncio.run(load_ha_config(store))
+    assert cfg.mode == "backup"
+    assert cfg.key == "EXISTING_KEY"
+
+
 # ---------- helpers ----------
 
 import asyncio
