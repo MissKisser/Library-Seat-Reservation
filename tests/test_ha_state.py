@@ -337,6 +337,35 @@ async def test_primary_stays_active_when_only_peer_process_dead(fake_peer, tmp_p
         assert rt.primary_state == "active"
     finally:
         await store.close()
+async def test_primary_demotes_to_warming_when_tunnel_answered_by_backup(fake_peer, tmp_path):
+    """心跳失败但公网自检应答者是备用 → 备用存活，主力让位转 warming 防脑裂。"""
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "active"
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        rt.last_heartbeat_sent_ok = 0.0
+        fake_peer.fail_bk = True   # /bk/* 挂
+        # status 能通；应答者是备用 (peer-1)
+        fake_peer.status_response = {"instance_id": "peer-1", "active_since": 50.0}
+        sched = type("S", (), {})()
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "warming"
+        assert rt.active_since is None
+        assert rt.can_act() is False
+    finally:
+        await store.close()
+
 
 
 async def test_primary_demotes_to_warming_on_active_backup_heartbeat(fake_peer, tmp_path):
