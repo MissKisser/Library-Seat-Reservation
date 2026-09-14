@@ -96,3 +96,26 @@ async def test_apply_rejects_schema_fingerprint_mismatch(src_store, dst_store):
     with pytest.raises(HaSnapshotError) as exc_info:
         await apply_snapshot(dst_store, payload)
     assert "schema fingerprint mismatch" in str(exc_info.value)
+
+async def test_apply_preserves_receiver_notifications_and_logs(src_store, dst_store):
+    """备用端自有的通知与日志在快照 apply 后必须完整保留。"""
+    await dst_store.add_notification("备用接管", "心跳超时，备用已激活")
+    await dst_store.db.execute(
+        "INSERT INTO logs (ts, level, account_id, message) VALUES (?, ?, ?, ?)",
+        (100, "warning", None, "backup local log"),
+    )
+    await dst_store.db.commit()
+
+    await src_store.add_notification("主力通知", "主力系统信息")
+    payload, _ = await build_snapshot(src_store)
+
+    res = await apply_snapshot(dst_store, payload)
+    assert res["applied"]
+
+    notifs = await dst_store.list_notifications()
+    titles = [n["title"] for n in notifs]
+    assert "备用接管" in titles
+
+    cur = await dst_store.db.execute("SELECT message FROM logs")
+    messages = [r[0] for r in await cur.fetchall()]
+    assert "backup local log" in messages

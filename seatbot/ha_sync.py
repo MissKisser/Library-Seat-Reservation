@@ -132,7 +132,7 @@ def _apply_snapshot_sync(store, db_path: str, payload: bytes) -> dict[str, Any]:
             f"schema fingerprint mismatch: incoming={inc_fp[:16]} != live={live_fp[:16]}"
         )
 
-    # 抓取接收端现行 ha.* 键（保留用）
+    # 抓取接收端现行 ha.* 键与自有 logs/notifications（保留用）
     live_con = sqlite3.connect(str(db_path), timeout=30)
     try:
         preserved: dict[str, str] = {}
@@ -141,6 +141,16 @@ def _apply_snapshot_sync(store, db_path: str, payload: bytes) -> dict[str, Any]:
             preserved = {r[0]: r[1] for r in cur.fetchall()}
         except sqlite3.OperationalError:
             preserved = {}
+        try:
+            cur = live_con.execute("SELECT ts, level, account_id, message FROM logs ORDER BY id ASC")
+            preserved_logs = cur.fetchall()
+        except sqlite3.OperationalError:
+            preserved_logs = []
+        try:
+            cur = live_con.execute("SELECT ts, level, title, body FROM notifications ORDER BY id ASC")
+            preserved_notifs = cur.fetchall()
+        except sqlite3.OperationalError:
+            preserved_notifs = []
     finally:
         live_con.close()
 
@@ -168,6 +178,22 @@ def _apply_snapshot_sync(store, db_path: str, payload: bytes) -> dict[str, Any]:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
                 (k, v, now_ms),
             )
+        if preserved_logs:
+            dst.executemany(
+                "INSERT INTO logs (ts, level, account_id, message) VALUES (?, ?, ?, ?)",
+                preserved_logs,
+            )
+        if preserved_notifs:
+            for r in preserved_notifs:
+                cur = dst.execute(
+                    "SELECT 1 FROM notifications WHERE ts=? AND level=? AND title=? AND body=?",
+                    (r[0], r[1], r[2], r[3]),
+                )
+                if not cur.fetchone():
+                    dst.execute(
+                        "INSERT INTO notifications (ts, level, title, body) VALUES (?, ?, ?, ?)",
+                        (r[0], r[1], r[2], r[3]),
+                    )
         dst.commit()
         cur = dst.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables_after = [r[0] for r in cur.fetchall()]
