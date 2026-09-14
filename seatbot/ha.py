@@ -437,12 +437,14 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
                 logger.warning("ha: tunnel probe failed: %s", exc2)
                 status_body = {}
             responder = status_body.get("instance_id") if isinstance(status_body, dict) else None
-            if responder and responder != runtime.cfg.instance_id:
-                # 应答者是备用或第三方 → 备用进程在跑，公网活着，但 /bk/* 挂
-                logger.warning("ha: tunnel alive but backup /bk/* dead; stay active")
-            elif responder == runtime.cfg.instance_id:
-                # 公网自检应答者是自己 → frps 隧道在、备用进程挂了
-                logger.warning("ha: backup process unreachable, stay active (warn-only)")
+            if responder == runtime.cfg.instance_id:
+                # 公网自检应答者是自己 → 隧道在、备用进程挂了；主力维持 active，仅告警
+                logger.warning("ha: public probe answered by self, backup unreachable; stay active (warn-only)")
+            elif responder and responder != runtime.cfg.instance_id:
+                # 应答者是备用 → 备用存活且可能在接管，主力让位转 warming 防脑裂
+                runtime.primary_state = "warming"
+                runtime.active_since = None
+                logger.warning("ha: public probe answered by backup (%s), demoting to warming to yield", responder)
             else:
                 runtime.primary_state = "suspended"
                 logger.warning("ha: -> suspended (peer + tunnel dead)")
