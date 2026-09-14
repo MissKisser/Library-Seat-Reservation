@@ -327,17 +327,20 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
             # 双端皆死兜底：直进 active
             runtime.primary_state = "active"
             runtime.active_since = now
+            runtime.last_heartbeat_sent_ok = now
             logger.warning("ha: warming -> active (no peer_url configured)")
         elif reachable and payload.get("active_since") is None:
             # 备用待命，常规重启秒级恢复
             runtime.primary_state = "active"
             runtime.active_since = now
+            runtime.last_heartbeat_sent_ok = now
             logger.warning("ha: warming -> active (backup standby)")
         elif not reachable:
             grace = runtime.cfg.failback_grace
             if now - runtime.boot_monotonic > grace:
                 runtime.primary_state = "active"
                 runtime.active_since = now
+                runtime.last_heartbeat_sent_ok = now
                 logger.warning("ha: warming -> active (peer unreachable after grace, fallback)")
                 try:
                     await store.add_notification(
@@ -358,7 +361,7 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
             if payload.get("role") != "backup" or active_since is None:
                 runtime.primary_state = "active"
                 runtime.active_since = now
-            else:
+                runtime.last_heartbeat_sent_ok = now
                 logger.info("ha: warming awaiting failback (backup active_since=%s)", active_since)
         return
 
@@ -418,7 +421,9 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
                 raise RuntimeError(f"heartbeat http {r.status_code}")
     except Exception as exc:
         # 心跳失败 → 检查 ttl 是否超期
-        last = runtime.last_heartbeat_sent_ok or 0.0
+        last = runtime.last_heartbeat_sent_ok
+        if last is None:
+            last = runtime.active_since or runtime.boot_monotonic
         if now - last >= ttl:
             # 公网自检：GET /api/ha/status
             try:
