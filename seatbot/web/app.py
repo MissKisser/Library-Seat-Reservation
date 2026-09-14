@@ -127,6 +127,9 @@ class PanelAuthMiddleware(BaseHTTPMiddleware):
         self.allowed_hosts = allowed_hosts
 
     async def dispatch(self, request: Request, call_next):
+        # /api/ha/* 由独立 X-HA-Key 鉴权，不走面板 web_token
+        if request.url.path.startswith("/api/ha/"):
+            return await call_next(request)
         client_host = request.client.host if request.client else None
         via_query = "token" in request.query_params
         ok, status, reason, set_cookie = auth_decision(
@@ -199,4 +202,10 @@ def make_app(cfg: Config, store: StateStore, sched: Scheduler) -> FastAPI:
 
     from seatbot.web.routes import router
     app.include_router(router)
+
+    from seatbot.ha import NullHaRuntime
+    from seatbot.web.ha_routes import router as ha_router
+    app.include_router(ha_router)
+    ha_obj = getattr(sched, "ha", None) if sched is not None else None
+    app.state.ha = ha_obj if ha_obj is not None else NullHaRuntime()
     return app
