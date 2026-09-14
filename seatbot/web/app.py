@@ -258,4 +258,5 @@ def make_app(cfg: Config, store: StateStore, sched: Scheduler) -> FastAPI:
     app.include_router(ha_router)
     ha_obj = getattr(sched, "ha", None) if sched is not None else None
     app.state.ha = ha_obj if ha_obj is not None else NullHaRuntime()
+    app.state.ha_supervisor_task = None
     return app

@@ -240,6 +240,48 @@ def test_save_backup_empty_key_keeps_existing(store):
     assert cfg.key == "EXISTING_KEY"
 
 
+async def test_standalone_switch_to_primary_spawns_supervisor(store):
+    """从 standalone 切 primary：自动拉起 supervisor 协程，且状态能从 warming 推进到 active。"""
+    from httpx import ASGITransport, AsyncClient
+    from seatbot.ha import HaConfig, HaRuntime
+
+    rt = HaRuntime()
+    rt.mode = "standalone"
+    rt.cfg = HaConfig(
+        mode="standalone", key="", instance_id="I", peer_url="",
+        heartbeat_interval=1, lease_ttl=90, activation_buffer=60,
+        snapshot_interval=300, failback_grace=180,
+    )
+    app = _build_app(store, rt)
+    assert app.state.ha_supervisor_task is None
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        r = await client.post(
+            "/settings",
+            data={
+                "ha.mode": "primary",
+                "ha.heartbeat_interval_seconds": "1",
+            },
+        )
+        assert r.status_code == 303
+
+    task = app.state.ha_supervisor_task
+    assert task is not None
+    assert not task.done()
+
+    # 等待一个 tick（heartbeat_interval=1s），状态从 warming 推进为 active
+    await asyncio.sleep(1.2)
+    assert rt.mode == "primary"
+    assert rt.primary_state == "active"
+    assert rt.can_act() is True
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 # ---------- helpers ----------
 
 import asyncio

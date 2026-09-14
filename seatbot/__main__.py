@@ -141,6 +141,7 @@ async def _cmd_run(args) -> int:
         )
     from seatbot.web.app import make_app
     app = make_app(cfg, store, sched)
+    app.state.ha_supervisor_task = supervisor_task
     import uvicorn
     uvcfg = uvicorn.Config(
         app, host=cfg.runtime.web_host, port=cfg.runtime.web_port, log_level="info"
