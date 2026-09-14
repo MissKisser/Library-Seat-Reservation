@@ -190,10 +190,10 @@ class HaWriteGuardMiddleware(BaseHTTPMiddleware):
         path = request.url.path or ""
         if path.startswith("/api/ha/"):
             return await call_next(request)
-        if path == "/settings" or path.startswith("/settings/"):
+        if path == "/settings":
             return await call_next(request)
-        # API 路径 → JSON；表单路径 → 303 重定向回来源页
-        if path.startswith("/api/") or path.endswith(".json"):
+        # API 路径 / reset / .json → JSON；表单路径 → 303 重定向回来源页
+        if path.startswith("/api/") or path.endswith(".json") or path == "/settings/reset":
             from starlette.responses import JSONResponse as _JR
             return _JR(
                 {"detail": "备用待命期禁止写入操作；请切到主力或等待自动回切。"},
@@ -246,6 +246,7 @@ def make_app(cfg: Config, store: StateStore, sched: Scheduler) -> FastAPI:
         web_token=(cfg.runtime.web_token or "").strip(),
         allowed_hosts=allowed_hosts,
     )
+    app.add_middleware(HaWriteGuardMiddleware)
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
