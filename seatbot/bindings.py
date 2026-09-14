@@ -2,9 +2,9 @@
 
 矩阵值为按星期几的 dict（mon..sun，缺天 = 该天无时段）；list 视为全周统一。
 约束（AGENTS.md 超星预约机制规范）按星期几逐天独立检查：
-  - 每个账号每天对同一座位最多 1 个时段, 单段时长 ≤ max_seg_hours
+  - 单段时长 ≤ max_seg_hours
   - 每个账号每天累计预约时长 ≤ daily_limit_hours
-  - 同一账号同一天内不同座位时段不得重叠
+  - 同一账号同一天内所有座位时段不得重叠（含同座位多段之间）
 """
 from __future__ import annotations
 
@@ -118,13 +118,6 @@ def validate_matrix(
         if not windows:
             continue
         label = WEEKDAY_LABELS[wd]
-        per_seat: dict[str, int] = {}
-        for seat, _s, _e, _h in windows:
-            per_seat[seat] = per_seat.get(seat, 0) + 1
-        for seat, n in per_seat.items():
-            if n > 1:
-                raise ValueError(
-                    f"{label}：座位 {seat} 每天最多绑定 1 个时段（当前 {n} 个）")
         total = 0.0
         for seat, s, e, h in windows:
             if e <= s:
