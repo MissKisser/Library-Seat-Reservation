@@ -70,10 +70,16 @@ def test_parse_seat_slots_rejects_bad_range_format():
        _parse_seat_slots('{"001": ["not-a-range"]}', 2.0, 5.0)
 
 
-def test_parse_seat_slots_rejects_second_slot_per_seat_same_day():
-   with pytest.raises(ValueError, match="最多绑定 1 个时段"):
+def test_parse_seat_slots_allows_second_slot_per_seat_same_day():
+   out = _parse_seat_slots(
+       '{"001": {"mon": ["09:00-10:00", "11:00-12:00"]}}', 2.0, 5.0)
+   assert out["001"]["mon"] == ["09:00-10:00", "11:00-12:00"]
+
+
+def test_parse_seat_slots_rejects_same_seat_overlap_same_day():
+   with pytest.raises(ValueError, match="重叠"):
        _parse_seat_slots(
-           '{"001": {"mon": ["09:00-10:00", "11:00-12:00"]}}', 2.0, 5.0)
+           '{"001": {"mon": ["09:00-11:00", "10:00-12:00"]}}', 2.0, 5.0)
 
 
 def test_parse_seat_slots_rejects_daily_limit_overrun_same_day():
