@@ -47,13 +47,13 @@
         <div class="form-field">
           <label for="ha.key">共享密钥</label>
           <div class="flex items-center gap-2">
-            <input id="ha.key" type="text" class="input flex-1" value="{{ eff.get('ha.key', '') }}" readonly placeholder="（空：保存主力模式时自动生成）">
+            <input id="ha.key" name="ha.key" type="text" class="input flex-1" value="{{ eff.get('ha.key', '') }}" placeholder="从主力面板复制（主力保存时自动生成；留空保持现值）">
             <button class="btn btn-ghost btn-sm" type="submit" form="ha-key-rotate"
                     onclick="return confirm('重新生成共享密钥？旧密钥立即失效，对端必须同步更新。')">
               重新生成
             </button>
           </div>
-          <div class="hint">仅供复制到对端；面板不可编辑（旧 key 一旦换出立即失效）。</div>
+          <div class="hint">主力可在此自动生成或重新生成；备用端请从主力面板复制粘贴到此。留空保存则保持现有密钥。</div>
           {% if "ha.key" in overridden %}<div class="text-xs text-target">已自定义</div>{% endif %}
         </div>
 

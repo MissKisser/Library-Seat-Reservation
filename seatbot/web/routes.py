@@ -3115,7 +3115,9 @@ async def settings_save(request: Request):
     patch_raw["ha.activation_buffer_seconds"] = (form.get("ha.activation_buffer_seconds") or "").strip()
     patch_raw["ha.snapshot_interval_seconds"] = (form.get("ha.snapshot_interval_seconds") or "").strip()
     patch_raw["ha.failback_grace_seconds"] = (form.get("ha.failback_grace_seconds") or "").strip()
-    # ha.key 只读不收（用户不能表单覆盖）；唯一写入路径是 /ha/key/regenerate
+    raw_key = (form.get("ha.key") or "").strip()
+    if raw_key:
+        patch_raw["ha.key"] = raw_key
 
     # 滤掉空字符串的"未填"键（notify_webhook 与 ha.peer_url 允许空以清空）
     patch: dict[str, object] = {}
@@ -3137,13 +3139,15 @@ async def settings_save(request: Request):
         else:
             existing_key = await store.get_setting("ha.key")
             existing_peer = await store.get_setting("ha.peer_url")
-            if mode == "primary" and not existing_key:
+            if mode == "primary" and not existing_key and not patch.get("ha.key"):
                 patch["ha.key"] = generate_ha_key()
             if mode == "backup":
-                if not (patch.get("ha.peer_url") or existing_peer):
+                effective_peer = patch.get("ha.peer_url") or existing_peer or ""
+                effective_key = patch.get("ha.key") or existing_key or ""
+                if not str(effective_peer).strip():
                     ha_errors["ha.peer_url"] = "备用模式必须填写对端地址"
-                if not existing_key and not (patch.get("ha.key")):
-                    ha_errors["ha.key"] = "备用模式必须填写共享密钥（请使用重新生成 key）"
+                if not str(effective_key).strip():
+                    ha_errors["ha.key"] = "备用模式必须填写共享密钥（从主力面板复制）"
 
     # HA 数值键合法性
     def _int_ok(name: str, lo: int, hi: int) -> None:
