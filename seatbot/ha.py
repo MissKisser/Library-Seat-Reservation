@@ -7,7 +7,7 @@
   - HaConfig / load_ha_config / ensure_ha_bootstrap: 读写 app_settings。
   - HaRuntime / NullHaRuntime: 内存态状态机与闸门。
   - run_ha_supervisor / _primary_tick / _backup_tick / _push_restore_loop / _after_activation:
-    看护协程（Task 7/8 实装）。
+    看护协程与状态推进。
 """
 from __future__ import annotations
 
@@ -161,10 +161,9 @@ class HaRuntime:
             return True
         return False
 
-    def reload(self, store) -> HaConfig:
+    async def reload(self, store) -> HaConfig:
         """从 store 重新读取 HA 配置并同步 mode。"""
-        import asyncio
-        cfg = asyncio.get_event_loop().run_until_complete(load_ha_config(store))
+        cfg = await load_ha_config(store)
         return self.apply_config(cfg)
 
     def apply_config(self, cfg: HaConfig) -> HaConfig:
@@ -178,7 +177,7 @@ class HaRuntime:
                 self.primary_state = "warming"
                 self.active_since = None
             elif cfg.mode == "backup":
-                self.primary_state = "active"  # 占位
+                self.primary_state = "active"
                 self.backup_state = "standby"
                 self.active_since = None
                 self.last_heartbeat_seen = self.now()
@@ -248,7 +247,7 @@ class NullHaRuntime:
         }
 
 
-# Task 7/8 实装：看护协程 + 主力 tick + 备用 tick
+# 看护协程与定时状态推进
 
 logger = logging.getLogger(__name__)
 
@@ -484,7 +483,7 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
 
 
 async def _backup_tick(store, sched, runtime: HaRuntime) -> None:
-    """Task 8 实装：备用看门狗 + 激活自愈 + failback_pending 处理。"""
+    """备用看门狗：心跳超时激活与 failback 状态推进。"""
     if runtime.cfg is None:
         return
     now = runtime.now()
@@ -549,7 +548,7 @@ async def _after_activation(store, sched) -> None:
 
 
 async def _push_restore_loop(store, runtime: HaRuntime) -> None:
-    """Task 8 实装：循环推送自身快照回主力，等主力确认后 standby。"""
+    """循环推送自身快照回主力，主力确认后恢复 standby。"""
     if runtime.cfg is None or runtime.mode != "backup":
         return
     peer = (runtime.cfg.peer_url or "").rstrip("/")
