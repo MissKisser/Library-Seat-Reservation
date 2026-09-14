@@ -323,9 +323,11 @@
       get hasErrors() { return this.allRows().some(r => this.validateRow(r).length); },
 
       addSlot(row) {
-        /* 每账号每天每座位最多 1 个时段（超星规则） */
-        if (row.slots.length >= 1) return;
-        row.slots.push({ s: opts.open, e: toHM(Math.min(toMin(opts.open) + 120, toMin(opts.close))) });
+        const last = row.slots.length
+          ? toMin(row.slots[row.slots.length - 1].e)
+          : toMin(opts.open);
+        const s = Math.max(toMin(opts.open), Math.min(last, toMin(opts.close) - 120));
+        row.slots.push({ s: toHM(s), e: toHM(Math.min(s + 120, toMin(opts.close))) });
         if (this.uniformMode) this._replicate(row.seat);
       },
       removeSlot(row, i) {
