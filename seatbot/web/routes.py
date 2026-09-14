@@ -14,7 +14,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from seatbot.bindings import (
-    account_margins, auto_assign, candidate_accounts,
+    account_margins, add_day_slot, auto_assign, candidate_accounts,
     desired_slots_of, diff_matrices, matrix_windows, plan_matrix, rebind_candidates_for_days,
     rebind_matrices, set_day_slots, validate_matrix,
 )
@@ -1342,10 +1342,13 @@ async def bindings_manual(
     except (ValueError, TypeError) as exc:
         return RedirectResponse(
             f"/bindings?error={quote(f'时间格式错误: {exc}')}", status_code=303)
-    matrix = _matrix_set_day(dict(acc.seat_slots or {}), sn, wd or "mon", [rng])
-    if not wd:
-        # 全局统一：铺满 7 天
-        matrix[sn] = {w: [rng] for w in WEEKDAY_KEYS}
+    matrix = dict(acc.seat_slots or {})
+    if wd:
+        matrix = add_day_slot(matrix, sn, wd, rng)
+    else:
+        # 全局统一：逐天追加，保留各天既有时段
+        for w in WEEKDAY_KEYS:
+            matrix = add_day_slot(matrix, sn, w, rng)
     try:
         validate_matrix(
             matrix, max_seg_hours=lib.max_reserve_hours,
@@ -1464,7 +1467,7 @@ async def bindings_rebind(
     )
     if dst.id not in [c["id"] for c in candidates]:
         return RedirectResponse(
-            f"/bindings?error={quote(f'{dst.id} 不满足接手条件（该座位已绑 / 每日超 {limit:g}h / 时段冲突 / 单段超 {lib.max_reserve_hours:g}h）')}",
+            f"/bindings?error={quote(f'{dst.id} 不满足接手条件（时段冲突 / 每日超 {limit:g}h / 单段超 {lib.max_reserve_hours:g}h）')}",
             status_code=303)
     try:
         src_matrix, dst_matrix = rebind_matrices(
@@ -1714,6 +1717,7 @@ async def _matrix_ctx(request: Request, store, account: Account | None) -> dict:
     ctx["matrix_open"] = lib.open_time
     ctx["matrix_close"] = lib.close_time
     ctx["matrix_max_hours"] = lib.max_reserve_hours
+    ctx["matrix_daily_limit"] = lib.daily_reserve_hours_limit
     return ctx
 
 

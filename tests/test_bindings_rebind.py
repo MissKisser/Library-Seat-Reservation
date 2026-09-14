@@ -217,3 +217,21 @@ def test_rebind_bad_input_not_500(tmp_path):
                 f"{data} -> {r.status_code}: {r.text[:400]}"
     finally:
         asyncio.run(store.close())
+
+
+def test_bindings_manual_appends_second_slot(tmp_path):
+    """绑定页手动绑定同座第二时段：追加而非覆盖第一段。"""
+    c, store = _client(tmp_path, [
+        _acc("张三", {"001": dict(ALL_DAYS)}),
+    ])
+    try:
+        r = c.post("/bindings/manual", headers=_AUTH, data={
+            "account_id": "张三", "seat_num": "001",
+            "weekday": "mon", "start": "14:00", "end": "16:00",
+        }, follow_redirects=False)
+        assert r.status_code == 303
+        acc = asyncio.run(store.get_account("张三"))
+        assert acc.seat_slots["001"]["mon"] == ["09:00-11:00", "14:00-16:00"]
+        assert acc.seat_slots["001"]["tue"] == ["09:00-11:00"]
+    finally:
+        asyncio.run(store.close())
