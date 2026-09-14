@@ -147,11 +147,9 @@ class HaRuntime:
         return self._clock()
 
     def tick(self, seconds: float) -> None:
-        """测试用：推进假时钟。"""
+        """推进测试时钟。"""
         boot = self.boot_monotonic
-        self.boot_monotonic = boot
-        self._clock = (lambda b=boot, s=seconds: lambda: b + s)  # noqa: E731
-
+        self._clock = (lambda b=boot, s=seconds: b + s)  # noqa: E731
     def request_snapshot(self) -> None:
         """设置一次性快照推送标志。"""
         self._snapshot_requested = True
@@ -307,7 +305,8 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
 
     # 1) 决定是否进入下一态
     if runtime.primary_state == "warming":
-        # 先发一个 heartbeat 让备用刷 last_heartbeat_seen
+        reachable = False
+        payload = {}
         if peer:
             try:
                 async with httpx.AsyncClient(timeout=5) as c:
@@ -316,25 +315,46 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
                         headers={"X-HA-Key": runtime.cfg.key},
                         json={"instance_id": runtime.cfg.instance_id},
                     )
-                    payload = r.json() if r.status_code == 200 else {}
+                    if r.status_code == 200:
+                        payload = r.json() if isinstance(r.json(), dict) else {}
+                        reachable = True
             except Exception as exc:
                 logger.info("ha: warming peer probe failed: %s", exc)
+                reachable = False
                 payload = {}
-        else:
-            payload = {}
-        active_since = payload.get("active_since")
+
         if not peer:
             # 双端皆死兜底：直进 active
             runtime.primary_state = "active"
             runtime.active_since = now
             logger.warning("ha: warming -> active (no peer_url configured)")
-        elif active_since is None:
+        elif reachable and payload.get("active_since") is None:
             # 备用待命，常规重启秒级恢复
             runtime.primary_state = "active"
             runtime.active_since = now
             logger.warning("ha: warming -> active (backup standby)")
+        elif not reachable:
+            grace = runtime.cfg.failback_grace
+            if now - runtime.boot_monotonic > grace:
+                runtime.primary_state = "active"
+                runtime.active_since = now
+                logger.warning("ha: warming -> active (peer unreachable after grace, fallback)")
+                try:
+                    await store.add_notification(
+                        "双端皆死兜底",
+                        "对端不可达已超容忍窗口，主力兜底接管调度。",
+                        level="warning",
+                    )
+                except Exception:
+                    pass
+            else:
+                logger.info(
+                    "ha: warming awaiting peer (unreachable, elapsed=%.1fs, grace=%ds)",
+                    now - runtime.boot_monotonic,
+                    grace,
+                )
         else:
-            # 备用正在接管 → 反复 heartbeat 直到 active_since 清空（claim 成功）
+            active_since = payload.get("active_since")
             if payload.get("role") != "backup" or active_since is None:
                 runtime.primary_state = "active"
                 runtime.active_since = now

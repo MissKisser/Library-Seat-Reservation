@@ -175,6 +175,42 @@ async def test_primary_normal_warming_to_active(fake_peer, tmp_path):
     finally:
         await store.close()
 
+async def test_primary_warming_unreachable_peer_stays_warming_until_grace(fake_peer, tmp_path):
+    """对端不可达时：warming 保持直到超过 failback_grace 才兜底转 active。"""
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "warming"
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        fake_peer.fail_all = True
+        sched = type("S", (), {})()
+
+        # 1) 未超 grace：保持 warming，不可调度
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "warming"
+        assert rt.active_since is None
+        assert rt.can_act() is False
+
+        # 2) 超过 grace：兜底进入 active
+        rt.tick(200.0)
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "active"
+        assert rt.active_since is not None
+        assert rt.can_act() is True
+    finally:
+        await store.close()
+
+
 
 async def test_primary_suspends_when_peer_and_tunnel_dead(fake_peer, tmp_path):
     from seatbot import ha as _ha
