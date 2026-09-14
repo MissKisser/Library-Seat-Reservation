@@ -2679,7 +2679,7 @@ async def hosting_add_matrix(request: Request, hosted_id: int):
 
     - 座位未注册：自动注册为目标座位（D7）。
     - schedule_mode（设置键）：全局统一→7 天；按天自定义→只写当天周几。
-    - 选号：优先行内账号 → 校验（每段 ≤2h、每日 ≤5h、跨座不重叠）→ 不过则换绑；
+    - 选号：优先行内账号 → 校验（每段 ≤2h、每日累计 ≤ 限额、跨座不重叠）→ 不过则换绑；
       无人可用 → 400 错误提示。
     - 写入：账号 seat_slots[seat][wd] + 座位 desired_slots[wd] 补时段（幂等）。
     """
