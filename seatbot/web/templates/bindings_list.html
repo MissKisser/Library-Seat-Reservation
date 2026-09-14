@@ -8,7 +8,7 @@
   <div class="page-header">
     <div>
       <h1 class="page-title">绑定矩阵</h1>
-      <p class="page-sub">每账号每座位每天 1 时段（≤{{ '%g'|format(max_seg) }}h）· 每账号每日累计 ≤ {{ '%g'|format(daily_limit) }}h{% if mode == 'weekly' %} · 按天自定义模式{% endif %}</p>
+      <p class="page-sub">单段 ≤{{ '%g'|format(max_seg) }}h · 同座可多段（不重叠）· 每账号每日累计 ≤ {{ '%g'|format(daily_limit) }}h{% if mode == 'weekly' %} · 按天自定义模式{% endif %}</p>
     </div>
     <div class="flex items-center gap-2">
       <form method="post" action="/bindings/mode" class="flex items-center gap-2"
@@ -97,7 +97,7 @@
         </div>
         <button class="btn btn-primary btn-sm" type="submit">绑定</button>
       </form>
-      <div class="hint mt-2">约束：每座位每天 1 时段 ≤{{ '%g'|format(max_seg) }}h；账号每日 ≤ {{ '%g'|format(daily_limit) }}h；不同座位时段不得重叠。违者拒绝保存。{{ '绑定写入选中的星期几。' if mode == 'weekly' else '绑定对周一至周日统一生效。' }}</div>
+      <div class="hint mt-2">约束：单段 ≤{{ '%g'|format(max_seg) }}h；同座多段不得重叠；账号每日 ≤ {{ '%g'|format(daily_limit) }}h；不同座位时段不得重叠。违者拒绝保存。{{ '绑定写入选中的星期几。' if mode == 'weekly' else '绑定对周一至周日统一生效。' }}</div>
       {% else %}
       {{ empty(title='需要至少一个账号和一个目标座位', hint='先到「目标座位」「守护账号」页添加') }}
       {% endif %}
@@ -295,7 +295,7 @@
                 <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
                 <input type="hidden" name="weekday" value="{{ b.weekday }}">
                 <input type="hidden" name="slot" value="{{ b.range }}">
-                <select name="target_account_id" class="select text-xs" title="仅列出满足超星限制（该座位当天未绑 · 每日 ≤{{ '%g'|format(daily_limit) }}h · 时段不重叠）的账号">
+                <select name="target_account_id" class="select text-xs" title="仅列出满足超星限制（时段不重叠 · 每日 ≤{{ '%g'|format(daily_limit) }}h）的账号">
                   {% for c in b.candidates %}
                   <option value="{{ c.id }}">{{ c.id }}（余 {{ '%g'|format(c.remaining_hours) }}h）</option>
                   {% endfor %}
