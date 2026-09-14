@@ -252,14 +252,26 @@ async def test_web_task_sign_returns_409_when_backup_standby(tmp_path):
     assert r.status_code == 409
 
 
-def test_standby_blocks_mutations_except_settings():
-    """备用待命期：POST /accounts 等被 HaWriteGuardMiddleware 拦下 409；/settings 豁免。"""
-    from fastapi import FastAPI
+def _make_fencing_app(store, rt):
+    from seatbot.config import Config, LibraryConfig, RuntimeConfig
+    from seatbot.scheduler import Scheduler
+    from seatbot.web.app import make_app
+
+    cfg = Config(
+        library=LibraryConfig(room_id=0, room_name="t"),
+        runtime=RuntimeConfig(stagger_seconds=[0, 0], web_token=""),
+    )
+    sched = Scheduler(cfg, store)
+    sched.ha = rt
+    sched._clients = {}
+    return make_app(cfg, store, sched)
+
+
+async def test_standby_blocks_mutations_except_settings(store):
+    """备用待命期：写请求被真实挂载的 HaWriteGuardMiddleware 拦下；/settings 豁免；/settings/reset 必须 409。"""
     from fastapi.testclient import TestClient
 
     from seatbot.ha import HaConfig, HaRuntime
-    from seatbot.web.app import HaWriteGuardMiddleware
-    from seatbot.web.ha_routes import router as ha_router
 
     rt = HaRuntime()
     rt.mode = "backup"
@@ -270,23 +282,7 @@ def test_standby_blocks_mutations_except_settings():
         snapshot_interval=300, failback_grace=180,
     )
 
-    app = FastAPI()
-    app.add_middleware(HaWriteGuardMiddleware)
-    app.include_router(ha_router)
-    app.state.ha = rt
-
-    class _S:
-        async def get_settings_map(self):
-            return {"ha.mode": "backup", "ha.key": "K"}
-
-        async def set_settings(self, patch):
-            return None
-
-        async def get_setting(self, key):
-            return "K" if key == "ha.key" else "backup"
-
-    app.state.store = _S()
-
+    app = _make_fencing_app(store, rt)
     client = TestClient(app)
     # 1) API 路径 → 409 JSON
     r = client.post("/api/notifications/dismiss-all",
@@ -307,20 +303,22 @@ def test_standby_blocks_mutations_except_settings():
     # 4) GET 不拦
     r3 = client.get("/")
     assert r3.status_code in (200, 404, 307)  # 不 409
-    # 5) /settings 写豁免
-    r4 = client.post("/settings", headers={"X-HA-Key": "K", "Host": "testserver"},
+    # 5) /settings/reset 待命期拦截 409
+    r5 = client.post("/settings/reset", headers={"X-HA-Key": "K", "Host": "testserver"},
+                     follow_redirects=False)
+    assert r5.status_code == 409
+    # 6) /settings 写豁免
+    r4 = client.post("/settings", data={"ha.mode": "backup", "ha.peer_url": "http://peer", "ha.key": "K"},
+                     headers={"X-HA-Key": "K", "Host": "testserver"},
                      follow_redirects=False)
     assert r4.status_code != 409
 
 
-def test_active_backup_allows_writes():
-    """备用已激活（active）→ 写保护不拦。"""
-    from fastapi import FastAPI
+async def test_active_backup_allows_writes(store):
+    """备用已激活（active）→ 真实挂载的写保护不拦。"""
     from fastapi.testclient import TestClient
 
     from seatbot.ha import HaConfig, HaRuntime
-    from seatbot.web.app import HaWriteGuardMiddleware
-    from seatbot.web.ha_routes import router as ha_router
 
     rt = HaRuntime()
     rt.mode = "backup"
@@ -331,20 +329,7 @@ def test_active_backup_allows_writes():
         snapshot_interval=300, failback_grace=180,
     )
 
-    app = FastAPI()
-    app.add_middleware(HaWriteGuardMiddleware)
-    app.include_router(ha_router)
-    app.state.ha = rt
-
-    class _S:
-        async def get_settings_map(self):
-            return {"ha.mode": "backup", "ha.key": "K"}
-
-        async def get_setting(self, key):
-            return "K" if key == "ha.key" else "backup"
-
-    app.state.store = _S()
-
+    app = _make_fencing_app(store, rt)
     client = TestClient(app)
     # active 时 POST 不被 HaWriteGuardMiddleware 拦；可能因别的原因非 200，但不应是 409
     r = client.post("/accounts", headers={"Host": "testserver"}, follow_redirects=False)
