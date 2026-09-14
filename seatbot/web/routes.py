@@ -148,11 +148,30 @@ async def _ctx(request: Request, **extra) -> dict:
     store = request.app.state.store
     target_seats = await store.list_target_seats()
     accounts = await store.list_accounts()
+    ha = getattr(request.app.state, "ha", None)
+    if ha is None:
+        ha = NullHaRuntime()
+        request.app.state.ha = ha
+    try:
+        ha_view = {
+            "mode": getattr(ha, "mode", "standalone"),
+            "state": (
+                ha.primary_state if getattr(ha, "mode", "") == "primary"
+                else ha.backup_state if getattr(ha, "mode", "") == "backup"
+                else "standalone"
+            ),
+            "instance_id": getattr(getattr(ha, "cfg", None), "instance_id", "") or "",
+            "peer_url": getattr(getattr(ha, "cfg", None), "peer_url", "") or "",
+            "can_act": bool(ha.can_act()) if hasattr(ha, "can_act") else True,
+        }
+    except Exception:
+        ha_view = {"mode": "standalone", "state": "standalone", "instance_id": "", "peer_url": "", "can_act": True}
     return {
         "request": request,
         "cfg": request.app.state.cfg,
         "target_seats": target_seats,
         "accounts": accounts,
+        "ha": ha_view,
         **extra,
     }
 
@@ -469,6 +488,22 @@ async def dashboard(request: Request):
         "target_seat_count": len(target_seats),
         "account_count": len(accounts),
     }
+    # HA 视图（横幅依据）
+    ha = getattr(request.app.state, "ha", None)
+    if ha is None:
+        ha = NullHaRuntime()
+        request.app.state.ha = ha
+    ha_view = {
+        "mode": getattr(ha, "mode", "standalone"),
+        "state": (
+            ha.primary_state if getattr(ha, "mode", "") == "primary"
+            else ha.backup_state if getattr(ha, "mode", "") == "backup"
+            else "standalone"
+        ),
+        "instance_id": getattr(getattr(ha, "cfg", None), "instance_id", "") or "",
+        "peer_url": getattr(getattr(ha, "cfg", None), "peer_url", "") or "",
+        "can_act": bool(ha.can_act()) if hasattr(ha, "can_act") else True,
+    }
     return _templates(request).TemplateResponse(
         request, "dashboard.html",
         {
@@ -478,6 +513,7 @@ async def dashboard(request: Request):
             "active_page": "dashboard",
             "accounts": accounts,
             "target_seats": target_seats,
+            "ha": ha_view,
         },
     )
 
@@ -3046,6 +3082,7 @@ async def settings_view(request: Request):
             saved=request.query_params.get("saved"),
             reset_done=request.query_params.get("reset"),
             error=request.query_params.get("error"),
+            ha_key_rotated=request.query_params.get("ha_key_rotated"),
             active_page="settings"),
     )
 
@@ -3070,18 +3107,68 @@ async def settings_save(request: Request):
     patch_raw["reconcile_interval_seconds"] = (form.get("reconcile_interval_seconds") or "").strip()
     patch_raw["schedule_mode"] = (form.get("schedule_mode") or "").strip()
     patch_raw["allocation_strategy"] = (form.get("allocation_strategy") or "").strip()
+    # HA 卡片 8 键
+    patch_raw["ha.mode"] = (form.get("ha.mode") or "").strip()
+    patch_raw["ha.peer_url"] = (form.get("ha.peer_url") or "").strip()
+    patch_raw["ha.heartbeat_interval_seconds"] = (form.get("ha.heartbeat_interval_seconds") or "").strip()
+    patch_raw["ha.lease_ttl_seconds"] = (form.get("ha.lease_ttl_seconds") or "").strip()
+    patch_raw["ha.activation_buffer_seconds"] = (form.get("ha.activation_buffer_seconds") or "").strip()
+    patch_raw["ha.snapshot_interval_seconds"] = (form.get("ha.snapshot_interval_seconds") or "").strip()
+    patch_raw["ha.failback_grace_seconds"] = (form.get("ha.failback_grace_seconds") or "").strip()
+    # ha.key 只读不收（用户不能表单覆盖）；唯一写入路径是 /ha/key/regenerate
 
-    # 滤掉空字符串的“未填”键（notify_webhook 允许空以清空）
+    # 滤掉空字符串的"未填"键（notify_webhook 与 ha.peer_url 允许空以清空）
     patch: dict[str, object] = {}
     for k, v in patch_raw.items():
-        if k == "notify_webhook":
+        if k in ("notify_webhook", "ha.peer_url"):
             patch[k] = v
         elif isinstance(v, str) and v == "":
             continue
         else:
             patch[k] = v
 
+    # HA 校验：mode ∈ 允许值；切 primary 且 key 仍空 → 自动生成；切 backup → 必填 url+key
+    from seatbot.ha import HA_MODES, generate_ha_key
+    ha_errors: dict[str, str] = {}
+    if "ha.mode" in patch:
+        mode = patch["ha.mode"]
+        if mode not in HA_MODES:
+            ha_errors["ha.mode"] = "HA 模式必须是 standalone / primary / backup 之一"
+        else:
+            existing_key = await store.get_setting("ha.key")
+            existing_peer = await store.get_setting("ha.peer_url")
+            if mode == "primary" and not existing_key:
+                patch["ha.key"] = generate_ha_key()
+            if mode == "backup":
+                if not (patch.get("ha.peer_url") or existing_peer):
+                    ha_errors["ha.peer_url"] = "备用模式必须填写对端地址"
+                if not existing_key and not (patch.get("ha.key")):
+                    ha_errors["ha.key"] = "备用模式必须填写共享密钥（请使用重新生成 key）"
+
+    # HA 数值键合法性
+    def _int_ok(name: str, lo: int, hi: int) -> None:
+        raw = patch.get(name)
+        if raw is None or raw == "":
+            return
+        try:
+            v = int(str(raw).strip())
+        except (TypeError, ValueError):
+            ha_errors[name] = f"{name} 必须是整数"
+            return
+        if v < lo or v > hi:
+            ha_errors[name] = f"{name} 应在 [{lo}, {hi}] 秒之间"
+
+    _int_ok("ha.heartbeat_interval_seconds", 1, 600)
+    _int_ok("ha.lease_ttl_seconds", 10, 3600)
+    _int_ok("ha.activation_buffer_seconds", 0, 3600)
+    _int_ok("ha.snapshot_interval_seconds", 10, 86400)
+    _int_ok("ha.failback_grace_seconds", 10, 3600)
+
     errors = _settings.validate_all(patch)
+    # 剥离 ha.* 键（validate_all 只认 DEFAULTS；HA 键走 ha_errors + coerce_for_storage）
+    non_ha_patch = {k: v for k, v in patch.items() if not k.startswith("ha.")}
+    errors = _settings.validate_all(non_ha_patch)
+    errors.update(ha_errors)
     # 交叉：单段不应超过日限额（用有效值二次校验）
     if not errors:
         try:
@@ -3122,6 +3209,17 @@ async def settings_save(request: Request):
             await sched.load_runtime_settings()
         except Exception:
             pass
+    # HA 配置变更：runtime 重新加载 + 触发一次快照推送（仅主力 active）
+    try:
+        from seatbot.ha import load_ha_config
+        ha = getattr(request.app.state, "ha", None)
+        if ha is not None and hasattr(ha, "apply_config"):
+            new_cfg = await load_ha_config(store)
+            ha.apply_config(new_cfg)
+            if hasattr(ha, "request_snapshot") and ha.mode == "primary":
+                ha.request_snapshot()
+    except Exception:
+        pass
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 
@@ -3135,7 +3233,39 @@ async def settings_reset(request: Request):
             await sched.load_runtime_settings()
         except Exception:
             pass
+    # 重新引导 HA 默认（清空自定义 key 后必须重新生成）
+    try:
+        from seatbot.ha import ensure_ha_bootstrap
+        await ensure_ha_bootstrap(store)
+    except Exception:
+        pass
     return RedirectResponse("/settings?reset=1", status_code=303)
+
+
+@router.post("/ha/key/regenerate")
+async def ha_key_regenerate(request: Request):
+    """面板鉴权：重新生成 ha.key。两端 key 必须同步换。"""
+    store = request.app.state.store
+    from seatbot.ha import generate_ha_key
+    new_key = generate_ha_key()
+    await store.set_settings({"ha.key": new_key})
+    try:
+        await store.add_notification(
+            "HA 共享密钥已重新生成",
+            "旧密钥立即失效，请在对端面板同步更新（设置 → 高可用 → 共享密钥）。",
+            level="warn",
+        )
+    except Exception:
+        pass
+    # runtime reload
+    try:
+        ha = getattr(request.app.state, "ha", None)
+        if ha is not None and hasattr(ha, "apply_config"):
+            from seatbot.ha import load_ha_config
+            ha.apply_config(await load_ha_config(store))
+    except Exception:
+        pass
+    return RedirectResponse("/settings?ha_key_rotated=1", status_code=303)
 
 
 
