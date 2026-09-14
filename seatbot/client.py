@@ -717,14 +717,6 @@ class ChaoxingClient:
             if r.get("status") == self.RESERVE_STATUS_SUPERVISED
         ]
 
-    async def verify_session(self) -> bool:
-        """验证当前会话在办公端座位系统是否有效。"""
-        try:
-            await self.reserve_list(page_size=1)
-            return True
-        except Exception:
-            return False
-
     # ---------- occupancy lookup ----------
     async def get_used_times(
         self,
