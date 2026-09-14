@@ -14,6 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.config import Config
+from seatbot.ha import NullHaRuntime
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.planner import ReservationPlanner
 from seatbot.store import StateStore
@@ -87,6 +88,9 @@ class Scheduler:
         self._bootstrap_gate = asyncio.Lock()
         self._relogin_cooldown: dict[str, float] = {}  # account_id -> monotonic timestamp
         self._relogin_fail_count: dict[str, int] = {}  # account_id -> consecutive fail count
+        # HA 闸门：默认 NullHaRuntime（can_act 永真），主备模式下换成 HaRuntime
+        self.ha = NullHaRuntime()
+        self._ha_notify_at: dict[str, float] = {}  # action -> last notify monotonic
 
     async def load_runtime_settings(self) -> dict[str, object]:
         try:
@@ -129,6 +133,43 @@ class Scheduler:
             if cur is not None and cur == int(self.tick_interval_seconds):
                 return
             self.scheduler.reschedule_job("sync_jobs", trigger="interval", seconds=int(self.tick_interval_seconds))
+        except Exception:
+            pass
+
+    def _ha_blocked(self, action: str) -> bool:
+        """闸门：返回 True 表示本次真实动作必须被拦截。
+
+        拦截时：限频（每 10 分钟最多一条通知）写一条 warn 日志与通知，
+        不写任务状态，避免污染审计线索。
+        """
+        try:
+            if self.ha.can_act():
+                return False
+        except Exception:
+            return False
+        now = _time.monotonic()
+        last = self._ha_notify_at.get(action, 0.0)
+        if now - last >= 600:
+            self._ha_notify_at[action] = now
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(self._notify_ha_blocked(action))
+                else:
+                    # 同步回退：直接落日志
+                    print(f"[INFO] scheduler - ha-blocked {action}")
+            except Exception:
+                pass
+        return True
+
+    async def _notify_ha_blocked(self, action: str) -> None:
+        try:
+            await self._notify(
+                f"调度动作被拦截（{action}）",
+                "当前实例不在可调度状态（HA 闸门）；待命备用或暂停主力不会执行真实操作。",
+                level="warn",
+            )
         except Exception:
             pass
 
@@ -334,6 +375,8 @@ class Scheduler:
         每个监督回合: 首次检测写日志并发 warn 通知, 解除成功写日志、
         发 info 通知并将匹配到的本地 ACTIVE 任务置 SIGNED; 解除失败保持下轮重试。
         """
+        if self._ha_blocked("supervision"):
+            return
         client = await self.client_ready(acc)
         if not client.cookies():
             return
@@ -525,6 +568,8 @@ class Scheduler:
         submit 成功后 task.status = ACTIVE, store 存 reserve_id。
         sign 由 _run_sign 在时段开始后再调用。
         """
+        if self._ha_blocked("submit"):
+            return
         await self.store.update_task_status(t.id, TaskStatus.SUBMITTING)
         client = await self.client_ready(acc)
 
@@ -789,6 +834,8 @@ class Scheduler:
 
     async def _run_sign(self, acc: Account, t: Task) -> None:
         """签到 (幂等: 成功或签到窗口已过 → SIGNED, 终止每分钟重试)。"""
+        if self._ha_blocked("sign"):
+            return
         if not t.reserve_id:
             await self._warn(f"跳过签到: 无预约号 座位={t.seat_num} {t.chunk_key()}", acc.id)
             return
@@ -859,6 +906,8 @@ class Scheduler:
         /leave 是"暂离", 硬性要求剩余 ≥20min, 仅在剩余充足时作为回退通道 —
         临近结束回退暂离必然失败, 且其"剩余不足"消息会命中幂等收尾, 掐断重试。
         """
+        if self._ha_blocked("leave"):
+            return
         if not t.reserve_id:
             await self._warn(f"跳过签退: 无预约号 座位={t.seat_num} {t.chunk_key()}", acc.id)
             # ★ 从未预约成功的任务不应伪装 COMPLETE (虚假完成态会误导审计)
@@ -1041,6 +1090,8 @@ class Scheduler:
 
     async def _today_backfill_locked(self, now: datetime) -> None:
         """补提交当日时段完全未开始的 PENDING 任务（调用方已持 _bootstrap_gate）。"""
+        if self._ha_blocked("submit"):
+            return
         today = today_cst()
         accounts = {a.id: a for a in await self.store.list_accounts()}
         n_ok = n_skip = 0
@@ -1582,6 +1633,8 @@ class Scheduler:
         失败任务可能撞账号周违约上限, 自动重试会追加违约记录, 必须人工确认。
         14:00–14:05 之间不补 (该窗口属于常驻进程的 cron, 避免双跑竞态)。
         """
+        if self._ha_blocked("submit"):
+            return
         now = now_cst()
         if now.hour < 14 or (now.hour == 14 and now.minute < 5):
             return
@@ -1684,6 +1737,9 @@ class Scheduler:
           - 失败的 task 状态保持 PENDING (让明天的 _afternoon_bootstrap 重试)
           - 显式 ERROR 日志
         """
+        if self._ha_blocked("submit"):
+            return
+
         from datetime import timedelta
         from seatbot.models import TaskStatus
         tomorrow = today_cst() + timedelta(days=1)
