@@ -56,7 +56,7 @@ def validate_manual_submission(
     close_time: str,
     now: datetime,
 ) -> list[str]:
-    """手动预约提交前的 9 条硬约束校验。
+    """手动预约提交前的 8 条硬约束校验（矩阵占用仅拦未来日）。
 
     入参均为纯数据；调用方负责把 ``existing_tasks`` 过滤为当日非终态任务
     （status ∈ {pending, ready, submitting, active, signed, leaving}；任务元素
@@ -109,26 +109,23 @@ def validate_manual_submission(
             f"账号当日已排 {used_h:g}h，加本段 {duration_h:g}h "
             f"将超每日限额 {daily_limit_hours:g}h")
 
-    same_seat_tasks = [t for t in existing_tasks if getattr(t, "seat_num", "") == sn]
-    if same_seat_tasks:
-        issues.append("该账号当日同座位已有任务，勿重复提交")
-
     if cross_seat_clash:
         issues.append("该时段与账号当日其他座位的任务时间重叠")
 
-    wd = weekday_key(day)
-    matrix_overlap = False
-    try:
-        windows = matrix_windows(seat_slots, wd)
-    except ValueError as exc:
-        issues.append(f"守护矩阵解析失败: {exc}")
-        windows = []
-    for _ms, ms, me, _h in windows:
-        if _overlaps(start, end, ms, me):
-            matrix_overlap = True
-            break
-    if matrix_overlap:
-        issues.append("该时段已被守护矩阵占用（/manual 仅支持矩阵之外）")
+    if day > now.date():
+        wd = weekday_key(day)
+        matrix_overlap = False
+        try:
+            windows = matrix_windows(seat_slots, wd)
+        except ValueError as exc:
+            issues.append(f"守护矩阵解析失败: {exc}")
+            windows = []
+        for _ms, ms, me, _h in windows:
+            if _overlaps(start, end, ms, me):
+                matrix_overlap = True
+                break
+        if matrix_overlap:
+            issues.append("该时段已被守护矩阵占用（将由系统自动预约，仅支持矩阵之外时段）")
 
     if day == now.date():
         deadline = now.replace(

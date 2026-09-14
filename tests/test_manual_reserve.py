@@ -35,6 +35,7 @@ from seatbot.models import (
 )
 from seatbot.reconcile import diff_user_reserved, parse_reservations, plan_adoption
 from seatbot.utils.timeutil import at_cst, today_cst
+from seatbot.utils.weekly import weekday_key
 from seatbot.web.app import new_templates
 from seatbot.web.routes import _safe_next, router
 
@@ -208,24 +209,29 @@ def test_rule6_cross_seat_overlap():
     assert any("时间重叠" in s for s in issues)
 
 
-def test_rule7_one_segment_per_seat_per_day():
+def test_rule7_same_seat_second_segment_allowed():
     existing = [_task(1, "a1", "021", "08:00", "09:00", TaskStatus.ACTIVE, DAY)]
     issues = validate_manual_submission(
         **_base_kwargs(existing_tasks=existing,
-                       start=time(10, 0), end=time(11, 0), seat_num="021"),
-    )
-    assert any("同座位已有任务" in s for s in issues)
+                       start=time(10, 0), end=time(11, 0), seat_num="021"))
+    assert not issues
 
 
-def test_rule8_excludes_matrix_slot():
-    seat_slots = {"021": {"mon": ["09:00-11:00"]}} if DAY.weekday() == 0 else None
-    if seat_slots is None:
-        pytest.skip("非周一，跳过")
+def test_rule8_matrix_slot_blocked_only_for_future_day():
+    tomorrow = DAY.fromordinal(DAY.toordinal() + 1)
+    today_slots = {"021": {weekday_key(DAY): ["09:00-11:00"]}}
+    # 今天：矩阵时段已实体化为任务（或已 failed），允许手动补约
     issues = validate_manual_submission(
-        **_base_kwargs(seat_slots=seat_slots,
-                       start=time(10, 0), end=time(11, 0), seat_num="021"),
-    )
-    assert any("守护矩阵" in s for s in issues)
+        **_base_kwargs(seat_slots=today_slots,
+                       start=time(9, 0), end=time(10, 0), seat_num="021"))
+    assert not any("守护矩阵" in s for s in issues)
+    # 明天（14:00 后窗口开放）：矩阵时段仍拦截，避免与 14:00 批量提交撞车
+    tomorrow_slots = {"021": {weekday_key(tomorrow): ["09:00-11:00"]}}
+    issues2 = validate_manual_submission(
+        **_base_kwargs(day=tomorrow, seat_slots=tomorrow_slots,
+                       start=time(9, 0), end=time(10, 0), seat_num="021",
+                       now=at_cst(DAY, time(14, 30))))
+    assert any("守护矩阵" in s for s in issues2)
 
 
 def test_rule9_sign_deadline_today():
