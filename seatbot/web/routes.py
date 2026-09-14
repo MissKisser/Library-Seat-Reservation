@@ -3213,15 +3213,26 @@ async def settings_save(request: Request):
             await sched.load_runtime_settings()
         except Exception:
             pass
-    # HA 配置变更：runtime 重新加载 + 触发一次快照推送（仅主力 active）
+    # HA 配置变更：runtime 重新加载 + 触发一次快照推送（仅主力 active）+ 动态拉起 supervisor
     try:
-        from seatbot.ha import load_ha_config
+        from seatbot.ha import load_ha_config, run_ha_supervisor
         ha = getattr(request.app.state, "ha", None)
         if ha is not None and hasattr(ha, "apply_config"):
             new_cfg = await load_ha_config(store)
             ha.apply_config(new_cfg)
             if hasattr(ha, "request_snapshot") and ha.mode == "primary":
                 ha.request_snapshot()
+            if new_cfg.mode in ("primary", "backup"):
+                sup_task = getattr(request.app.state, "ha_supervisor_task", None)
+                if sup_task is None or sup_task.done():
+                    request.app.state.ha_supervisor_task = asyncio.create_task(
+                        run_ha_supervisor(store, sched, new_cfg, ha)
+                    )
+            elif new_cfg.mode == "standalone":
+                sup_task = getattr(request.app.state, "ha_supervisor_task", None)
+                if sup_task is not None and not sup_task.done():
+                    sup_task.cancel()
+                    request.app.state.ha_supervisor_task = None
     except Exception:
         pass
     return RedirectResponse("/settings?saved=1", status_code=303)
