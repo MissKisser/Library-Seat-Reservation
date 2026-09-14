@@ -84,8 +84,9 @@ def _ha_get(port: int, path: str, with_key: bool = True) -> tuple[int, dict | No
     url = f"http://127.0.0.1:{port}{path}"
     headers = {"X-HA-Key": KEY} if with_key else {}
     req = urllib.request.Request(url, method="GET", headers=headers)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with opener.open(req, timeout=5) as r:
             return r.status, json.loads(r.read().decode("utf-8") or "null")
     except urllib.error.HTTPError as e:
         try:

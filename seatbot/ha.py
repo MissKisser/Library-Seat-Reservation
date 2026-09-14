@@ -309,7 +309,7 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
         payload = {}
         if peer:
             try:
-                async with httpx.AsyncClient(timeout=5) as c:
+                async with httpx.AsyncClient(timeout=5, trust_env=False) as c:
                     r = await c.post(
                         f"{peer}/api/ha/bk/heartbeat",
                         headers={"X-HA-Key": runtime.cfg.key},
@@ -400,7 +400,7 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
     if not peer:
         return
     try:
-        async with httpx.AsyncClient(timeout=5) as c:
+        async with httpx.AsyncClient(timeout=5, trust_env=False) as c:
             r = await c.post(
                 f"{peer}/api/ha/bk/heartbeat",
                 headers={"X-HA-Key": runtime.cfg.key},
@@ -427,7 +427,7 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
         if now - last >= ttl:
             # 公网自检：GET /api/ha/status
             try:
-                async with httpx.AsyncClient(timeout=5) as c:
+                async with httpx.AsyncClient(timeout=5, trust_env=False) as c:
                     r = await c.get(
                         f"{peer}/api/ha/status",
                         headers={"X-HA-Key": runtime.cfg.key},
@@ -469,7 +469,7 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
         try:
             from seatbot.ha_sync import build_snapshot
             payload, _ = await build_snapshot(store)
-            async with httpx.AsyncClient(timeout=15) as c:
+            async with httpx.AsyncClient(timeout=15, trust_env=False) as c:
                 r = await c.post(
                     f"{peer}/api/ha/bk/snapshot",
                     headers={"X-HA-Key": runtime.cfg.key},
@@ -560,7 +560,7 @@ async def _push_restore_loop(store, runtime: HaRuntime) -> None:
     while runtime.now() < deadline and runtime.backup_state == "failback_pending":
         try:
             payload, _ = await build_snapshot(store)
-            async with httpx.AsyncClient(timeout=15) as c:
+            async with httpx.AsyncClient(timeout=15, trust_env=False) as c:
                 r = await c.post(
                     f"{peer}/api/ha/restore",
                     headers={"X-HA-Key": runtime.cfg.key},
