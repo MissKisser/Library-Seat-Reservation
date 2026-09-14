@@ -261,3 +261,89 @@ async def test_primary_demotes_to_warming_on_active_backup_heartbeat(fake_peer, 
         assert rt.active_since is None
     finally:
         await store.close()
+
+
+# ---------- Task 8: 备用看门狗 ----------
+
+async def test_backup_activates_on_silence(fake_peer, tmp_path):
+    """心跳静默超 TTL+buffer → standby→active。"""
+    from seatbot import ha as _ha
+    from seatbot.ha import HaConfig, HaRuntime, _backup_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "b.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "backup"
+        rt.backup_state = "standby"
+        rt.last_heartbeat_seen = 0.0
+        rt.boot_monotonic = 0.0
+        rt.cfg = HaConfig(
+            mode="backup", key="K", instance_id="backup-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        # 假时钟：当前 1000（> ttl+buffer=150）
+        rt._clock = lambda: 1000.0
+        sched = type("S", (), {})()
+        await _backup_tick(store, sched, rt)
+        assert rt.backup_state == "active"
+        assert rt.active_since == 1000.0
+    finally:
+        await store.close()
+
+
+async def test_failback_pending_reactivates_after_grace(fake_peer, tmp_path):
+    """failback_pending 超 grace → 重新接管 active。"""
+    from seatbot import ha as _ha
+    from seatbot.ha import HaConfig, HaRuntime, _backup_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "b.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "backup"
+        rt.backup_state = "failback_pending"
+        rt.last_primary_contact = 0.0
+        rt._clock = lambda: 10000.0
+        rt.cfg = HaConfig(
+            mode="backup", key="K", instance_id="backup-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        sched = type("S", (), {})()
+        await _backup_tick(store, sched, rt)
+        assert rt.backup_state == "active"
+    finally:
+        await store.close()
+
+
+async def test_standby_remains_when_recent_heartbeat(fake_peer, tmp_path):
+    """心跳新 → 维持 standby。"""
+    from seatbot import ha as _ha
+    from seatbot.ha import HaConfig, HaRuntime, _backup_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "b.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "backup"
+        rt.backup_state = "standby"
+        rt.last_heartbeat_seen = 1000.0
+        rt._clock = lambda: 1010.0  # 仅过去 10s
+        rt.cfg = HaConfig(
+            mode="backup", key="K", instance_id="backup-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        sched = type("S", (), {})()
+        await _backup_tick(store, sched, rt)
+        assert rt.backup_state == "standby"
+    finally:
+        await store.close()
