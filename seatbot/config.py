@@ -14,8 +14,8 @@ class LibraryConfig(BaseModel):
     open_time: str = "08:00"
     close_time: str = "22:00"
     max_reserve_hours: float = 2.0
-    #: 每个账号每天累计预约时长上限（超星每日限额）
-    daily_reserve_hours_limit: float = 5.0
+    #: 每个账号每天累计预约时长上限（可在设置页按馆方规则调整）
+    daily_reserve_hours_limit: float = 14.0
 
     @field_validator("open_time", "close_time")
     @classmethod
