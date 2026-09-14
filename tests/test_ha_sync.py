@@ -86,3 +86,13 @@ async def test_payload_is_valid_gzip(src_store):
     import io
     with gzip.GzipFile(fileobj=io.BytesIO(payload)) as gz:
         gz.read()
+
+async def test_apply_rejects_schema_fingerprint_mismatch(src_store, dst_store):
+    """当接收端数据库包含不同表结构时，快照应用必须抛出 HaSnapshotError 拒绝。"""
+    payload, _ = await build_snapshot(src_store)
+    await dst_store.db.execute("ALTER TABLE accounts ADD COLUMN extra_test_col TEXT")
+    await dst_store.db.commit()
+
+    with pytest.raises(HaSnapshotError) as exc_info:
+        await apply_snapshot(dst_store, payload)
+    assert "schema fingerprint mismatch" in str(exc_info.value)
