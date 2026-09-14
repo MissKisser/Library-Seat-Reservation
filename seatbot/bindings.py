@@ -398,7 +398,7 @@ def auto_assign(
     for seat in sorted(desired):
         for wd in WEEKDAY_KEYS:
             for want in desired[seat].get(wd, []):
-                if any(matrices[aid].get(seat, {}).get(wd) == [want]
+                if any(want in matrices[aid].get(seat, {}).get(wd, [])
                        for aid in matrices):
                     continue
                 try:
@@ -421,14 +421,13 @@ def auto_assign(
         wd, seat, want, ws, we, wh = jobs[i]
         cands = sorted(
             (a for a in accounts
-             if not matrices[a.id].get(seat, {}).get(wd)
-             and used[a.id][wd] + wh <= daily_limit_hours + eps
+             if used[a.id][wd] + wh <= daily_limit_hours + eps
              and not any(ws < e and s < we for s, e in windows[a.id][wd])),
             key=lambda a: ((used[a.id][wd], a.id) if mode == "safe"
                            else (-used[a.id][wd], a.id)),
         )
         for a in cands:
-            matrices[a.id].setdefault(seat, {})[wd] = [want]
+            matrices[a.id].setdefault(seat, {}).setdefault(wd, []).append(want)
             used[a.id][wd] += wh
             windows[a.id][wd].append((ws, we))
             plan.append((wd, seat, want, a.id))
@@ -436,14 +435,17 @@ def auto_assign(
             plan.pop()
             windows[a.id][wd].pop()
             used[a.id][wd] -= wh
-            matrices[a.id][seat].pop(wd, None)
+            lst = matrices[a.id][seat][wd]
+            lst.remove(want)
+            if not lst:
+                matrices[a.id][seat].pop(wd, None)
         dfs(i + 1, plan)
 
     dfs(0, [])
 
     filled = {(wd, seat, want): aid for wd, seat, want, aid in best["plan"]}
     for (wd, seat, want, _aid) in best["plan"]:
-        matrices[_aid].setdefault(seat, {})[wd] = [want]
+        matrices[_aid].setdefault(seat, {}).setdefault(wd, []).append(want)
     unfillable = [
         f"{WEEKDAY_LABELS[wd]}{seat} {want}：无可用账号（余量不足或时段冲突）"
         for wd, seat, want, _, _, _ in jobs if (wd, seat, want) not in filled
