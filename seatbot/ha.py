@@ -253,6 +253,11 @@ async def run_ha_supervisor(store, sched, cfg: HaConfig, runtime: HaRuntime) -> 
     raise NotImplementedError("实装见 Task 7/8")
 
 
+async def _push_restore_loop(store, runtime: HaRuntime) -> None:
+    """占位：Task 8 实装真正的循环。"""
+    return None
+
+
 __all__ = [
     "HA_MODES",
     "HA_DEFAULTS",
