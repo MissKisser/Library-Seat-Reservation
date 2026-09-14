@@ -158,6 +158,55 @@ class PanelAuthMiddleware(BaseHTTPMiddleware):
         return response
 
 
+# ----- HA: 备用待命期写保护 -----
+
+WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+
+
+class HaWriteGuardMiddleware(BaseHTTPMiddleware):
+    """备用实例待命期（mode==backup and backup_state==standby）拦截写请求。
+
+    豁免:
+      - /api/ha/* 控制面（前置已豁免 PanelAuth；中间件保留豁免以防双层挂载误判）
+      - /settings（必须能改自己的 HA 配置）
+      - GET / HEAD / OPTIONS
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        try:
+            ha = getattr(request.app.state, "ha", None)
+        except Exception:
+            ha = None
+        if ha is None:
+            return await call_next(request)
+        try:
+            standby = (ha.mode == "backup" and ha.backup_state == "standby")
+        except Exception:
+            standby = False
+        if not standby:
+            return await call_next(request)
+        if request.method.upper() not in WRITE_METHODS:
+            return await call_next(request)
+        path = request.url.path or ""
+        if path.startswith("/api/ha/"):
+            return await call_next(request)
+        if path == "/settings" or path.startswith("/settings/"):
+            return await call_next(request)
+        # API 路径 → JSON；表单路径 → 303 重定向回来源页
+        if path.startswith("/api/") or path.endswith(".json"):
+            from starlette.responses import JSONResponse as _JR
+            return _JR(
+                {"detail": "备用待命期禁止写入操作；请切到主力或等待自动回切。"},
+                status_code=409,
+            )
+        # 表单提交 → 重定向回 referer（若有）否则首页
+        from urllib.parse import quote
+        referer = request.headers.get("referer") or "/"
+        target = f"{referer}?ha_readonly=1"
+        from starlette.responses import RedirectResponse as _RR
+        return _RR(url=target, status_code=303)
+
+
 _STATIC_DIR = TEMPLATES_DIR.parent / "static"
 
 
