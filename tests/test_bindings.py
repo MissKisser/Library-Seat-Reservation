@@ -5,12 +5,14 @@ import pytest
 
 from seatbot.bindings import (
     account_margins,
+    add_day_slot,
     auto_assign,
     candidate_accounts,
     desired_slots_of,
     matrix_windows,
     rebind_candidates_for_days,
     rebind_matrices,
+    remove_day_slot,
     set_day_slots,
     used_hours,
     validate_matrix,
@@ -163,6 +165,14 @@ def test_candidate_accounts_excludes_cross_seat_overlap_same_day():
         exclude_id="nobody", daily_limit_hours=5.0, weekday="tue")
     assert [c["id"] for c in out_tue] == ["a"]
 
+
+def test_candidate_accounts_allows_same_seat_nonoverlap():
+    from datetime import time as _t
+    accs = [_acc("a", {"001": {"mon": ["09:00-11:00"]}})]
+    out = candidate_accounts(
+        accs, seat="001", start=_t(14, 0), end=_t(16, 0),
+        exclude_id="nobody", daily_limit_hours=8.0, weekday="mon")
+    assert [c["id"] for c in out] == ["a"]
 
 # ---------- auto_assign ----------
 
@@ -389,7 +399,7 @@ def test_rebind_candidates_requires_every_day():
     assert [c["id"] for c in out] == ["free"]
 
 
-def test_rebind_candidates_excludes_source_and_full_accounts():
+def test_rebind_candidates_same_seat_nonoverlap_eligible():
     accs = [
         _acc("src", {"001": {"mon": ["09:00-11:00"]}}),
         _acc("same_seat", {"001": {"mon": ["13:00-15:00"]}}),
@@ -399,7 +409,8 @@ def test_rebind_candidates_excludes_source_and_full_accounts():
     out = rebind_candidates_for_days(
         accs, seat="001", rng="09:00-11:00", weekdays=["mon"],
         source_id="src", daily_limit_hours=5.0)
-    assert [c["id"] for c in out] == ["ok"]
+    # same_seat：同座 13:00-15:00 与 09:00-11:00 不重叠 → 现在可接手
+    assert [c["id"] for c in out] == ["ok", "same_seat"]
 
 
 def test_rebind_candidates_rejects_bad_range():
@@ -443,6 +454,27 @@ def test_rebind_matrices_drops_empty_seat_entry():
         max_seg_hours=2.0, daily_limit_hours=5.0)
     assert "001" not in src_m
 
+
+def test_rebind_matrices_appends_to_dst_existing_slots():
+    src = _acc("src", {"001": {"mon": ["09:00-11:00"]}})
+    dst = _acc("dst", {"001": {"mon": ["14:00-16:00"]},
+                       "002": {"mon": ["19:00-21:00"]}})
+    src_m, dst_m = rebind_matrices(
+        src, dst, seat="001", rng="09:00-11:00", weekdays=["mon"],
+        max_seg_hours=2.0, daily_limit_hours=8.0)
+    assert src_m.get("001", {}).get("mon", []) == []
+    assert dst_m["001"]["mon"] == ["14:00-16:00", "09:00-11:00"]
+    assert dst_m["002"]["mon"] == ["19:00-21:00"]
+
+
+def test_rebind_matrices_keeps_src_other_slots_same_seat_day():
+    src = _acc("src", {"001": {"mon": ["09:00-11:00", "14:00-16:00"]}})
+    dst = _acc("dst", {})
+    src_m, dst_m = rebind_matrices(
+        src, dst, seat="001", rng="09:00-11:00", weekdays=["mon"],
+        max_seg_hours=2.0, daily_limit_hours=8.0)
+    assert src_m["001"]["mon"] == ["14:00-16:00"]
+    assert dst_m["001"]["mon"] == ["09:00-11:00"]
 
 def test_rebind_candidates_empty_when_slot_over_max_seg():
     """时段本身超过单段上限 → 无候选（避免列出必然被拒的账号）。"""

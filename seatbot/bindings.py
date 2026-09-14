@@ -64,6 +64,23 @@ def set_day_slots(
         result.pop(seat, None)
     return result
 
+def add_day_slot(matrix: dict | None, seat: str, wd: str, rng: str) -> dict:
+    """返回新矩阵：把 rng 追加到 seat 在 wd 的时段列表末尾（已存在则原样）。"""
+    cur = _day_ranges(seat, (matrix or {}).get(seat), wd)
+    if rng in cur:
+        return {k: dict(v) if isinstance(v, dict) else list(v or [])
+                for k, v in (matrix or {}).items()}
+    return set_day_slots(matrix, seat, wd, cur + [rng])
+
+
+def remove_day_slot(matrix: dict | None, seat: str, wd: str, rng: str) -> dict:
+    """返回新矩阵：从 seat 在 wd 的时段列表中移除 rng（不存在则原样）。"""
+    cur = _day_ranges(seat, (matrix or {}).get(seat), wd)
+    if rng not in cur:
+        return {k: dict(v) if isinstance(v, dict) else list(v or [])
+                for k, v in (matrix or {}).items()}
+    return set_day_slots(matrix, seat, wd, [r for r in cur if r != rng])
+
 
 def matrix_windows(
     seat_slots: dict | None,
@@ -192,16 +209,13 @@ def candidate_accounts(
     daily_limit_hours: float,
     weekday: str,
 ) -> list[dict]:
-    """某 (星期几, 座位, 时段) 的可改绑账号清单：当天余量够、时段不撞、该座位当天未绑。
-
+    """某 (星期几, 座位, 时段) 的可改绑账号清单：当天余量够、与既有时段（含同座）不撞。
     返回 [{id, remaining_hours}]，按当天余量降序（改绑重试与前端提示共用）。
     """
     dur = _hours(start, end)
     out: list[dict] = []
     for a in accounts:
         if a.id == exclude_id:
-            continue
-        if _day_ranges(seat, (a.seat_slots or {}).get(seat), weekday):
             continue
         if used_hours(a.seat_slots, weekday) + dur > daily_limit_hours + 1e-9:
             continue
@@ -229,8 +243,8 @@ def rebind_candidates(
 ) -> list[dict]:
     """某 (星期几, 座位, 时段) 可接手换绑的账号清单（排除原账号）。
 
-    候选条件即超星硬限制：该座位当天未绑、当天累计 ≤ daily_limit_hours、
-    与该账号其他座位当天时段不重叠；时段本身长于 max_seg_hours 时无候选。
+    候选条件即超星硬限制：当天累计 ≤ daily_limit_hours、与既有时段不重叠、
+    时段本身长于 max_seg_hours 时无候选。
     时段格式非法抛 ValueError。返回 [{id, remaining_hours}]，按当天余量降序。
     """
     try:
@@ -291,7 +305,7 @@ def rebind_matrices(
 ) -> tuple[dict, dict]:
     """把 seat 在 weekdays 各天的 rng 段从 source 迁给 target。
 
-    先构造新矩阵再逐账号校验（每座位每天 1 段、单段 ≤ max_seg_hours、
+    先构造新矩阵再逐账号校验（单段 ≤ max_seg_hours、
     每日累计 ≤ daily_limit_hours、跨座位不重叠），任一方不通过则抛
     ValueError 且两个账号的矩阵都不返回，保证不产生半成品状态。
     """
@@ -301,8 +315,8 @@ def rebind_matrices(
     src_matrix = dict(source.seat_slots or {})
     dst_matrix = dict(target.seat_slots or {})
     for wd in weekdays:
-        dst_matrix = set_day_slots(dst_matrix, seat, wd, [rng])
-        src_matrix = set_day_slots(src_matrix, seat, wd, [])
+        dst_matrix = add_day_slot(dst_matrix, seat, wd, rng)
+        src_matrix = remove_day_slot(src_matrix, seat, wd, rng)
     validate_matrix(
         dst_matrix, max_seg_hours=max_seg_hours,
         daily_limit_hours=daily_limit_hours,
