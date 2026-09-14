@@ -3168,7 +3168,6 @@ async def settings_save(request: Request):
     _int_ok("ha.snapshot_interval_seconds", 10, 86400)
     _int_ok("ha.failback_grace_seconds", 10, 3600)
 
-    errors = _settings.validate_all(patch)
     # 剥离 ha.* 键（validate_all 只认 DEFAULTS；HA 键走 ha_errors + coerce_for_storage）
     non_ha_patch = {k: v for k, v in patch.items() if not k.startswith("ha.")}
     errors = _settings.validate_all(non_ha_patch)

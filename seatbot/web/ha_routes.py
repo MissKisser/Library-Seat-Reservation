@@ -77,10 +77,7 @@ async def bk_state(request: Request, runtime: HaRuntime = Depends(_require_ha_ke
 
 @router.post("/bk/claim")
 async def bk_claim(request: Request, runtime: HaRuntime = Depends(_require_ha_key)) -> dict[str, Any]:
-    """主力→备用：触发 failback_pending + 启动后台 restore 推送循环。
-
-    占位实现（Task 8 实装真正的 _push_restore_loop 协程）；幂等。
-    """
+    """主力通知备用主力已就绪；备用转入 failback_pending 并启动快照回推循环。"""
     try:
         body = await request.json()
     except Exception:
@@ -90,7 +87,7 @@ async def bk_claim(request: Request, runtime: HaRuntime = Depends(_require_ha_ke
     elif runtime.mode == "backup":
         # 已经是 standby 时，claim 不触发任何动作
         pass
-    # 委托真正的后台循环（Task 8 占位实现）
+    # 启动后台快照回推循环
     store = getattr(request.app.state, "store", None)
     sched = getattr(request.app.state, "sched", None)
     if store is not None and sched is not None and runtime.mode == "backup":
