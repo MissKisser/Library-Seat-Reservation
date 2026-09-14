@@ -28,6 +28,7 @@ from seatbot.utils.weekly import (
 from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
+from seatbot.ha import HaRuntime, NullHaRuntime
 from seatbot.models import Account, SeatTarget, Task, TaskStatus, TASK_SOURCE_IMPORT, TASK_SOURCE_MANUAL
 from seatbot.scheduler import NextRelay
 from seatbot.reconcile import AUTO_SYNC_NOTE, pick_read_account
@@ -118,6 +119,28 @@ def _safe_next(value: str | None) -> str | None:
     if not v or not v.startswith("/") or v.startswith("//"):
         return None
     return v
+
+
+def _ha_runtime(request: Request) -> HaRuntime | NullHaRuntime:
+    """取 app.state.ha；缺省 NullHaRuntime（can_act 永真）。"""
+    ha = getattr(request.app.state, "ha", None)
+    if ha is None:
+        ha = NullHaRuntime()
+        request.app.state.ha = ha
+    return ha
+
+
+def _ha_block_or_409(action: str, ha: HaRuntime | NullHaRuntime):
+    """闸门：can_act 为 False → 抛 409（带中文说明，便于前端横幅显示）。"""
+    try:
+        if ha.can_act():
+            return
+    except Exception:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=f"当前实例不在可调度状态（{action} 被拦截）；请检查 HA 模式与状态。",
+    )
 
 
 async def _ctx(request: Request, **extra) -> dict:
@@ -718,6 +741,12 @@ def _overlaps(a1: _dt, a2: _dt, b1: _dt, b2: _dt) -> bool:
 
 async def _signback_task_now(sched, store, acc: Account, t: Task) -> tuple[bool, str]:
     """立即对在约任务执行真签退（signback 通道），返回 (是否成功, 消息)。"""
+    # 闸门：备用待命/暂停主力不应触发真实签退
+    try:
+        if sched is not None and not sched.ha.can_act():
+            return False, "当前实例不在可调度状态（HA 闸门）；签退被拦截。"
+    except Exception:
+        pass
     client = await sched.client_ready(acc)
     try:
         if not client.cookies() and not await sched.login_and_persist(acc, client, "签退登录"):
@@ -2119,6 +2148,7 @@ async def accounts_delete(request: Request, acc_id: str, confirm_force: int = Fo
 @router.post("/accounts/{acc_id}/test-login")
 async def accounts_test_login(request: Request, acc_id: str):
     store = request.app.state.store
+    _ha_block_or_409("账号测试登录", _ha_runtime(request))
     db_acc = await store.get_account(acc_id)
     if not db_acc:
         return JSONResponse({"ok": False, "error": "account not found"}, status_code=404)
@@ -2361,6 +2391,7 @@ async def task_reassign(
 async def task_sign(request: Request, task_id: int):
     sched = request.app.state.sched
     store = request.app.state.store
+    _ha_block_or_409("手动签到", _ha_runtime(request))
     t = await store.get_task(task_id)
     if not t or not t.reserve_id:
         raise HTTPException(400, "no active reservation")
@@ -2383,6 +2414,7 @@ async def task_cancel(
 ):
     sched = request.app.state.sched
     store = request.app.state.store
+    _ha_block_or_409("取消预约", _ha_runtime(request))
     t = await store.get_task(task_id)
     if not t or not t.reserve_id:
         raise HTTPException(400)
@@ -2407,6 +2439,7 @@ async def task_leave(request: Request, task_id: int):
     """手动签退当前时段（内部走 signback 真签退通道，非暂离）。"""
     sched = request.app.state.sched
     store = request.app.state.store
+    _ha_block_or_409("手动签退", _ha_runtime(request))
     t = await store.get_task(task_id)
     if not t or not t.reserve_id:
         raise HTTPException(400, "no active reservation")
@@ -3260,6 +3293,7 @@ async def manual_reserve(
     store = request.app.state.store
     sched = request.app.state.sched
     cfg = request.app.state.cfg
+    _ha_block_or_409("手动预约", _ha_runtime(request))
     if sched is None:
         return RedirectResponse(
             "/manual?error=" + quote("scheduler 未初始化"), status_code=303)
