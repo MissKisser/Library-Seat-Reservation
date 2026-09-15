@@ -764,7 +764,30 @@
 
   /* ===== 移动端侧栏开关 ===== */
   window.mobileNav = function () {
-    return { open: false, toggle() { this.open = !this.open; } };
+    return {
+      open: false,
+      toggle() { this.open = !this.open; },
+      close() { this.open = false; },
+      init() {
+        // Escape 关闭抽屉（仅在打开时监听，避免与确认弹层/输入框冲突）
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && this.open) {
+            e.preventDefault();
+            this.close();
+          }
+        });
+        // 监听抽屉状态变化，body 滚动锁 + aria
+        this.$watch('open', (v) => {
+          if (v) {
+            document.body.style.overflow = 'hidden';
+            this.$root.setAttribute('data-mobile-nav', 'open');
+          } else {
+            document.body.style.overflow = '';
+            this.$root.setAttribute('data-mobile-nav', 'closed');
+          }
+        });
+      },
+    };
   };
 
   /* ===== 系统设置页：检测表单变更，底部保存按钮滚出视口时才浮出悬浮保存条 ===== */

@@ -14,6 +14,8 @@
   'manual': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9"/></svg>',
 } %}
 <div class="app-shell" x-data="mobileNav()" :data-mobile-nav="open ? 'open' : 'closed'">
+  {# ===== 移动端抽屉 backdrop（点击关闭） ===== #}
+  <div class="sidebar-backdrop" @click="close()" x-show="open" aria-hidden="true"></div>
   {# ===== 顶栏 ===== #}
   <header class="app-header">
     <div class="flex items-center gap-2 min-w-0">
