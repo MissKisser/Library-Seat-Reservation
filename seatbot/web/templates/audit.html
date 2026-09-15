@@ -29,7 +29,7 @@
     </div>
     {% if r.error %}<div class="text-xs text-ink-muted">查询失败：{{ r.error }}</div>{% endif %}
     {% if r.tasks %}
-    <table class="w-full text-xs">
+    <table class="w-full text-xs md-only">
       <thead><tr class="text-ink-muted text-left">
         <th class="py-1 pr-3 font-normal">任务</th><th class="py-1 pr-3 font-normal">账号</th>
         <th class="py-1 pr-3 font-normal">时段</th><th class="py-1 pr-3 font-normal">本地状态</th>
@@ -48,6 +48,18 @@
         {% endfor %}
       </tbody>
     </table>
+    {# 移动卡片视图 #}
+    <div class="md-hidden flex flex-col gap-1.5">
+      {% for t in r.tasks %}
+      <div class="flex items-center gap-2 flex-wrap text-xs border-t border-edge-subtle pt-1.5 first:border-0 first:pt-0">
+        <span class="font-mono">#{{ t.id }}</span>
+        <span class="text-ink-secondary">{{ t.account }}</span>
+        <span class="text-ink-secondary">{{ t.win }}</span>
+        <span class="ml-auto text-ink-muted">{{ (t.ratio * 100) | round(0) | int }}%</span>
+        <span class="chip {{ 'chip-success' if not t.bad else 'chip-danger' }}">{{ '一致' if not t.bad else '失守' }}</span>
+      </div>
+      {% endfor %}
+    </div>
     {% endif %}
   </div>
   {% endfor %}
