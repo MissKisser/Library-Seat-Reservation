@@ -46,45 +46,52 @@
 
   {# 状态 banner #}
   {% macro coverage_strip(scope) %}
-  <div class="gantt-strip" data-strip-id="{{ scope }}">
-    <div class="gantt-strip-inner">
-      {# 整点标尺：移动端显示完整刻度（9px），桌面端仅显示整点 #}
-      <div class="gantt-ruler">
-        <div class="gantt-ruler-label"></div>
-        <div class="gantt-cells">
-          <template x-for="c in ({{ scope }}.rows[0]?.cells || [])" :key="'ruler-{{ scope }}-' + c.start">
-            <div class="gantt-ruler-cell"
-                 :class="c.start.endsWith(':00') ? 'is-hour' : ''"
-                 x-text="c.start"></div>
-          </template>
-        </div>
-      </div>
-      <template x-for="row in {{ scope }}.rows" :key="'{{ scope }}-' + row.seat_num">
-        <div class="gantt-row">
-          <div class="gantt-row-label">
-            <div class="font-mono text-xs font-bold text-ink truncate" x-text="row.seat_num"></div>
-            <div class="text-[10px] text-ink-muted truncate" x-text="row.label || '—'"></div>
-          </div>
+  <div class="gantt-strip-wrap">
+    <div class="gantt-strip" data-strip-id="{{ scope }}">
+      <div class="gantt-strip-inner">
+        {# 整点标尺：仅整点显示时间，移动端 2 字符防截断，桌面端完整 #}
+        <div class="gantt-ruler">
+          <div class="gantt-ruler-label"></div>
           <div class="gantt-cells">
-            <template x-for="c in row.cells" :key="'{{ scope }}-' + row.seat_num + '-' + c.start">
-              <div class="gantt-cell"
-                   :class="[
-                     'cell-' + cellStatus(c),
-                     cellUserMark(c) ? 'cell-user-reserved' : '',
-                     cellOthersMark(c) ? 'cell-others-occupied' : '',
-                     cardHit(c) ? 'cell-actionable' : ''
-                   ]"
-                   :title="row.seat_num + ' ' + c.start + '–' + c.end"
-                   @click="openCard('{{ scope }}', row.seat_num, c, $event)">
-                <span style="font-size:10px;line-height:1" x-show="cellUserMark(c)">👤</span>
-                <span style="font-size:10px;line-height:1" x-show="cellOthersMark(c)">🔒</span>
+            <template x-for="c in ({{ scope }}.rows[0]?.cells || [])" :key="'ruler-{{ scope }}-' + c.start">
+              <div class="gantt-ruler-cell" :class="c.start.endsWith(':00') ? 'is-hour' : ''">
+                <template x-if="c.start.endsWith(':00')">
+                  <span class="hidden md:inline" x-text="c.start"></span>
+                </template>
+                <template x-if="c.start.endsWith(':00')">
+                  <span class="md:hidden" x-text="c.start.slice(0, 2)"></span>
+                </template>
               </div>
             </template>
           </div>
         </div>
-      </template>
+        <template x-for="row in {{ scope }}.rows" :key="'{{ scope }}-' + row.seat_num">
+          <div class="gantt-row">
+            <div class="gantt-row-label">
+              <div class="font-mono text-xs font-bold text-ink truncate" x-text="row.seat_num"></div>
+              <div class="text-[10px] text-ink-muted truncate" x-text="row.label || '—'"></div>
+            </div>
+            <div class="gantt-cells">
+              <template x-for="c in row.cells" :key="'{{ scope }}-' + row.seat_num + '-' + c.start">
+                <div class="gantt-cell"
+                     :class="[
+                       'cell-' + cellStatus(c),
+                       cellUserMark(c) ? 'cell-user-reserved' : '',
+                       cellOthersMark(c) ? 'cell-others-occupied' : '',
+                       cardHit(c) ? 'cell-actionable' : ''
+                     ]"
+                     :title="row.seat_num + ' ' + c.start + '–' + c.end"
+                     @click="openCard('{{ scope }}', row.seat_num, c, $event)">
+                  <span style="font-size:10px;line-height:1" x-show="cellUserMark(c)">👤</span>
+                  <span style="font-size:10px;line-height:1" x-show="cellOthersMark(c)">🔒</span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
     </div>
-    <span class="gantt-strip-hint" aria-hidden="true">→</span>
+    <span class="gantt-strip-hint" aria-hidden="true">← 横滑查看</span>
     <div x-show="{{ scope }}.rows.length === 0" class="text-center text-ink-muted p-4">暂无目标座位</div>
   </div>
   {% endmacro %}
