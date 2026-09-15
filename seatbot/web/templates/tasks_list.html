@@ -14,9 +14,9 @@
       <h1 class="page-title">任务看板</h1>
       <p class="page-sub">按状态分列 · 失败卡可直接重试</p>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="page-actions flex items-center gap-2 flex-wrap">
       <a class="btn btn-secondary btn-sm" href="/tasks?day={{ prev_day }}">← 前一天</a>
-      <span class="chip chip-accent font-mono" x-text="day"></span>
+      <span class="chip chip-accent font-mono whitespace-nowrap" x-text="day"></span>
       <a class="btn btn-secondary btn-sm" href="/tasks?day={{ next_day }}">后一天 →</a>
       <button class="btn btn-secondary btn-sm" type="button" @click="refresh()" :disabled="loading"
               x-text="loading ? '刷新中…' : '刷新'"></button>
@@ -72,8 +72,8 @@
         </div>
         <template x-for="t in ofCol(col)" :key="t.id">
           <div class="card p-3" :class="t.status === 'failed' ? 'border-danger/40' : ''">
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-xs font-bold font-mono" x-text="t.seat_num + ' · ' + t.start + '–' + t.end"></span>
+            <div class="flex flex-wrap items-center gap-1 mb-1">
+              <span class="text-xs font-bold font-mono whitespace-nowrap" x-text="t.seat_num + ' · ' + t.start + '–' + t.end"></span>
               <span class="chip" :class="toneOf(t)" x-text="t.status"></span>
               <template x-if="t.source === 'adopt'">
                 <span class="chip chip-accent text-[11px]">实况托管</span>
@@ -90,7 +90,7 @@
             </div>
             <template x-if="t.status === 'failed'">
               <div>
-                <div class="text-xs text-danger mt-1 break-all" x-text="t.last_error || '未知原因'"></div>
+                <div class="text-xs text-danger mt-1 break-words" x-text="t.last_error || '未知原因'"></div>
                 <form method="post" action="/tasks/quick-reserve" class="mt-2">
                   <input type="hidden" name="account_id" :value="t.account_id">
                   <input type="hidden" name="seat_num" :value="t.seat_num">
