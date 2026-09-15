@@ -118,6 +118,7 @@ def _apply_snapshot_sync(store, db_path: str, payload: bytes) -> dict[str, Any]:
         cur = inc_con.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [r[0] for r in cur.fetchall()]
         inc_fp = _compute_schema_fingerprint(inc_con)
+        inc_accounts = _count_rows(inc_con, "accounts")
     finally:
         inc_con.close()
 
@@ -131,6 +132,15 @@ def _apply_snapshot_sync(store, db_path: str, payload: bytes) -> dict[str, Any]:
         raise HaSnapshotError(
             f"schema fingerprint mismatch: incoming={inc_fp[:16]} != live={live_fp[:16]}"
         )
+
+    # 空库覆盖守卫：本地有账号而快照零账号 → 应用等于清空生产数据，必须拒绝
+    live_accounts = _count_rows_sqlite(db_path, "accounts")
+    if live_accounts is not None and inc_accounts is not None:
+        if live_accounts > 0 and inc_accounts == 0:
+            raise HaSnapshotError(
+                "refusing to overwrite non-empty local data with an empty snapshot "
+                "(incoming accounts=0)"
+            )
 
     # 抓取接收端现行 ha.* 键与自有 logs/notifications（保留用）
     live_con = sqlite3.connect(str(db_path), timeout=30)
@@ -245,6 +255,19 @@ def _count_rows(con: sqlite3.Connection, table: str) -> int:
         return int(row[0]) if row else 0
     except sqlite3.OperationalError:
         return 0
+
+
+def _count_rows_sqlite(db_path: str, table: str) -> int | None:
+    """独立连接统计指定表行数；表缺失或不可读时返回 None。"""
+    con = sqlite3.connect(str(db_path), timeout=30)
+    try:
+        cur = con.execute(f"SELECT COUNT(*) FROM {table}")
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        con.close()
 
 
 def _now_ms() -> int:

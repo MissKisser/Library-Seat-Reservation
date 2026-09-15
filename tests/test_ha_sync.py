@@ -119,3 +119,17 @@ async def test_apply_preserves_receiver_notifications_and_logs(src_store, dst_st
     cur = await dst_store.db.execute("SELECT message FROM logs")
     messages = [r[0] for r in await cur.fetchall()]
     assert "backup local log" in messages
+
+async def test_apply_rejects_empty_snapshot_over_nonempty_local(src_store, dst_store):
+    """空库覆盖守卫：本地有账号而快照零账号 → 拒绝应用，防清空生产数据。"""
+    import pytest
+    from seatbot.ha_sync import build_snapshot, apply_snapshot, HaSnapshotError
+    from seatbot.models import Account
+
+    # 本地（dst）放一个账号；来源（src）保持空库
+    await dst_store.upsert_account(Account(id="acc-a", phone="1", password="p", slots=[]))
+    payload, _ = await build_snapshot(src_store)
+    with pytest.raises(HaSnapshotError):
+        await apply_snapshot(dst_store, payload)
+    accounts = await dst_store.list_accounts()
+    assert len(accounts) == 1  # 本地数据未被触碰
