@@ -31,12 +31,12 @@
         {% if seats %}
         <div class="flex flex-col gap-2">
           {% for s in seats %}
-          <div class="flex items-center justify-between gap-3 py-2 border-b border-edge-subtle last:border-0">
-            <div class="flex items-center gap-3">
+          <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-3 py-2 border-b border-edge-subtle last:border-0">
+            <div class="flex items-center gap-3 min-w-0">
               <span class="font-mono font-medium text-sm">{{ s.seat_num }}</span>
-              <span class="text-sm text-ink-secondary">{{ s.label or '—' }}</span>
+              <span class="text-sm text-ink-secondary truncate">{{ s.label or '—' }}</span>
             </div>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap md:shrink-0">
               {% if used_by and used_by.get(s.seat_num) %}
                 <span class="text-xs text-ink-muted">{{ used_by[s.seat_num]|length }} 账号</span>
               {% else %}<span class="text-xs text-ink-muted">未绑定</span>{% endif %}
