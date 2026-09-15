@@ -47,8 +47,8 @@
     </div>
   </div>
 
-  {# 列表 #}
-  <div class="card">
+  {# 列表 - 桌面表格 #}
+  <div class="card md-only">
     <div class="overflow-x-auto">
       <table class="table">
         <thead><tr><th class="num">时间</th><th>级别</th><th>账号</th><th>消息</th></tr></thead>
@@ -62,7 +62,7 @@
               </span>
             </td>
             <td><code>{{ log.account_id or '—' }}</code></td>
-            <td class="font-mono text-xs">{{ log.message }}</td>
+            <td class="font-mono text-xs break-words">{{ log.message }}</td>
           </tr>
           {% else %}
           <tr><td colspan="4">{{ empty(title='暂无日志', hint=(current_day or '') + ' 暂无日志记录') }}</td></tr>
@@ -70,6 +70,25 @@
         </tbody>
       </table>
     </div>
+  </div>
+  {# 列表 - 移动卡片 #}
+  <div class="md-hidden flex flex-col gap-2">
+    {% for log in logs %}
+    <div class="card" data-level="{{ log.level }}" x-show="level === '' || level === '{{ log.level }}'">
+      <div class="card-body flex flex-col gap-1.5 py-3">
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-mono text-xs text-ink-muted whitespace-nowrap">{{ log.ts | epoch_ms }}</span>
+          <span class="badge badge-{% if log.level == 'ERROR' %}danger{% elif log.level == 'WARN' %}warn{% else %}info{% endif %} shrink-0">
+            <span class="dot"></span>{{ log.level }}
+          </span>
+        </div>
+        <div class="text-xs"><code class="text-ink-secondary">{{ log.account_id or '—' }}</code></div>
+        <div class="font-mono text-xs break-words text-ink">{{ log.message }}</div>
+      </div>
+    </div>
+    {% else %}
+    <div class="card"><div class="card-body">{{ empty(title='暂无日志', hint=(current_day or '') + ' 暂无日志记录') }}</div></div>
+    {% endfor %}
   </div>
 </div>
 {% endblock %}
