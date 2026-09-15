@@ -817,24 +817,43 @@
   /* 页面加载后跑 PRG toast + 覆盖条横滚提示自动隐藏 */
   document.addEventListener('DOMContentLoaded', () => {
     if (window.prgToast) window.prgToast();
-    /* 覆盖图横滚条：用户滚动后淡出右侧 → 提示气泡 */
+    /* 覆盖图横滚条：.gantt-strip 是滚动元素，渐隐与提示挂在外层 wrap */
     document.querySelectorAll('.gantt-strip').forEach((strip) => {
-      const hint = strip.querySelector('.gantt-strip-hint');
-      if (!hint) return;
+      const wrap = strip.closest('.gantt-strip-wrap');
+      const hint = wrap ? wrap.querySelector('.gantt-strip-hint') : null;
       const inner = strip.querySelector('.gantt-strip-inner');
-      if (!inner) return;
+      if (!wrap || !inner) return;
+      let scrolledAway = false;
+      /* 双向判定：内容宽度随 Alpine 渲染变化，铺满则收提示与渐隐，变宽则恢复 */
+      const settle = () => {
+        if (strip.scrollWidth <= strip.clientWidth + 1) {
+          wrap.classList.add('is-full');
+          if (hint) hint.style.display = 'none';
+        } else {
+          wrap.classList.remove('is-full');
+          if (hint && !scrolledAway) {
+            hint.style.display = '';
+            hint.style.opacity = '';
+          }
+        }
+      };
       const onScroll = () => {
-        if (inner.scrollLeft > 4) {
+        if (strip.scrollLeft > 4 && hint) {
+          scrolledAway = true;
           hint.style.transition = 'opacity .3s';
           hint.style.opacity = '0';
           strip.removeEventListener('scroll', onScroll);
         }
       };
       strip.addEventListener('scroll', onScroll, { passive: true });
-      // 桌面宽已铺满时直接隐藏提示
-      requestAnimationFrame(() => {
-        if (inner.scrollWidth <= strip.clientWidth + 1) hint.style.display = 'none';
-      });
+      requestAnimationFrame(settle);
+      /* Alpine 渲染行数据后宽度才会到位，监听内容尺寸变化后复检 */
+      if ('ResizeObserver' in window) {
+        new ResizeObserver(settle).observe(inner);
+      } else {
+        setTimeout(settle, 1500);
+        setTimeout(settle, 4000);
+      }
     });
   });
 })();

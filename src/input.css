@@ -262,34 +262,45 @@
 
   /* ===== Gantt 单元 ===== */
   .gantt-wrap { @apply overflow-x-auto rounded-xl border border-edge-subtle; }
-  /* 覆盖图移动变体：横滚容器 + sticky 座位标签 + 边缘渐隐 */
-  .gantt-strip { @apply relative; }
+  /* 覆盖图移动变体：外层 wrap 承载渐隐与提示（不随滚动移动），内层 strip 横向滚动 */
+  .gantt-strip-wrap { @apply relative; }
+  .gantt-strip { @apply overflow-x-auto overscroll-x-contain; -webkit-overflow-scrolling: touch; }
   .gantt-strip-inner { @apply flex flex-col gap-1.5 min-w-max; }
-  .gantt-strip-inner > .gantt-ruler,
-  .gantt-strip-inner > .gantt-row { @apply flex items-center; }
-  .gantt-strip-inner .gantt-ruler-label { @apply shrink-0; width: 4rem; }
-  .gantt-strip-inner .gantt-row-label { @apply sticky left-0 z-[2] shrink-0; width: 4rem; background-color: rgb(var(--bg-table-header-rgb)); }
-  .gantt-strip-inner .gantt-cells { @apply flex; gap: 1px; }
+  .gantt-strip-inner > .gantt-ruler { @apply flex items-center; }
+  .gantt-strip-inner > .gantt-row { @apply flex items-stretch; }
+  .gantt-strip-inner .gantt-ruler-label,
+  .gantt-strip-inner .gantt-row-label {
+    @apply sticky left-0 z-[2] shrink-0 bg-app-table-header;
+    width: 4rem;
+  }
+  .gantt-strip-inner .gantt-row-label { @apply flex flex-col justify-center; }
+  .gantt-strip-inner .gantt-cells { @apply flex min-w-0; flex: 1 1 auto; gap: 1px; }
+  /* 格子弹性：桌面随容器铺满（同旧 flex-1 行为），移动钉在 18px 触发横滚 */
   .gantt-strip-inner .gantt-cell {
     @apply flex items-center justify-center cursor-pointer;
-    width: 18px; height: 1.75rem; border-radius: 3px;
+    flex: 1 0 18px; height: 1.75rem; border-radius: 3px;
   }
   @media (min-width: 768px) {
-    .gantt-strip-inner .gantt-cell { width: 40px; height: 34px; }
+    .gantt-strip-inner .gantt-cell { height: 34px; }
   }
   .gantt-strip-inner .gantt-ruler-cell {
-    @apply text-ink-muted whitespace-nowrap overflow-hidden;
-    font-size: 9px; line-height: 12px; width: 18px; text-align: center;
+    @apply relative text-ink-muted whitespace-nowrap overflow-hidden text-center;
+    flex: 1 0 18px; font-size: 9px; line-height: 12px;
   }
-  @media (min-width: 768px) { .gantt-strip-inner .gantt-ruler-cell { width: 40px; font-size: 10px; } }
+  /* 刻度文本脱离流内：不抬升容器固有宽度（否则桌面会多出约 50px 横滚） */
+  .gantt-strip-inner .gantt-ruler-cell > span {
+    @apply absolute left-0 right-0 top-0 bottom-0 flex items-center justify-center;
+  }
+  @media (min-width: 768px) { .gantt-strip-inner .gantt-ruler-cell { font-size: 10px; } }
   .gantt-strip-inner .gantt-ruler-cell.is-hour { @apply text-ink-secondary; }
-  /* 右缘渐隐提示横滑 */
-  .gantt-strip::after {
+  /* 右缘渐隐提示横滑（挂在 wrap 上） */
+  .gantt-strip-wrap::after {
     content: '';
     @apply pointer-events-none absolute top-0 right-0 bottom-0;
     width: 28px;
-    background: linear-gradient(to left, rgb(var(--bg-app-rgb)) 10%, transparent 100%);
+    background: linear-gradient(to left, rgb(var(--bg-surface-rgb)) 10%, transparent 100%);
   }
+  .gantt-strip-wrap.is-full::after { display: none; }
   /* 滚动提示（仅首次出现，JS 可关闭） */
   .gantt-strip-hint {
     @apply absolute top-2 right-3 text-[10px] font-medium text-accent bg-accent-soft px-2 py-0.5 rounded-full;
