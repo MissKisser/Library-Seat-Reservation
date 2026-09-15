@@ -347,8 +347,8 @@
            rounded-2xl p-3.5;
     box-shadow: var(--shadow-float);
   }
-  .gantt-legend { @apply flex flex-wrap gap-x-4 gap-y-1.5 mt-3 text-xs text-ink-secondary; }
-  .gantt-legend span { @apply inline-flex items-center gap-1.5; }
+  .gantt-legend { @apply grid grid-cols-2 md:flex md:flex-wrap gap-x-3 gap-y-1.5 mt-3 text-xs text-ink-secondary; }
+  .gantt-legend span { @apply inline-flex items-center gap-1.5 min-w-0; }
   .gantt-legend .cell, .gantt-legend .swatch {
     @apply inline-block w-3.5 h-3.5 rounded-sm border border-edge-subtle;
   }
@@ -483,7 +483,6 @@
     }
     .app-shell[data-mobile-nav="open"] .sidebar { @apply translate-x-0; }
     .mobile-toggle { @apply inline-flex; }
-    .stat-grid { @apply grid-cols-1; }
     .dashboard-grid { @apply grid-cols-1; }
     .topbar-clock .next-label,
     .topbar-clock #next-relay-time,

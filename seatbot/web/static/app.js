@@ -814,8 +814,27 @@
     };
   };
 
-  /* 页面加载后跑 PRG toast */
+  /* 页面加载后跑 PRG toast + 覆盖条横滚提示自动隐藏 */
   document.addEventListener('DOMContentLoaded', () => {
     if (window.prgToast) window.prgToast();
+    /* 覆盖图横滚条：用户滚动后淡出右侧 → 提示气泡 */
+    document.querySelectorAll('.gantt-strip').forEach((strip) => {
+      const hint = strip.querySelector('.gantt-strip-hint');
+      if (!hint) return;
+      const inner = strip.querySelector('.gantt-strip-inner');
+      if (!inner) return;
+      const onScroll = () => {
+        if (inner.scrollLeft > 4) {
+          hint.style.transition = 'opacity .3s';
+          hint.style.opacity = '0';
+          strip.removeEventListener('scroll', onScroll);
+        }
+      };
+      strip.addEventListener('scroll', onScroll, { passive: true });
+      // 桌面宽已铺满时直接隐藏提示
+      requestAnimationFrame(() => {
+        if (inner.scrollWidth <= strip.clientWidth + 1) hint.style.display = 'none';
+      });
+    });
   });
 })();
