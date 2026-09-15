@@ -89,6 +89,7 @@ class _FakePeer:
         self.fail_bk: bool = False
         self.fail_all: bool = False
         self.status_response: dict = {"instance_id": "peer-1", "active_since": None}
+        self.status_code: int = 200
         self.heartbeat_response: dict | None = None
         self.raise_exc: Exception | None = None
 
@@ -131,7 +132,7 @@ def fake_peer(monkeypatch):
                     raise peer.raise_exc
                 raise RuntimeError("peer dead")
             if "/api/ha/status" in url:
-                return _Resp(200, peer.status_response)
+                return _Resp(peer.status_code, peer.status_response)
             return _Resp(404, {})
 
     class _Resp:
@@ -363,6 +364,72 @@ async def test_primary_demotes_to_warming_when_tunnel_answered_by_backup(fake_pe
         assert rt.primary_state == "warming"
         assert rt.active_since is None
         assert rt.can_act() is False
+    finally:
+        await store.close()
+
+
+async def test_primary_stays_active_when_selfcheck_http_error(fake_peer, tmp_path):
+    """心跳失败但公网自检有 HTTP 应答（如反代 502，备用进程挂）→ 链路可达，不暂停主力。"""
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "active"
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        rt.last_heartbeat_sent_ok = 0.0
+        fake_peer.fail_bk = True          # /bk/* 挂（备用进程死，反代 502）
+        fake_peer.status_code = 502       # 公网自检有应答但非 200
+        sched = type("S", (), {})()
+        for _ in range(8):
+            await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "active"
+        assert rt.can_act() is True
+    finally:
+        await store.close()
+
+
+async def test_primary_warming_midlife_unreachable_waits_warming_grace(fake_peer, tmp_path):
+    """中途让位进入 warming 后对端不可达：宽限自 warming 进入时刻起算，未超不得兜底转 active。"""
+    from seatbot.ha import HaConfig, HaRuntime, _primary_tick
+    from seatbot.store import StateStore
+
+    store = StateStore(str(tmp_path / "p.db"))
+    await store.init()
+    try:
+        rt = HaRuntime()
+        rt.mode = "primary"
+        rt.primary_state = "warming"
+        rt.boot_monotonic = 0.0            # 进程已运行很久：若锚点用 boot 会立即"超宽限"
+        rt.warming_since = rt.now()        # 刚进入 warming
+        rt.cfg = HaConfig(
+            mode="primary", key="K", instance_id="primary-1",
+            peer_url="http://peer", heartbeat_interval=15,
+            lease_ttl=90, activation_buffer=60,
+            snapshot_interval=300, failback_grace=180,
+        )
+        fake_peer.fail_all = True
+        sched = type("S", (), {})()
+
+        # 刚让位 + 对端不可达：不得立即兜底转 active
+        for _ in range(3):
+            await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "warming"
+        assert rt.can_act() is False
+
+        # warming 已超过宽限 → 兜底接管
+        rt.warming_since = rt.now() - 999
+        await _primary_tick(store, sched, rt)
+        assert rt.primary_state == "active"
+        assert rt.can_act() is True
     finally:
         await store.close()
 
