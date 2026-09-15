@@ -139,6 +139,8 @@ class HaRuntime:
     last_heartbeat_seen: Optional[float] = None
     last_snapshot_at: Optional[float] = None
     last_primary_contact: Optional[float] = None
+    last_tunnel_check: Optional[float] = None
+    warming_since: Optional[float] = None
     boot_monotonic: float = field(default_factory=lambda: time.monotonic())
     _snapshot_requested: bool = False
     _clock: Callable[[], float] = time.monotonic
@@ -176,6 +178,7 @@ class HaRuntime:
             if cfg.mode == "primary":
                 self.primary_state = "warming"
                 self.active_since = None
+                self.warming_since = self.now()
             elif cfg.mode == "backup":
                 self.primary_state = "active"
                 self.backup_state = "standby"
@@ -327,19 +330,23 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
             runtime.primary_state = "active"
             runtime.active_since = now
             runtime.last_heartbeat_sent_ok = now
+            runtime.warming_since = None
             logger.warning("ha: warming -> active (no peer_url configured)")
         elif reachable and payload.get("active_since") is None:
             # 备用待命，常规重启秒级恢复
             runtime.primary_state = "active"
             runtime.active_since = now
             runtime.last_heartbeat_sent_ok = now
+            runtime.warming_since = None
             logger.warning("ha: warming -> active (backup standby)")
         elif not reachable:
             grace = runtime.cfg.failback_grace
-            if now - runtime.boot_monotonic > grace:
+            since = runtime.warming_since or runtime.boot_monotonic
+            if now - since > grace:
                 runtime.primary_state = "active"
                 runtime.active_since = now
                 runtime.last_heartbeat_sent_ok = now
+                runtime.warming_since = None
                 logger.warning("ha: warming -> active (peer unreachable after grace, fallback)")
                 try:
                     await store.add_notification(
@@ -352,7 +359,7 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
             else:
                 logger.info(
                     "ha: warming awaiting peer (unreachable, elapsed=%.1fs, grace=%ds)",
-                    now - runtime.boot_monotonic,
+                    now - since,
                     grace,
                 )
         else:
@@ -361,6 +368,7 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
                 runtime.primary_state = "active"
                 runtime.active_since = now
                 runtime.last_heartbeat_sent_ok = now
+                runtime.warming_since = None
                 logger.info("ha: warming awaiting failback (backup active_since=%s)", active_since)
         return
 
@@ -379,6 +387,7 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
                         runtime.last_heartbeat_sent_ok = now
                         runtime.last_heartbeat_seen = now
                         runtime.last_primary_contact = now
+                        runtime.warming_since = None
                         logger.info("ha: suspended -> active (heartbeat recovered)")
                         try:
                             await store.add_notification(
@@ -414,47 +423,58 @@ async def _primary_tick(store, sched, runtime: HaRuntime) -> None:
                     # 应答者展示备用仍活跃 → 分区愈合让位
                     runtime.primary_state = "warming"
                     runtime.active_since = None
+                    runtime.warming_since = now
                     logger.warning("ha: demoting to warming (backup still active)")
                     return
             else:
                 raise RuntimeError(f"heartbeat http {r.status_code}")
     except Exception as exc:
-        # 心跳失败 → 检查 ttl 是否超期
+        # 心跳失败 → 超过 TTL 才做公网自检，且按 TTL 节流
         last = runtime.last_heartbeat_sent_ok
         if last is None:
             last = runtime.active_since or runtime.boot_monotonic
-        if now - last >= ttl:
-            # 公网自检：GET /api/ha/status
+        if now - last >= ttl and now - (runtime.last_tunnel_check or 0.0) >= ttl:
+            runtime.last_tunnel_check = now
+            transport_ok = False
+            status_body: dict = {}
             try:
                 async with httpx.AsyncClient(timeout=5, trust_env=False) as c:
                     r = await c.get(
                         f"{peer}/api/ha/status",
                         headers={"X-HA-Key": runtime.cfg.key},
                     )
-                    status_body = r.json() if r.status_code == 200 else {}
+                    transport_ok = True
+                    if r.status_code == 200:
+                        body = r.json()
+                        if isinstance(body, dict):
+                            status_body = body
             except Exception as exc2:
-                logger.warning("ha: tunnel probe failed: %s", exc2)
-                status_body = {}
-            responder = status_body.get("instance_id") if isinstance(status_body, dict) else None
-            if responder == runtime.cfg.instance_id:
-                # 公网自检应答者是自己 → 隧道在、备用进程挂了；主力维持 active，仅告警
-                logger.warning("ha: public probe answered by self, backup unreachable; stay active (warn-only)")
-            elif responder and responder != runtime.cfg.instance_id:
-                # 应答者是备用 → 备用存活且可能在接管，主力让位转 warming 防脑裂
-                runtime.primary_state = "warming"
-                runtime.active_since = None
-                logger.warning("ha: public probe answered by backup (%s), demoting to warming to yield", responder)
-            else:
+                logger.warning("ha: public probe transport failed: %s", exc2)
+            responder = status_body.get("instance_id")
+            if not transport_ok:
+                # 传输层不可达（超时/拒连）→ 无法证明租约安全，暂停真实操作
                 runtime.primary_state = "suspended"
-                logger.warning("ha: -> suspended (peer + tunnel dead)")
+                logger.warning("ha: -> suspended (peer unreachable at transport level)")
                 try:
                     await store.add_notification(
                         "主力暂停",
-                        f"心跳失败且公网自检失败；已停止真实调度。可在设置页恢复。",
+                        "心跳失败且公网链路不可达；已停止真实调度，恢复后自动回归。",
                         level="error",
                     )
                 except Exception:
                     pass
+            elif responder == runtime.cfg.instance_id:
+                # 公网自检应答者是自己 → 链路在、备用进程挂了；主力维持 active，仅告警
+                logger.warning("ha: public probe answered by self, backup unreachable; stay active (warn-only)")
+            elif responder:
+                # 应答者是备用 → 备用存活且可能在接管，主力让位转 warming 防脑裂
+                runtime.primary_state = "warming"
+                runtime.active_since = None
+                runtime.warming_since = now
+                logger.warning("ha: public probe answered by backup (%s), demoting to warming to yield", responder)
+            else:
+                # HTTP 有应答但非 200（如反代 502/401）→ 链路可达、对端服务异常，仅告警
+                logger.warning("ha: public probe answered http error (peer service down); stay active (warn-only)")
         return
 
     # 3) 快照推送
