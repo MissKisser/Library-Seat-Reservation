@@ -127,6 +127,9 @@ class PanelAuthMiddleware(BaseHTTPMiddleware):
         self.allowed_hosts = allowed_hosts
 
     async def dispatch(self, request: Request, call_next):
+        # /api/ha/* 由独立 X-HA-Key 鉴权，不走面板 web_token
+        if request.url.path.startswith("/api/ha/"):
+            return await call_next(request)
         client_host = request.client.host if request.client else None
         via_query = "token" in request.query_params
         ok, status, reason, set_cookie = auth_decision(
@@ -153,6 +156,55 @@ class PanelAuthMiddleware(BaseHTTPMiddleware):
                 max_age=30 * 24 * 3600, httponly=True, samesite="lax",
             )
         return response
+
+
+# ----- HA: 备用待命期写保护 -----
+
+WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+
+
+class HaWriteGuardMiddleware(BaseHTTPMiddleware):
+    """备用实例待命期（mode==backup and backup_state==standby）拦截写请求。
+
+    豁免:
+      - /api/ha/* 控制面（前置已豁免 PanelAuth；中间件保留豁免以防双层挂载误判）
+      - /settings（必须能改自己的 HA 配置）
+      - GET / HEAD / OPTIONS
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        try:
+            ha = getattr(request.app.state, "ha", None)
+        except Exception:
+            ha = None
+        if ha is None:
+            return await call_next(request)
+        try:
+            standby = (ha.mode == "backup" and ha.backup_state == "standby")
+        except Exception:
+            standby = False
+        if not standby:
+            return await call_next(request)
+        if request.method.upper() not in WRITE_METHODS:
+            return await call_next(request)
+        path = request.url.path or ""
+        if path.startswith("/api/ha/"):
+            return await call_next(request)
+        if path == "/settings":
+            return await call_next(request)
+        # API 路径 / reset / .json → JSON；表单路径 → 303 重定向回来源页
+        if path.startswith("/api/") or path.endswith(".json") or path == "/settings/reset":
+            from starlette.responses import JSONResponse as _JR
+            return _JR(
+                {"detail": "备用待命期禁止写入操作；请切到主力或等待自动回切。"},
+                status_code=409,
+            )
+        # 表单提交 → 重定向回 referer（若有）否则首页
+        from urllib.parse import quote
+        referer = request.headers.get("referer") or "/"
+        target = f"{referer}?ha_readonly=1"
+        from starlette.responses import RedirectResponse as _RR
+        return _RR(url=target, status_code=303)
 
 
 _STATIC_DIR = TEMPLATES_DIR.parent / "static"
@@ -194,9 +246,17 @@ def make_app(cfg: Config, store: StateStore, sched: Scheduler) -> FastAPI:
         web_token=(cfg.runtime.web_token or "").strip(),
         allowed_hosts=allowed_hosts,
     )
+    app.add_middleware(HaWriteGuardMiddleware)
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     from seatbot.web.routes import router
     app.include_router(router)
+
+    from seatbot.ha import NullHaRuntime
+    from seatbot.web.ha_routes import router as ha_router
+    app.include_router(ha_router)
+    ha_obj = getattr(sched, "ha", None) if sched is not None else None
+    app.state.ha = ha_obj if ha_obj is not None else NullHaRuntime()
+    app.state.ha_supervisor_task = None
     return app

@@ -114,6 +114,12 @@ async def _cmd_run(args) -> int:
         await sched.load_runtime_settings()
     except Exception as e:
         print(f"[WARN] load runtime settings failed: {e}")
+    # 装配 HA runtime（默认 NullHaRuntime，模式非 standalone 时由 supervisor 维护）
+    from seatbot.ha import HaRuntime, NullHaRuntime, ensure_ha_bootstrap, load_ha_config, run_ha_supervisor
+    ha_cfg = await ensure_ha_bootstrap(store)
+    ha_runtime = HaRuntime()
+    ha_runtime.apply_config(ha_cfg)
+    sched.ha = ha_runtime
     sched.start()
 
     # 崩溃恢复 + 错过 14:00 窗口的补跑放后台执行, 不阻塞面板起服
@@ -127,8 +133,15 @@ async def _cmd_run(args) -> int:
             print(f"[ERROR] startup recovery failed: {type(e).__name__}: {e}")
 
     asyncio.create_task(_startup_recovery())
+    # HA 看护协程：仅在非 standalone 时启动
+    supervisor_task: asyncio.Task | None = None
+    if ha_cfg.mode in ("primary", "backup"):
+        supervisor_task = asyncio.create_task(
+            run_ha_supervisor(store, sched, ha_cfg, ha_runtime)
+        )
     from seatbot.web.app import make_app
     app = make_app(cfg, store, sched)
+    app.state.ha_supervisor_task = supervisor_task
     import uvicorn
     uvcfg = uvicorn.Config(
         app, host=cfg.runtime.web_host, port=cfg.runtime.web_port, log_level="info"
