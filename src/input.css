@@ -482,9 +482,6 @@
       @apply fixed top-12 h-[calc(100vh-3rem)] -translate-x-full transition-transform z-50;
     }
     .app-shell[data-mobile-nav="open"] .sidebar { @apply translate-x-0; }
-    .app-shell[data-mobile-nav="open"]::before {
-      @apply content-[''] fixed inset-0 bg-black/40 z-40;
-    }
     .mobile-toggle { @apply inline-flex; }
     .stat-grid { @apply grid-cols-1; }
     .dashboard-grid { @apply grid-cols-1; }
