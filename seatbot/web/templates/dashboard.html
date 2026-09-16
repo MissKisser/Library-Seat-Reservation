@@ -95,27 +95,6 @@
     <div x-show="{{ scope }}.rows.length === 0" class="text-center text-ink-muted p-4">暂无目标座位</div>
   </div>
   {% endmacro %}
-  {% if ha and ha.mode == "backup" and ha.state == "standby" %}
-  <div class="banner banner-info">
-    <span class="dot"></span>
-    <span>备用实例待命：当前仅读取主力的数据库快照；任何写操作均会被自动拦截。请勿在备用面板编辑业务数据。</span>
-  </div>
-{% elif ha and ha.mode == "backup" and ha.state == "active" %}
-  <div class="banner banner-warn">
-    <span class="dot"></span>
-    <span>备用已接管：正在代行主力职责。恢复后会自动回切到主力。</span>
-  </div>
-{% elif ha and ha.mode == "primary" and ha.state == "suspended" %}
-  <div class="banner banner-error">
-    <span class="dot"></span>
-    <span>主力暂停：心跳与公网自检均失败，已停止真实调度。请检查本地进程/网络，或在设置页恢复。</span>
-  </div>
-{% elif ha and ha.mode == "primary" and ha.state == "warming" %}
-  <div class="banner banner-warn">
-    <span class="dot"></span>
-    <span>主力回暖：等待与备用协商完成后接管调度。</span>
-  </div>
-{% endif %}
   <template x-if="notifications && notifications.length">
     <div class="flex flex-col gap-2">
       <div class="flex">

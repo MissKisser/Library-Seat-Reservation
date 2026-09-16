@@ -28,9 +28,8 @@ from seatbot.utils.weekly import (
 from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
-from seatbot.ha import HaRuntime, NullHaRuntime
 from seatbot.models import Account, SeatTarget, Task, TaskStatus, TASK_SOURCE_IMPORT, TASK_SOURCE_MANUAL
-from seatbot.scheduler import NextRelay
+from seatbot.scheduler import NextRelay, NullHaRuntime
 from seatbot.reconcile import AUTO_SYNC_NOTE, pick_read_account
 
 from seatbot.utils.timeutil import (
@@ -121,26 +120,6 @@ def _safe_next(value: str | None) -> str | None:
     return v
 
 
-def _ha_runtime(request: Request) -> HaRuntime | NullHaRuntime:
-    """取 app.state.ha；缺省 NullHaRuntime（can_act 永真）。"""
-    ha = getattr(request.app.state, "ha", None)
-    if ha is None:
-        ha = NullHaRuntime()
-        request.app.state.ha = ha
-    return ha
-
-
-def _ha_block_or_409(action: str, ha: HaRuntime | NullHaRuntime):
-    """闸门：can_act 为 False → 抛 409（带中文说明，便于前端横幅显示）。"""
-    try:
-        if ha.can_act():
-            return
-    except Exception:
-        return
-    raise HTTPException(
-        status_code=409,
-        detail=f"当前实例不在可调度状态（{action} 被拦截）；请检查 HA 模式与状态。",
-    )
 
 
 async def _ctx(request: Request, **extra) -> dict:
@@ -148,30 +127,11 @@ async def _ctx(request: Request, **extra) -> dict:
     store = request.app.state.store
     target_seats = await store.list_target_seats()
     accounts = await store.list_accounts()
-    ha = getattr(request.app.state, "ha", None)
-    if ha is None:
-        ha = NullHaRuntime()
-        request.app.state.ha = ha
-    try:
-        ha_view = {
-            "mode": getattr(ha, "mode", "standalone"),
-            "state": (
-                ha.primary_state if getattr(ha, "mode", "") == "primary"
-                else ha.backup_state if getattr(ha, "mode", "") == "backup"
-                else "standalone"
-            ),
-            "instance_id": getattr(getattr(ha, "cfg", None), "instance_id", "") or "",
-            "peer_url": getattr(getattr(ha, "cfg", None), "peer_url", "") or "",
-            "can_act": bool(ha.can_act()) if hasattr(ha, "can_act") else True,
-        }
-    except Exception:
-        ha_view = {"mode": "standalone", "state": "standalone", "instance_id": "", "peer_url": "", "can_act": True}
     return {
         "request": request,
         "cfg": request.app.state.cfg,
         "target_seats": target_seats,
         "accounts": accounts,
-        "ha": ha_view,
         **extra,
     }
 
@@ -488,22 +448,6 @@ async def dashboard(request: Request):
         "target_seat_count": len(target_seats),
         "account_count": len(accounts),
     }
-    # HA 视图（横幅依据）
-    ha = getattr(request.app.state, "ha", None)
-    if ha is None:
-        ha = NullHaRuntime()
-        request.app.state.ha = ha
-    ha_view = {
-        "mode": getattr(ha, "mode", "standalone"),
-        "state": (
-            ha.primary_state if getattr(ha, "mode", "") == "primary"
-            else ha.backup_state if getattr(ha, "mode", "") == "backup"
-            else "standalone"
-        ),
-        "instance_id": getattr(getattr(ha, "cfg", None), "instance_id", "") or "",
-        "peer_url": getattr(getattr(ha, "cfg", None), "peer_url", "") or "",
-        "can_act": bool(ha.can_act()) if hasattr(ha, "can_act") else True,
-    }
     return _templates(request).TemplateResponse(
         request, "dashboard.html",
         {
@@ -513,7 +457,6 @@ async def dashboard(request: Request):
             "active_page": "dashboard",
             "accounts": accounts,
             "target_seats": target_seats,
-            "ha": ha_view,
         },
     )
 
@@ -777,12 +720,6 @@ def _overlaps(a1: _dt, a2: _dt, b1: _dt, b2: _dt) -> bool:
 
 async def _signback_task_now(sched, store, acc: Account, t: Task) -> tuple[bool, str]:
     """立即对在约任务执行真签退（signback 通道），返回 (是否成功, 消息)。"""
-    # 闸门：备用待命/暂停主力不应触发真实签退
-    try:
-        if sched is not None and not sched.ha.can_act():
-            return False, "当前实例不在可调度状态（HA 闸门）；签退被拦截。"
-    except Exception:
-        pass
     client = await sched.client_ready(acc)
     try:
         if not client.cookies() and not await sched.login_and_persist(acc, client, "签退登录"):
@@ -2184,7 +2121,6 @@ async def accounts_delete(request: Request, acc_id: str, confirm_force: int = Fo
 @router.post("/accounts/{acc_id}/test-login")
 async def accounts_test_login(request: Request, acc_id: str):
     store = request.app.state.store
-    _ha_block_or_409("账号测试登录", _ha_runtime(request))
     db_acc = await store.get_account(acc_id)
     if not db_acc:
         return JSONResponse({"ok": False, "error": "account not found"}, status_code=404)
@@ -2427,7 +2363,6 @@ async def task_reassign(
 async def task_sign(request: Request, task_id: int):
     sched = request.app.state.sched
     store = request.app.state.store
-    _ha_block_or_409("手动签到", _ha_runtime(request))
     t = await store.get_task(task_id)
     if not t or not t.reserve_id:
         raise HTTPException(400, "no active reservation")
@@ -2450,7 +2385,6 @@ async def task_cancel(
 ):
     sched = request.app.state.sched
     store = request.app.state.store
-    _ha_block_or_409("取消预约", _ha_runtime(request))
     t = await store.get_task(task_id)
     if not t or not t.reserve_id:
         raise HTTPException(400)
@@ -2475,7 +2409,6 @@ async def task_leave(request: Request, task_id: int):
     """手动签退当前时段（内部走 signback 真签退通道，非暂离）。"""
     sched = request.app.state.sched
     store = request.app.state.store
-    _ha_block_or_409("手动签退", _ha_runtime(request))
     t = await store.get_task(task_id)
     if not t or not t.reserve_id:
         raise HTTPException(400, "no active reservation")
@@ -3082,8 +3015,7 @@ async def settings_view(request: Request):
             saved=request.query_params.get("saved"),
             reset_done=request.query_params.get("reset"),
             error=request.query_params.get("error"),
-            ha_key_rotated=request.query_params.get("ha_key_rotated"),
-            active_page="settings"),
+                active_page="settings"),
     )
 
 
@@ -3108,70 +3040,18 @@ async def settings_save(request: Request):
     patch_raw["schedule_mode"] = (form.get("schedule_mode") or "").strip()
     patch_raw["allocation_strategy"] = (form.get("allocation_strategy") or "").strip()
     # HA 卡片 8 键
-    patch_raw["ha.mode"] = (form.get("ha.mode") or "").strip()
-    patch_raw["ha.peer_url"] = (form.get("ha.peer_url") or "").strip()
-    patch_raw["ha.heartbeat_interval_seconds"] = (form.get("ha.heartbeat_interval_seconds") or "").strip()
-    patch_raw["ha.lease_ttl_seconds"] = (form.get("ha.lease_ttl_seconds") or "").strip()
-    patch_raw["ha.activation_buffer_seconds"] = (form.get("ha.activation_buffer_seconds") or "").strip()
-    patch_raw["ha.snapshot_interval_seconds"] = (form.get("ha.snapshot_interval_seconds") or "").strip()
-    patch_raw["ha.failback_grace_seconds"] = (form.get("ha.failback_grace_seconds") or "").strip()
-    raw_key = (form.get("ha.key") or "").strip()
-    if raw_key:
-        patch_raw["ha.key"] = raw_key
-
     # 滤掉空字符串的"未填"键（notify_webhook 与 ha.peer_url 允许空以清空）
     patch: dict[str, object] = {}
     for k, v in patch_raw.items():
-        if k in ("notify_webhook", "ha.peer_url"):
+        if k == "notify_webhook":
             patch[k] = v
         elif isinstance(v, str) and v == "":
             continue
         else:
             patch[k] = v
 
-    # HA 校验：mode ∈ 允许值；切 primary 且 key 仍空 → 自动生成；切 backup → 必填 url+key
-    from seatbot.ha import HA_MODES, generate_ha_key
-    ha_errors: dict[str, str] = {}
-    if "ha.mode" in patch:
-        mode = patch["ha.mode"]
-        if mode not in HA_MODES:
-            ha_errors["ha.mode"] = "HA 模式必须是 standalone / primary / backup 之一"
-        else:
-            existing_key = await store.get_setting("ha.key")
-            existing_peer = await store.get_setting("ha.peer_url")
-            if mode == "primary" and not existing_key and not patch.get("ha.key"):
-                patch["ha.key"] = generate_ha_key()
-            if mode == "backup":
-                effective_peer = patch.get("ha.peer_url") or existing_peer or ""
-                effective_key = patch.get("ha.key") or existing_key or ""
-                if not str(effective_peer).strip():
-                    ha_errors["ha.peer_url"] = "备用模式必须填写对端地址"
-                if not str(effective_key).strip():
-                    ha_errors["ha.key"] = "备用模式必须填写共享密钥（从主力面板复制）"
+    errors = _settings.validate_all(patch)
 
-    # HA 数值键合法性
-    def _int_ok(name: str, lo: int, hi: int) -> None:
-        raw = patch.get(name)
-        if raw is None or raw == "":
-            return
-        try:
-            v = int(str(raw).strip())
-        except (TypeError, ValueError):
-            ha_errors[name] = f"{name} 必须是整数"
-            return
-        if v < lo or v > hi:
-            ha_errors[name] = f"{name} 应在 [{lo}, {hi}] 秒之间"
-
-    _int_ok("ha.heartbeat_interval_seconds", 1, 600)
-    _int_ok("ha.lease_ttl_seconds", 10, 3600)
-    _int_ok("ha.activation_buffer_seconds", 0, 3600)
-    _int_ok("ha.snapshot_interval_seconds", 10, 86400)
-    _int_ok("ha.failback_grace_seconds", 10, 3600)
-
-    # 剥离 ha.* 键（validate_all 只认 DEFAULTS；HA 键走 ha_errors + coerce_for_storage）
-    non_ha_patch = {k: v for k, v in patch.items() if not k.startswith("ha.")}
-    errors = _settings.validate_all(non_ha_patch)
-    errors.update(ha_errors)
     # 交叉：单段不应超过日限额（用有效值二次校验）
     if not errors:
         try:
@@ -3212,28 +3092,6 @@ async def settings_save(request: Request):
             await sched.load_runtime_settings()
         except Exception:
             pass
-    # HA 配置变更：runtime 重新加载 + 触发一次快照推送（仅主力 active）+ 动态拉起 supervisor
-    try:
-        from seatbot.ha import load_ha_config, run_ha_supervisor
-        ha = getattr(request.app.state, "ha", None)
-        if ha is not None and hasattr(ha, "apply_config"):
-            new_cfg = await load_ha_config(store)
-            ha.apply_config(new_cfg)
-            if hasattr(ha, "request_snapshot") and ha.mode == "primary":
-                ha.request_snapshot()
-            if new_cfg.mode in ("primary", "backup"):
-                sup_task = getattr(request.app.state, "ha_supervisor_task", None)
-                if sup_task is None or sup_task.done():
-                    request.app.state.ha_supervisor_task = asyncio.create_task(
-                        run_ha_supervisor(store, sched, new_cfg, ha)
-                    )
-            elif new_cfg.mode == "standalone":
-                sup_task = getattr(request.app.state, "ha_supervisor_task", None)
-                if sup_task is not None and not sup_task.done():
-                    sup_task.cancel()
-                    request.app.state.ha_supervisor_task = None
-    except Exception:
-        pass
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 
@@ -3247,39 +3105,8 @@ async def settings_reset(request: Request):
             await sched.load_runtime_settings()
         except Exception:
             pass
-    # 重新引导 HA 默认（清空自定义 key 后必须重新生成）
-    try:
-        from seatbot.ha import ensure_ha_bootstrap
-        await ensure_ha_bootstrap(store)
-    except Exception:
-        pass
     return RedirectResponse("/settings?reset=1", status_code=303)
 
-
-@router.post("/ha/key/regenerate")
-async def ha_key_regenerate(request: Request):
-    """面板鉴权：重新生成 ha.key。两端 key 必须同步换。"""
-    store = request.app.state.store
-    from seatbot.ha import generate_ha_key
-    new_key = generate_ha_key()
-    await store.set_settings({"ha.key": new_key})
-    try:
-        await store.add_notification(
-            "HA 共享密钥已重新生成",
-            "旧密钥立即失效，请在对端面板同步更新（设置 → 高可用 → 共享密钥）。",
-            level="warn",
-        )
-    except Exception:
-        pass
-    # runtime reload
-    try:
-        ha = getattr(request.app.state, "ha", None)
-        if ha is not None and hasattr(ha, "apply_config"):
-            from seatbot.ha import load_ha_config
-            ha.apply_config(await load_ha_config(store))
-    except Exception:
-        pass
-    return RedirectResponse("/settings?ha_key_rotated=1", status_code=303)
 
 
 
@@ -3437,7 +3264,6 @@ async def manual_reserve(
     store = request.app.state.store
     sched = request.app.state.sched
     cfg = request.app.state.cfg
-    _ha_block_or_409("手动预约", _ha_runtime(request))
     if sched is None:
         return RedirectResponse(
             "/manual?error=" + quote("scheduler 未初始化"), status_code=303)
