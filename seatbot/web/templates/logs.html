@@ -48,7 +48,7 @@
   </div>
 
   {# 列表 - 桌面表格 #}
-  <div class="card md-only">
+  <div class="card hidden md:block">
     <div class="overflow-x-auto">
       <table class="table">
         <thead><tr><th class="num">时间</th><th>级别</th><th>账号</th><th>消息</th></tr></thead>
@@ -72,7 +72,7 @@
     </div>
   </div>
   {# 列表 - 移动卡片 #}
-  <div class="md-hidden flex flex-col gap-2">
+  <div class="flex flex-col gap-2 md:hidden">
     {% for log in logs %}
     <div class="card" data-level="{{ log.level }}" x-show="level === '' || level === '{{ log.level }}'">
       <div class="card-body flex flex-col gap-1.5 py-3">

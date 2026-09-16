@@ -29,7 +29,7 @@
     </div>
     {% if r.error %}<div class="text-xs text-ink-muted">查询失败：{{ r.error }}</div>{% endif %}
     {% if r.tasks %}
-    <table class="w-full text-xs md-only">
+    <table class="w-full text-xs hidden md:table">
       <thead><tr class="text-ink-muted text-left">
         <th class="py-1 pr-3 font-normal">任务</th><th class="py-1 pr-3 font-normal">账号</th>
         <th class="py-1 pr-3 font-normal">时段</th><th class="py-1 pr-3 font-normal">本地状态</th>
@@ -49,7 +49,7 @@
       </tbody>
     </table>
     {# 移动卡片视图 #}
-    <div class="md-hidden flex flex-col gap-1.5">
+    <div class="flex flex-col gap-1.5 md:hidden">
       {% for t in r.tasks %}
       <div class="flex items-center gap-2 flex-wrap text-xs border-t border-edge-subtle pt-1.5 first:border-0 first:pt-0">
         <span class="font-mono">#{{ t.id }}</span>
