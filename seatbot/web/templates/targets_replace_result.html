@@ -2,9 +2,9 @@
 {% block title %}换座结果{% endblock %}
 
 {% macro _row(desc, note='') %}
-<li class="flex items-baseline justify-between gap-3 py-1.5 border-b border-edge-subtle last:border-0">
-  <span class="text-xs font-mono">{{ desc }}</span>
-  {% if note %}<span class="text-xs text-ink-secondary whitespace-nowrap">{{ note }}</span>{% endif %}
+<li class="flex flex-col md:flex-row md:items-baseline md:justify-between gap-1 md:gap-3 py-1.5 border-b border-edge-subtle last:border-0">
+  <span class="text-xs font-mono break-words">{{ desc }}</span>
+  {% if note %}<span class="text-xs text-ink-secondary md:whitespace-nowrap">{{ note }}</span>{% endif %}
 </li>
 {% endmacro %}
 
@@ -15,7 +15,7 @@
       <h1 class="page-title">换座结果：{{ report.old }} → {{ report.new }}</h1>
       <p class="page-sub">矩阵迁移 {{ report.accounts|length }} 个账号 · 签退 {{ report.released|length }} · 关闭 {{ report.closed|length }} · 释放型 {{ report.janitors|length }} · 补约 {{ report.rebooked|selectattr('ok')|list|length }}/{{ report.rebooked|length }} · 跳过 {{ report.skipped|length }} · 异常 {{ report.errors|length }}</p>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="page-actions flex items-center gap-2 flex-wrap">
       <a class="btn btn-secondary btn-sm" href="/targets">返回目标座位</a>
       <a class="btn btn-secondary btn-sm" href="/tasks">查看任务</a>
     </div>
@@ -25,7 +25,7 @@
   <div class="card border-danger/40">
     <div class="card-header"><span class="card-title text-danger">异常（{{ report.errors|length }}）</span></div>
     <div class="card-body"><ul class="flex flex-col">
-      {% for e in report.errors %}<li class="text-xs text-danger py-1 break-all">⚠ {{ e }}</li>{% endfor %}
+      {% for e in report.errors %}<li class="text-xs text-danger py-1 break-words">⚠ {{ e }}</li>{% endfor %}
     </ul></div>
   </div>
   {% endif %}

@@ -764,7 +764,30 @@
 
   /* ===== 移动端侧栏开关 ===== */
   window.mobileNav = function () {
-    return { open: false, toggle() { this.open = !this.open; } };
+    return {
+      open: false,
+      toggle() { this.open = !this.open; },
+      close() { this.open = false; },
+      init() {
+        // Escape 关闭抽屉（仅在打开时监听，避免与确认弹层/输入框冲突）
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && this.open) {
+            e.preventDefault();
+            this.close();
+          }
+        });
+        // 监听抽屉状态变化，body 滚动锁 + aria
+        this.$watch('open', (v) => {
+          if (v) {
+            document.body.style.overflow = 'hidden';
+            this.$root.setAttribute('data-mobile-nav', 'open');
+          } else {
+            document.body.style.overflow = '';
+            this.$root.setAttribute('data-mobile-nav', 'closed');
+          }
+        });
+      },
+    };
   };
 
   /* ===== 系统设置页：检测表单变更，底部保存按钮滚出视口时才浮出悬浮保存条 ===== */
@@ -791,8 +814,46 @@
     };
   };
 
-  /* 页面加载后跑 PRG toast */
+  /* 页面加载后跑 PRG toast + 覆盖条横滚提示自动隐藏 */
   document.addEventListener('DOMContentLoaded', () => {
     if (window.prgToast) window.prgToast();
+    /* 覆盖图横滚条：.gantt-strip 是滚动元素，渐隐与提示挂在外层 wrap */
+    document.querySelectorAll('.gantt-strip').forEach((strip) => {
+      const wrap = strip.closest('.gantt-strip-wrap');
+      const hint = wrap ? wrap.querySelector('.gantt-strip-hint') : null;
+      const inner = strip.querySelector('.gantt-strip-inner');
+      if (!wrap || !inner) return;
+      let scrolledAway = false;
+      /* 双向判定：内容宽度随 Alpine 渲染变化，铺满则收提示与渐隐，变宽则恢复 */
+      const settle = () => {
+        if (strip.scrollWidth <= strip.clientWidth + 1) {
+          wrap.classList.add('is-full');
+          if (hint) hint.style.display = 'none';
+        } else {
+          wrap.classList.remove('is-full');
+          if (hint && !scrolledAway) {
+            hint.style.display = '';
+            hint.style.opacity = '';
+          }
+        }
+      };
+      const onScroll = () => {
+        if (strip.scrollLeft > 4 && hint) {
+          scrolledAway = true;
+          hint.style.transition = 'opacity .3s';
+          hint.style.opacity = '0';
+          strip.removeEventListener('scroll', onScroll);
+        }
+      };
+      strip.addEventListener('scroll', onScroll, { passive: true });
+      requestAnimationFrame(settle);
+      /* Alpine 渲染行数据后宽度才会到位，监听内容尺寸变化后复检 */
+      if ('ResizeObserver' in window) {
+        new ResizeObserver(settle).observe(inner);
+      } else {
+        setTimeout(settle, 1500);
+        setTimeout(settle, 4000);
+      }
+    });
   });
 })();

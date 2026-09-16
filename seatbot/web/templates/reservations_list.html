@@ -42,8 +42,8 @@
     {% endfor %}
   </div>
 
-  {# 记录表 #}
-  <div class="card">
+  {# 记录表 - 桌面 #}
+  <div class="card hidden md:block">
     <div class="card-header">
       <span class="card-title">{{ account.id }} · {{ tab_label }}（{{ rows|length }} 条）</span>
     </div>
@@ -72,7 +72,7 @@
             <td class="py-2 pr-4 whitespace-nowrap"><span class="chip {{ r.chip }}">{{ r.label }}</span></td>
             <td class="py-2 pr-4 font-mono text-xs whitespace-nowrap">{{ r.signin }}</td>
             <td class="py-2 pr-4 font-mono text-xs whitespace-nowrap">{{ r.signout }}</td>
-            <td class="py-2 font-mono text-xs [overflow-wrap:anywhere]">{{ r.rid }}</td>
+            <td class="py-2 font-mono text-xs break-words">{{ r.rid }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -82,6 +82,33 @@
       {% endif %}
     </div>
   </div>
+  {# 记录表 - 移动卡片 #}
+  {% if rows %}
+  <div class="flex flex-col gap-2 md:hidden">
+    {% for r in rows %}
+    <div class="card">
+      <div class="card-body flex flex-col gap-1.5 py-3">
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-mono text-xs text-ink-muted">{{ r.day }}</span>
+          <span class="chip {{ r.chip }} shrink-0">{{ r.label }}</span>
+        </div>
+        <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <span class="font-mono text-sm font-semibold">{{ r.start }}-{{ r.end }}</span>
+          <span class="font-mono text-xs text-ink-secondary">{{ r.seat }}</span>
+          <span class="text-xs text-ink-muted">{{ r.room }}</span>
+        </div>
+        <div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+          <div><span class="text-ink-muted">签到</span> <span class="font-mono">{{ r.signin }}</span></div>
+          <div><span class="text-ink-muted">签退</span> <span class="font-mono">{{ r.signout }}</span></div>
+        </div>
+        <div class="text-xs"><span class="text-ink-muted">预约号</span> <span class="font-mono break-words">{{ r.rid }}</span></div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-xs text-ink-muted py-4 text-center">该页签下暂无记录</p>
+  {% endif %}
   {% endif %}
 </div>
 {% endblock %}

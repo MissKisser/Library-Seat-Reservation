@@ -96,6 +96,13 @@
   }
   .btn-sm { @apply h-7 px-3 text-[11px] font-medium rounded-lg; }
   .btn-icon { @apply h-9 w-9 p-0; }
+  /* 移动端触控目标：主按钮 ≥40px、小按钮 ≥36px、图标钮 ≥40px（深色描边 alpha 不受影响）*/
+  @media (max-width: 767px) {
+    .btn { @apply h-10 px-4 text-sm; min-height: 40px; }
+    .btn-sm { @apply h-9 px-3 text-xs; min-height: 36px; }
+    .btn-icon { @apply h-10 w-10; min-height: 40px; min-width: 40px; }
+    .chip { @apply px-2 py-1 text-xs; min-height: 28px; }
+  }
   .btn-primary { @apply bg-accent text-white hover:bg-accent-hover; box-shadow: 0 1px 2px rgb(var(--accent-rgb) / .4); }
   .btn-secondary { @apply bg-app-surface text-ink border-edge-subtle hover:bg-app-muted; }
   .btn-danger { @apply bg-danger-soft text-danger border-danger/25 hover:brightness-95; }
@@ -108,6 +115,10 @@
     box-shadow: var(--shadow-card);
   }
   .card-header { @apply flex items-center justify-between gap-3 px-[18px] pt-[14px] pb-0; }
+  /* 移动端卡片头：标题行与操作行换行排列，避免右侧操作挤掉标题 */
+  @media (max-width: 767px) {
+    .card-header { @apply flex-col items-start gap-2; }
+  }
   .card-title { @apply text-[13px] font-bold text-ink; }
   .card-body { @apply p-[16px_18px_18px]; }
   .card-footer { @apply px-4 py-3 border-t border-edge-subtle bg-app-muted/30; }
@@ -147,6 +158,11 @@
            focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30
            placeholder:text-ink-muted transition-colors;
   }
+  /* 移动端输入字号提升到 16px，避免 iOS Safari 聚焦自动放大 */
+  @media (max-width: 767px) {
+    .input, .select, .textarea { @apply text-base h-10; }
+    .select.text-xs { font-size: 14px; }
+  }
   .textarea { @apply h-auto py-2 min-h-[80px] resize-y font-mono text-xs; }
   .form-row { @apply grid grid-cols-2 gap-3; }
   @media (max-width: 640px) { .form-row { @apply grid-cols-1; } }
@@ -155,6 +171,10 @@
 
   /* ===== Pill-tick（点击选中的时段药丸）===== */
   .pill-grid { @apply flex flex-wrap gap-1.5; }
+  /* 移动端药丸紧凑：避免 7+ 时段横向溢出 */
+  @media (max-width: 767px) {
+    .pill-tick span { @apply px-2 py-0.5 text-[10px]; }
+  }
   .pill-tick { @apply cursor-pointer select-none; }
   .pill-tick input { @apply sr-only; }
   .pill-tick span {
@@ -213,7 +233,9 @@
   /* anywhere（而非 break-words）才能缩小 min-content，避免长 token 把 CJK 短列挤成竖排 */
   /* 表头与单元格统一居中（水平 text-center + 垂直 align-middle），保证表头相对列内容居中；num 保留等宽数字、actions 保留不换行 */
   .table th, .table tbody td { @apply align-middle; }
-  .table tbody td { @apply px-3 py-2.5 border-b border-edge-subtle text-ink text-center [overflow-wrap:anywhere]; }
+  .table tbody td { @apply px-3 py-2.5 border-b border-edge-subtle text-ink text-center; }
+  /* 长文本列（消息/错误）显式 opt-in 断行；非断行列保持 nowrap，避免 CJK 被压成竖排单字 */
+  .table td.break-words { overflow-wrap: anywhere; word-break: break-word; }
   .table tbody tr:hover { @apply bg-app-muted/40; }
   .table td.num { @apply tabular; }
   .table td.actions { @apply whitespace-nowrap; }
@@ -230,11 +252,65 @@
   .page-header {
     @apply flex items-start justify-between gap-4 mb-5 flex-wrap;
   }
+  /* 移动端页头右侧操作组允许换行 */
+  @media (max-width: 767px) {
+    .page-header > * { min-width: 0; }
+    .page-header .page-actions { @apply w-full flex-wrap; }
+  }
   .page-title { @apply text-xl font-semibold text-ink; }
   .page-sub { @apply text-sm text-ink-secondary mt-0.5; }
 
   /* ===== Gantt 单元 ===== */
   .gantt-wrap { @apply overflow-x-auto rounded-xl border border-edge-subtle; }
+  /* 覆盖图移动变体：外层 wrap 承载渐隐与提示（不随滚动移动），内层 strip 横向滚动 */
+  .gantt-strip-wrap { @apply relative; }
+  .gantt-strip { @apply overflow-x-auto overscroll-x-contain; -webkit-overflow-scrolling: touch; }
+  .gantt-strip-inner { @apply flex flex-col gap-1.5 min-w-max; }
+  .gantt-strip-inner > .gantt-ruler { @apply flex items-center; }
+  .gantt-strip-inner > .gantt-row { @apply flex items-stretch; }
+  .gantt-strip-inner .gantt-ruler-label,
+  .gantt-strip-inner .gantt-row-label {
+    @apply sticky left-0 z-[2] shrink-0 bg-app-table-header;
+    width: 4rem;
+  }
+  .gantt-strip-inner .gantt-row-label { @apply flex flex-col justify-center; }
+  .gantt-strip-inner .gantt-cells { @apply flex min-w-0; flex: 1 1 auto; gap: 1px; }
+  /* 格子弹性：桌面随容器铺满（同旧 flex-1 行为），移动钉在 18px 触发横滚 */
+  .gantt-strip-inner .gantt-cell {
+    @apply flex items-center justify-center cursor-pointer;
+    flex: 1 0 18px; height: 1.75rem; border-radius: 3px;
+  }
+  @media (min-width: 768px) {
+    .gantt-strip-inner .gantt-cell { height: 34px; }
+  }
+  .gantt-strip-inner .gantt-ruler-cell {
+    @apply relative text-ink-muted whitespace-nowrap overflow-hidden text-center;
+    flex: 1 0 18px; font-size: 9px; line-height: 12px;
+  }
+  /* 刻度文本脱离流内：不抬升容器固有宽度（否则桌面会多出约 50px 横滚） */
+  .gantt-strip-inner .gantt-ruler-cell > span {
+    @apply absolute left-0 right-0 top-0 bottom-0 flex items-center justify-center;
+  }
+  @media (min-width: 768px) { .gantt-strip-inner .gantt-ruler-cell { font-size: 10px; } }
+  .gantt-strip-inner .gantt-ruler-cell.is-hour { @apply text-ink-secondary; }
+  /* 右缘渐隐提示横滑（挂在 wrap 上） */
+  .gantt-strip-wrap::after {
+    content: '';
+    @apply pointer-events-none absolute top-0 right-0 bottom-0;
+    width: 28px;
+    background: linear-gradient(to left, rgb(var(--bg-surface-rgb)) 10%, transparent 100%);
+  }
+  .gantt-strip-wrap.is-full::after { display: none; }
+  /* 滚动提示（仅首次出现，JS 可关闭） */
+  .gantt-strip-hint {
+    @apply absolute top-2 right-3 text-[10px] font-medium text-accent bg-accent-soft px-2 py-0.5 rounded-full;
+    pointer-events: none;
+    animation: gantt-hint-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes gantt-hint-pulse {
+    0%, 100% { opacity: 1; transform: translateX(0); }
+    50% { opacity: .55; transform: translateX(-3px); }
+  }
   /* 14h 开放 × 2 座 × 30min/cell = 28 列 + 1 row-label(140px) = ~1260px 最小宽 */
   .gantt { @apply w-full text-xs border-collapse min-w-[1280px] table-fixed; }
   .gantt thead th {
@@ -282,8 +358,8 @@
            rounded-2xl p-3.5;
     box-shadow: var(--shadow-float);
   }
-  .gantt-legend { @apply flex flex-wrap gap-x-4 gap-y-1.5 mt-3 text-xs text-ink-secondary; }
-  .gantt-legend span { @apply inline-flex items-center gap-1.5; }
+  .gantt-legend { @apply grid grid-cols-2 md:flex md:flex-wrap gap-x-3 gap-y-1.5 mt-3 text-xs text-ink-secondary; }
+  .gantt-legend span { @apply inline-flex items-center gap-1.5 min-w-0; }
   .gantt-legend .cell, .gantt-legend .swatch {
     @apply inline-block w-3.5 h-3.5 rounded-sm border border-edge-subtle;
   }
@@ -299,9 +375,9 @@
   }
 
   /* ===== Toast（全局容器在 base.html）===== */
-  .toast-container { @apply fixed bottom-4 right-4 z-50 flex flex-col gap-2 items-end; }
+  .toast-container { @apply fixed bottom-4 right-4 left-4 md:left-auto z-50 flex flex-col gap-2 items-stretch md:items-end; padding-bottom: env(safe-area-inset-bottom, 0); }
   .toast {
-    @apply flex items-start gap-2.5 min-w-[280px] max-w-[360px] px-3.5 py-2.5
+    @apply flex items-start gap-2.5 md:min-w-[280px] md:max-w-[360px] px-3.5 py-2.5
            rounded-xl bg-app-surface border border-edge-subtle;
     box-shadow: var(--shadow-float);
   }
@@ -314,11 +390,19 @@
   .toast-desc { @apply text-xs text-ink-secondary mt-0.5; }
 
   /* ===== Modal（确认弹层）===== */
-  .modal-backdrop { @apply fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4; }
+  .modal-backdrop { @apply fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3 md:p-4; }
   .modal {
     @apply w-full max-w-sm bg-app-surface border border-edge-subtle
            rounded-2xl p-5 flex flex-col gap-4;
     box-shadow: var(--shadow-float);
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+  }
+  /* 移动端弹层满宽 + safe-area 底距（replan 等较宽弹层响应式）*/
+  @media (max-width: 767px) {
+    .modal-backdrop { align-items: flex-end; padding-bottom: 0; }
+    .modal { border-bottom-left-radius: 0; border-bottom-right-radius: 0; padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0)); }
+    .modal.is-wide { max-width: none; width: 100%; }
   }
   .modal-title { @apply text-base font-semibold text-ink; }
   .modal-desc { @apply text-sm text-ink-secondary; }
@@ -366,12 +450,30 @@
   .topbar-clock #now-time { @apply text-ink font-medium; }
   .topbar-clock .sep { @apply text-ink-muted; }
   .topbar-clock .next-label { @apply text-ink-muted; }
-  .app-content { @apply flex-1 w-full max-w-content mx-auto px-6 py-6; }
+  .app-content { @apply flex-1 w-full max-w-content mx-auto px-3 py-4 md:px-6 md:py-6; }
 
   .dashboard-grid { @apply grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5; }
-  .stat-grid { @apply grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4; }
+  .stat-grid { @apply grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4; }
 
   .mobile-toggle { @apply hidden; }
+  /* 移动端抽屉 backdrop：与 sidebar 联动，按背景关闭 */
+  .sidebar-backdrop {
+    @apply fixed inset-0 z-40 bg-black/40 hidden;
+  }
+  [data-mobile-nav="open"] .sidebar-backdrop { @apply block; }
+  /* 抽屉底部 safe-area 适配（iOS 全面屏） */
+  @media (max-width: 767px) {
+    .sidebar { padding-bottom: env(safe-area-inset-bottom, 0); }
+  }
+  /* 横滑列表（星期 chip 行等） */
+  .scrollx { @apply flex items-center gap-1 overflow-x-auto overscroll-x-contain; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .scrollx::-webkit-scrollbar { display: none; }
+  /* 移动端表格容器提示横滑 */
+  .table-scroll-hint {
+    @apply absolute top-1 right-2 text-[10px] font-medium text-accent bg-accent-soft px-1.5 py-0.5 rounded-full;
+    pointer-events: none;
+    animation: gantt-hint-pulse 1.6s ease-in-out infinite;
+  }
   /* ===== 响应式：侧栏折叠（1024-1279）与抽屉（<1024）===== */
   @media (max-width: 1279px) and (min-width: 1024px) {
     .sidebar { @apply w-[60px]; }
@@ -388,11 +490,7 @@
       @apply fixed top-12 h-[calc(100vh-3rem)] -translate-x-full transition-transform z-50;
     }
     .app-shell[data-mobile-nav="open"] .sidebar { @apply translate-x-0; }
-    .app-shell[data-mobile-nav="open"]::before {
-      @apply content-[''] fixed inset-0 bg-black/40 z-40;
-    }
     .mobile-toggle { @apply inline-flex; }
-    .stat-grid { @apply grid-cols-1; }
     .dashboard-grid { @apply grid-cols-1; }
     .topbar-clock .next-label,
     .topbar-clock #next-relay-time,
