@@ -81,16 +81,6 @@ def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, StateStore]:
 def test_all_get_render_200(tmp_path, monkeypatch):
     c, store = _client(tmp_path, monkeypatch)
     try:
-        # 引导 HA 键并把 runtime cfg 同步进 app.state.ha，
-        # 确保 /api/ha/status 路由能在 200 名册
-        async def _seed_ha():
-            from seatbot.ha import ensure_ha_bootstrap, load_ha_config, HaConfig
-            await ensure_ha_bootstrap(store)
-            await store.set_settings({"ha.key": "K", "ha.mode": "primary"})
-            cfg = await load_ha_config(store)
-            c.app.state.ha.cfg = cfg
-            c.app.state.ha.mode = "primary"
-        asyncio.run(_seed_ha())
         for path in ["/", "/bindings", "/targets", "/accounts", "/tasks",
                      "/hosting", "/manual", "/settings", "/audit", "/logs",
                      "/reservations"]:
@@ -100,11 +90,6 @@ def test_all_get_render_200(tmp_path, monkeypatch):
                       follow_redirects=False)
             assert r.status_code == 200, \
                 f"GET {path} -> {r.status_code}:\n{r.text[:600]}"
-        # /api/ha/status 必须能用 key  正常应答 200
-        r = c.get("/api/ha/status",
-                  headers={"X-HA-Key": "K", "Host": "127.0.0.1:8080"},
-                  follow_redirects=False)
-        assert r.status_code == 200, f"GET /api/ha/status -> {r.status_code}"
     finally:
         asyncio.run(store.close())
 

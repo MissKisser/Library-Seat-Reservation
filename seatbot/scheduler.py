@@ -14,10 +14,20 @@ from apscheduler.triggers.cron import CronTrigger
 from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.config import Config
-from seatbot.ha import NullHaRuntime
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.planner import ReservationPlanner
 from seatbot.store import StateStore
+
+
+class NullHaRuntime:
+    """调度闸门的空实现：can_act 永真，单实例模式下恒放行。"""
+
+    mode = "standalone"
+    primary_state = "standalone"
+    backup_state = "standalone"
+
+    def can_act(self) -> bool:
+        return True
 from seatbot.utils.timeutil import at_cst, now_cst, today_cst
 
 
