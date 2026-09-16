@@ -34,7 +34,7 @@
   </div>
 
   {% if accounts %}
-  <div class="card md-only">
+  <div class="card hidden md:block">
     <div class="overflow-x-auto">
       <table class="table">
         <thead>
@@ -156,7 +156,7 @@
     </div>
   </div>
   {# ===== 移动卡片列表（<768）===== #}
-  <div class="md-hidden flex flex-col gap-3">
+  <div class="flex flex-col gap-3 md:hidden">
     {% for a in accounts %}
     <div class="card" {% if a.status == 'inactive' %}style="opacity:.6"{% endif %}>
       <div class="card-body flex flex-col gap-2">

@@ -43,7 +43,7 @@
   </div>
 
   {# 记录表 - 桌面 #}
-  <div class="card md-only">
+  <div class="card hidden md:block">
     <div class="card-header">
       <span class="card-title">{{ account.id }} · {{ tab_label }}（{{ rows|length }} 条）</span>
     </div>
@@ -84,7 +84,7 @@
   </div>
   {# 记录表 - 移动卡片 #}
   {% if rows %}
-  <div class="md-hidden flex flex-col gap-2">
+  <div class="flex flex-col gap-2 md:hidden">
     {% for r in rows %}
     <div class="card">
       <div class="card-body flex flex-col gap-1.5 py-3">
@@ -107,7 +107,7 @@
     {% endfor %}
   </div>
   {% else %}
-  <p class="md-hidden text-xs text-ink-muted py-4 text-center">该页签下暂无记录</p>
+  <p class="text-xs text-ink-muted py-4 text-center">该页签下暂无记录</p>
   {% endif %}
   {% endif %}
 </div>

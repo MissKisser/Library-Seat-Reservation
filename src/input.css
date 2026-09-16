@@ -468,9 +468,6 @@
   /* 横滑列表（星期 chip 行等） */
   .scrollx { @apply flex items-center gap-1 overflow-x-auto overscroll-x-contain; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
   .scrollx::-webkit-scrollbar { display: none; }
-  /* 移动端表格→卡片切换：md 以下隐藏表格、显示卡片 */
-  .md-only { @apply hidden md:block; }
-  .md-hidden { @apply block md:hidden; }
   /* 移动端表格容器提示横滑 */
   .table-scroll-hint {
     @apply absolute top-1 right-2 text-[10px] font-medium text-accent bg-accent-soft px-1.5 py-0.5 rounded-full;
