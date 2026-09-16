@@ -46,43 +46,52 @@
 
   {# 状态 banner #}
   {% macro coverage_strip(scope) %}
-  <div class="flex flex-col gap-1.5">
-    {# 整点标尺：非整点块占位但隐藏，保证与覆盖条逐块对齐 #}
-    <div class="flex items-end">
-      <div class="shrink-0" style="width:6rem"></div>
-      <div class="flex flex-1 min-w-0">
-        <template x-for="c in ({{ scope }}.rows[0]?.cells || [])" :key="'ruler-{{ scope }}-' + c.start">
-          <div class="flex-1 min-w-0 overflow-hidden whitespace-nowrap text-ink-muted"
-               :style="c.start.endsWith(':00') ? 'font-size:9px;line-height:12px' : 'visibility:hidden;font-size:9px;line-height:12px'"
-               x-text="c.start"></div>
+  <div class="gantt-strip-wrap">
+    <div class="gantt-strip" data-strip-id="{{ scope }}">
+      <div class="gantt-strip-inner">
+        {# 整点标尺：仅整点显示时间，移动端 2 字符防截断，桌面端完整 #}
+        <div class="gantt-ruler">
+          <div class="gantt-ruler-label"></div>
+          <div class="gantt-cells">
+            <template x-for="c in ({{ scope }}.rows[0]?.cells || [])" :key="'ruler-{{ scope }}-' + c.start">
+              <div class="gantt-ruler-cell" :class="c.start.endsWith(':00') ? 'is-hour' : ''">
+                <template x-if="c.start.endsWith(':00')">
+                  <span class="hidden md:inline" x-text="c.start"></span>
+                </template>
+                <template x-if="c.start.endsWith(':00')">
+                  <span class="md:hidden" x-text="c.start.slice(0, 2)"></span>
+                </template>
+              </div>
+            </template>
+          </div>
+        </div>
+        <template x-for="row in {{ scope }}.rows" :key="'{{ scope }}-' + row.seat_num">
+          <div class="gantt-row">
+            <div class="gantt-row-label">
+              <div class="font-mono text-xs font-bold text-ink truncate" x-text="row.seat_num"></div>
+              <div class="text-[10px] text-ink-muted truncate" x-text="row.label || '—'"></div>
+            </div>
+            <div class="gantt-cells">
+              <template x-for="c in row.cells" :key="'{{ scope }}-' + row.seat_num + '-' + c.start">
+                <div class="gantt-cell"
+                     :class="[
+                       'cell-' + cellStatus(c),
+                       cellUserMark(c) ? 'cell-user-reserved' : '',
+                       cellOthersMark(c) ? 'cell-others-occupied' : '',
+                       cardHit(c) ? 'cell-actionable' : ''
+                     ]"
+                     :title="row.seat_num + ' ' + c.start + '–' + c.end"
+                     @click="openCard('{{ scope }}', row.seat_num, c, $event)">
+                  <span style="font-size:10px;line-height:1" x-show="cellUserMark(c)">👤</span>
+                  <span style="font-size:10px;line-height:1" x-show="cellOthersMark(c)">🔒</span>
+                </div>
+              </template>
+            </div>
+          </div>
         </template>
       </div>
     </div>
-    <template x-for="row in {{ scope }}.rows" :key="'{{ scope }}-' + row.seat_num">
-      <div class="flex items-center">
-        <div class="shrink-0 truncate pr-2" style="width:6rem">
-          <span class="font-mono text-xs font-bold text-ink" x-text="row.seat_num"></span>
-          <span class="text-xs text-ink-muted ml-1" x-text="row.label"></span>
-        </div>
-        <div class="flex flex-1 min-w-0" style="gap:1px">
-          <template x-for="c in row.cells" :key="'{{ scope }}-' + row.seat_num + '-' + c.start">
-            <div class="flex-1 min-w-0 cursor-pointer flex items-center justify-center"
-                 style="height:1.5rem;border-radius:3px"
-                 :class="[
-                   'cell-' + cellStatus(c),
-                   cellUserMark(c) ? 'cell-user-reserved' : '',
-                   cellOthersMark(c) ? 'cell-others-occupied' : '',
-                   cardHit(c) ? 'cell-actionable' : ''
-                 ]"
-                 :title="row.seat_num + ' ' + c.start + '–' + c.end"
-                 @click="openCard('{{ scope }}', row.seat_num, c, $event)">
-              <span style="font-size:10px;line-height:1" x-show="cellUserMark(c)">👤</span>
-              <span style="font-size:10px;line-height:1" x-show="cellOthersMark(c)">🔒</span>
-            </div>
-          </template>
-        </div>
-      </div>
-    </template>
+    <span class="gantt-strip-hint" aria-hidden="true">← 横滑查看</span>
     <div x-show="{{ scope }}.rows.length === 0" class="text-center text-ink-muted p-4">暂无目标座位</div>
   </div>
   {% endmacro %}
@@ -155,26 +164,24 @@
       <div class="card">
         <div class="card-header">
           <span class="card-title">覆盖情况（按座位）<span class="text-xs text-ink-muted ml-2 font-normal" x-text="'今天 ' + today.view_day"></span></span>
-          <div class="flex items-center gap-2">
+          <div class="page-actions flex items-center gap-2">
             <button class="btn btn-secondary btn-sm" type="button" @click="refresh(true)" :disabled="busy"
                     x-text="busy ? '刷新中…' : '立即刷新'"
                     title="跳过占用缓存直接查询平台实况（30 秒内仅强制一次，每次至多 4 个只读查询）"></button>
           </div>
         </div>
         <div class="card-body">
-          <div class="gantt-wrap">
-            {{ coverage_strip('today') }}
-            <div class="gantt-legend">
-              <span><span class="swatch cell-active"></span>已预约</span>
-              <span><span class="swatch cell-signed"></span>已签到</span>
-              <span><span class="swatch cell-submitting"></span>提交中</span>
-              <span><span class="swatch cell-leaving"></span>签退中</span>
-              <span><span class="swatch cell-pending"></span>待执行</span>
-              <span><span class="swatch cell-failed"></span>失败</span>
-              <span><span class="swatch cell-complete"></span>已完成</span>
-              <span><span class="swatch cell-user-reserved"></span>👤 用户已约</span>
-              <span><span class="swatch cell-others-occupied"></span>🔒 他人已占</span>
-            </div>
+          {{ coverage_strip('today') }}
+          <div class="gantt-legend">
+            <span><span class="swatch cell-active"></span>已预约</span>
+            <span><span class="swatch cell-signed"></span>已签到</span>
+            <span><span class="swatch cell-submitting"></span>提交中</span>
+            <span><span class="swatch cell-leaving"></span>签退中</span>
+            <span><span class="swatch cell-pending"></span>待执行</span>
+            <span><span class="swatch cell-failed"></span>失败</span>
+            <span><span class="swatch cell-complete"></span>已完成</span>
+            <span><span class="swatch cell-user-reserved"></span>👤 用户已约</span>
+            <span><span class="swatch cell-others-occupied"></span>🔒 他人已占</span>
           </div>
         </div>
       </div>
@@ -186,9 +193,7 @@
           <span class="chip chip-warn" x-show="tomorrow.occ_err" x-text="'他人占用获取失败：' + (tomorrow.occ_err || '')"></span>
         </div>
         <div class="card-body">
-          <div class="gantt-wrap">
-            {{ coverage_strip('tomorrow') }}
-          </div>
+          {{ coverage_strip('tomorrow') }}
         </div>
       </div>
     </div>

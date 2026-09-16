@@ -46,24 +46,24 @@
   <div x-show="tab==='current'" class="flex flex-col gap-3">
     {% if current %}
     {% for h in current %}
-    <div class="card p-3 flex items-center justify-between gap-3"
+    <div class="card p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3"
          :class="h.state === 'pending_decision' ? 'border-warn/40' : ''">
       <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-2 mb-1">
+        <div class="flex items-center gap-2 mb-1 flex-wrap">
           <span class="font-mono font-bold">{{ h.account_id }}</span>
           <span class="chip chip-muted">{{ h.seat_num }}</span>
-          <span class="font-mono text-xs">{{ h.day }} {{ h.start_time }}–{{ h.end_time }}</span>
+          <span class="font-mono text-xs whitespace-nowrap">{{ h.day }} {{ h.start_time }}–{{ h.end_time }}</span>
           {% if h.state == "hosting" %}<span class="chip chip-accent">托管中</span>
           {% elif h.state == "pending_decision" %}<span class="chip chip-warn">待决·预约已取消</span>
           {% elif h.state == "queued" %}<span class="chip chip-muted">待重新采纳</span>
           {% endif %}
           {% if h.task_status %}<span class="chip chip-muted text-[11px]">任务 {{ h.task_status }}</span>{% endif %}
         </div>
-        <div class="text-xs text-ink-secondary">预约号 <span class="font-mono">{{ h.reserve_id }}</span>{% if h.task_id %} · 任务 #{{ h.task_id }}{% endif %}</div>
+        <div class="text-xs text-ink-secondary break-words">预约号 <span class="font-mono">{{ h.reserve_id }}</span>{% if h.task_id %} · 任务 #{{ h.task_id }}{% endif %}</div>
         {% if h.outcome %}<div class="text-xs text-ink-muted mt-1">{{ h.outcome }}</div>{% endif %}
       </div>
 
-      <div class="flex items-center gap-2 shrink-0">
+      <div class="flex items-center gap-2 flex-wrap md:shrink-0">
         {% if h.state == "hosting" %}
         <form method="post" action="/hosting/{{ h.id }}/toggle" class="inline">
           <input type="hidden" name="enabled" value="0">
@@ -108,26 +108,26 @@
     {% if history %}
     {% for h in history %}
     <div class="card p-3">
-      <div class="flex items-center justify-between gap-3">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
         <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2 mb-1">
+          <div class="flex items-center gap-2 mb-1 flex-wrap">
             <span class="font-mono font-bold">{{ h.account_id }}</span>
             <span class="chip chip-muted">{{ h.seat_num }}</span>
-            <span class="font-mono text-xs">{{ h.day }} {{ h.start_time }}–{{ h.end_time }}</span>
+            <span class="font-mono text-xs whitespace-nowrap">{{ h.day }} {{ h.start_time }}–{{ h.end_time }}</span>
             {% if h.state == "ended" %}<span class="chip chip-success">已结束</span>
             {% elif h.state == "stopped" %}<span class="chip chip-muted">已停止</span>
             {% endif %}
           </div>
-          <div class="text-xs text-ink-secondary">预约号 <span class="font-mono">{{ h.reserve_id }}</span>{% if h.task_id %} · 任务 #{{ h.task_id }}{% endif %}{% if h.task_status %} · 任务状态 {{ h.task_status }}{% endif %}</div>
+          <div class="text-xs text-ink-secondary break-words">预约号 <span class="font-mono">{{ h.reserve_id }}</span>{% if h.task_id %} · 任务 #{{ h.task_id }}{% endif %}{% if h.task_status %} · 任务状态 {{ h.task_status }}{% endif %}</div>
           {% if h.outcome %}<div class="text-xs text-ink-muted mt-1">{{ h.outcome }}</div>{% endif %}
         </div>
-        <form method="post" action="/hosting/{{ h.id }}/add-matrix" class="inline"
+        <form method="post" action="/hosting/{{ h.id }}/add-matrix" class="md:shrink-0"
               onsubmit="return window.confirmAction({
                 title: '加入守护矩阵',
                 desc: '将把该时段写入守护矩阵（{% if mode == 'weekly' %}按天自定义{% else %}全局统一{% endif %}）。',
                 confirmText: '加入',
               })">
-          <button class="btn btn-secondary btn-sm" type="submit">添加到任务</button>
+          <button class="btn btn-secondary btn-sm w-full md:w-auto" type="submit">添加到任务</button>
         </form>
       </div>
     </div>

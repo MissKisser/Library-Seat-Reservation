@@ -10,7 +10,7 @@
       <h1 class="page-title">绑定矩阵</h1>
       <p class="page-sub">单段 ≤{{ '%g'|format(max_seg) }}h · 同座可多段（不重叠）· 每账号每日累计 ≤ {{ '%g'|format(daily_limit) }}h{% if mode == 'weekly' %} · 按天自定义模式{% endif %}</p>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="page-actions flex items-center gap-2 flex-wrap">
       <form method="post" action="/bindings/mode" class="flex items-center gap-2"
             title="全局统一：每天的时段相同，界面保持单套；按天自定义：周一至周日分别勾选">
         <div class="flex border border-edge-subtle rounded-lg overflow-hidden text-xs">
@@ -23,7 +23,7 @@
       <button class="btn btn-primary btn-sm" type="button" id="replan-btn"
               @click="$dispatch('replan-open')">按策略重排（{{ allocation_labels[allocation_strategy] }}）</button>
       <form method="post" action="/bindings/auto">
-        <button class="btn btn-primary btn-sm" type="submit">⚡ 自动绑定未覆盖时段</button>
+        <button class="btn btn-primary btn-sm w-full" type="submit">⚡ 自动绑定未覆盖时段</button>
       </form>
     </div>
   </div>
@@ -117,9 +117,9 @@
         <div class="flex items-center justify-between mb-2">
           <span class="text-[13px] font-bold">统一应用到所有座位（{{ seats|length }} 个）</span>
           <div class="flex items-center gap-2">
-            <div class="flex gap-1">
+            <div class="scrollx">
               <template x-for="wd in wds" :key="wd">
-                <button type="button" class="chip" :class="active === wd ? 'chip-accent' : 'chip-muted'"
+                <button type="button" class="chip shrink-0" :class="active === wd ? 'chip-accent' : 'chip-muted'"
                         @click="active = wd" x-text="labels[wd]"></button>
               </template>
             </div>
@@ -147,9 +147,9 @@
           <div class="flex items-center justify-between">
             <span class="text-[13px] font-bold">{{ s.seat_num }}{% if s.label %} · {{ s.label }}{% endif %}</span>
             <div class="flex items-center gap-2">
-              <div class="flex gap-1">
+              <div class="scrollx">
                 <template x-for="wd in wds" :key="wd">
-                  <button type="button" class="chip" :class="active === wd ? 'chip-accent' : 'chip-muted'"
+                  <button type="button" class="chip shrink-0" :class="active === wd ? 'chip-accent' : 'chip-muted'"
                           @click="active = wd" x-text="labels[wd]"></button>
                 </template>
               </div>
@@ -258,22 +258,22 @@
             {% if diverged[s.seat_num] %}<span class="chip chip-warn ml-1">各天不一致</span>{% endif %}
           {% endif %}
         </span>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
           {% if mode == 'weekly' %}
-          <div class="flex gap-1">
+          <div class="scrollx basis-full md:basis-auto order-2 md:order-1">
             <template x-for="wd in wds" :key="wd">
-              <button type="button" class="chip" :class="active === wd ? 'chip-accent' : 'chip-muted'"
+              <button type="button" class="chip shrink-0" :class="active === wd ? 'chip-accent' : 'chip-muted'"
                       @click="active = wd" x-text="labels[wd]"></button>
             </template>
           </div>
           {% endif %}
-          <form method="post" action="/bindings/assign-seat" class="flex items-center gap-1 shrink-0"
+          <form method="post" action="/bindings/assign-seat" class="flex items-center gap-1 flex-wrap min-w-0 order-1 md:order-2"
                 title="把该座位全部期望时段指派给选定账号；其他账号自动让位，未提交任务作废">
             <input type="hidden" name="seat_num" value="{{ s.seat_num }}">
-            <select name="account_id" class="select text-xs" required>
+            <select name="account_id" class="select text-xs min-w-0 flex-1" required>
               {% for a in accounts %}<option value="{{ a.id }}">{{ a.id }}</option>{% endfor %}
             </select>
-            <button class="btn btn-ghost btn-sm" type="submit">整座指派</button>
+            <button class="btn btn-ghost btn-sm shrink-0" type="submit">整座指派</button>
           </form>
         </div>
       </div>
