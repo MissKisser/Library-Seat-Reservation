@@ -19,88 +19,6 @@
 
   <form method="post" action="/settings" class="flex flex-col gap-5">
 
-    {# HA 卡片: 高可用（主备容灾） #}
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">高可用（主备容灾）</span>
-        <span class="chip chip-muted">主备双活</span>
-      </div>
-      <div class="card-body flex flex-col gap-4">
-        <div class="text-xs text-ink-secondary leading-relaxed">
-          部署备用实例后可在本机与对端之间做自动故障切换。平时备用待命只读，主力心跳静默超阈值时自动接管，恢复后自动回切。
-        </div>
-
-        <div class="form-field">
-          <label>运行模式</label>
-          <div class="grid grid-cols-3 gap-2.5">
-            {% for m, lbl in [("standalone", "独立"), ("primary", "主力"), ("backup", "备用")] %}
-            <label class="flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer
-                          {% if eff.get('ha.mode', 'standalone') == m %}border-accent bg-accent-soft{% else %}border-edge-subtle bg-app-surface{% endif %}">
-              <input type="radio" name="ha.mode" value="{{ m }}" {% if eff.get('ha.mode', 'standalone') == m %}checked{% endif %}>
-              <span class="text-sm text-ink">{{ lbl }}</span>
-            </label>
-            {% endfor %}
-          </div>
-          <div class="hint">「独立」= 当前单实例行为（默认）；「主力」生成共享密钥并向对端推送心跳与快照；「备用」需要地址与共享密钥。</div>
-        </div>
-
-        <div class="form-field">
-          <label for="ha.key">共享密钥</label>
-          <div class="flex items-center gap-2">
-            <input id="ha.key" name="ha.key" type="text" class="input flex-1" value="{{ eff.get('ha.key', '') }}" placeholder="从主力面板复制（主力保存时自动生成；留空保持现值）">
-            <button class="btn btn-ghost btn-sm" type="submit" form="ha-key-rotate"
-                    onclick="return confirm('重新生成共享密钥？旧密钥立即失效，对端必须同步更新。')">
-              重新生成
-            </button>
-          </div>
-          <div class="hint">主力可在此自动生成或重新生成；备用端请从主力面板复制粘贴到此。留空保存则保持现有密钥。</div>
-          {% if "ha.key" in overridden %}<div class="text-xs text-target">已自定义</div>{% endif %}
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div class="form-field">
-            <label for="ha.peer_url">对端地址</label>
-            <input id="ha.peer_url" name="ha.peer_url" type="url" class="input" placeholder="https://peer.example" value="{{ eff.get('ha.peer_url', '') }}">
-            <div class="hint">主力与备用通常均为同一公网入口；本地冒烟可填 http://127.0.0.1:端口。</div>
-          </div>
-          <div class="form-field">
-            <label for="ha.heartbeat_interval_seconds">心跳周期（秒）</label>
-            <input id="ha.heartbeat_interval_seconds" name="ha.heartbeat_interval_seconds" type="number" min="1" max="600" class="input" value="{{ eff.get('ha.heartbeat_interval_seconds', '15') }}">
-          </div>
-          <div class="form-field">
-            <label for="ha.lease_ttl_seconds">租约 TTL（秒）</label>
-            <input id="ha.lease_ttl_seconds" name="ha.lease_ttl_seconds" type="number" min="10" max="3600" class="input" value="{{ eff.get('ha.lease_ttl_seconds', '90') }}">
-          </div>
-          <div class="form-field">
-            <label for="ha.activation_buffer_seconds">激活缓冲（秒）</label>
-            <input id="ha.activation_buffer_seconds" name="ha.activation_buffer_seconds" type="number" min="0" max="3600" class="input" value="{{ eff.get('ha.activation_buffer_seconds', '60') }}">
-          </div>
-          <div class="form-field">
-            <label for="ha.snapshot_interval_seconds">快照间隔（秒）</label>
-            <input id="ha.snapshot_interval_seconds" name="ha.snapshot_interval_seconds" type="number" min="10" max="86400" class="input" value="{{ eff.get('ha.snapshot_interval_seconds', '300') }}">
-          </div>
-          <div class="form-field">
-            <label for="ha.failback_grace_seconds">回切 grace（秒）</label>
-            <input id="ha.failback_grace_seconds" name="ha.failback_grace_seconds" type="number" min="10" max="3600" class="input" value="{{ eff.get('ha.failback_grace_seconds', '180') }}">
-          </div>
-        </div>
-
-        {% if ha %}
-        <div class="rounded-xl border border-edge-subtle bg-app-muted/30 p-3 text-xs text-ink-secondary leading-relaxed">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="chip {% if ha.can_act %}chip-success{% else %}chip-warn{% endif %}" style="font-size:10px;padding:1px 6px">本机状态</span>
-            <span>模式：{{ ha.mode }}</span>
-            <span class="text-ink-muted">·</span>
-            <span>状态：{{ ha.state }}</span>
-          </div>
-          <div class="text-ink-muted">本机 instance_id: {{ ha.instance_id or "（未引导）" }}</div>
-          <div class="text-ink-muted">对端地址: {{ ha.peer_url or "（未配置）" }}</div>
-        </div>
-        {% endif %}
-
-        {% if ha_key_rotated %}<div class="banner banner-warn"><span class="dot"></span><span>已重新生成共享密钥；旧密钥立即失效，请立即在对端面板同步更新。</span></div>{% endif %}
-      </div>
-    </div>
 
     {# 1. 预约通道：四档策略 + 对比表 #}
     <div class="card">
@@ -266,8 +184,6 @@
       <button class="btn btn-primary" type="submit">保存设置</button>
       <span class="text-xs text-ink-muted">保存后立即生效，无需重启</span>
     </div>
-
-    <form id="ha-key-rotate" method="post" action="/ha/key/regenerate" style="display:none"></form>
 
     <div class="float-save" x-show="dirty && !saveVisible" x-cloak style="display:none">
       <button class="btn btn-primary" type="submit">保存设置</button>
