@@ -25,7 +25,12 @@
 
   {# 导入手动抢到的预约号 #}
   <details class="card">
-    <summary class="card-header cursor-pointer list-none"><span class="card-title">导入已有预约（App 手动抢到的预约号）</span></summary>
+    <summary class="card-header cursor-pointer list-none">
+      <span class="card-title-row">
+        <span class="card-title">导入已有预约</span>
+        <span class="card-sub">App 手动抢到的预约号</span>
+      </span>
+    </summary>
     <div class="card-body">
       <form method="post" action="/tasks/import" class="flex flex-col gap-3">
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -66,31 +71,28 @@
 
   <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-start">
     <template x-for="col in columns" :key="col.key">
-      <div class="flex flex-col gap-2">
+      <div class="flex flex-col gap-1.5">
         <div class="flex items-center px-1">
           <span class="chip" :class="col.tone" x-text="col.title + ' · ' + count(col)"></span>
         </div>
         <template x-for="t in ofCol(col)" :key="t.id">
-          <div class="card p-3" :class="t.status === 'failed' ? 'border-danger/40' : ''">
-            <div class="flex flex-wrap items-center gap-1 mb-1">
-              <span class="text-xs font-bold font-mono whitespace-nowrap" x-text="t.seat_num + ' · ' + t.start + '–' + t.end"></span>
-              <span class="chip" :class="toneOf(t)" x-text="t.status"></span>
-              <template x-if="t.source === 'adopt'">
-                <span class="chip chip-accent text-[11px]">实况托管</span>
-              </template>
-              <template x-if="t.source === 'adopt_matrix'">
-                <span class="chip chip-accent text-[11px]">实况托管·矩阵段</span>
-              </template>
-              <template x-if="t.source === 'import'">
-                <span class="chip chip-warn text-[11px]">手动导入</span>
-              </template>
-              <template x-if="t.source === 'manual'">
-                <span class="chip chip-warn text-[11px]">手动预约</span>
-              </template>
+          <div class="flex flex-col gap-1">
+            <div class="record-row" :class="t.status === 'failed' ? 'is-danger' : ''">
+              <div class="rr-main">
+                <div class="rr-title" x-text="t.seat_num + ' · ' + t.start + '–' + t.end"></div>
+                <div class="rr-meta">
+                  <span x-text="t.account_id || '未指派'"></span>
+                  <template x-if="t.source === 'adopt'"><span class="chip chip-accent text-[10px] ml-1">实况托管</span></template>
+                  <template x-if="t.source === 'adopt_matrix'"><span class="chip chip-accent text-[10px] ml-1">实况托管·矩阵段</span></template>
+                  <template x-if="t.source === 'import'"><span class="chip chip-warn text-[10px] ml-1">手动导入</span></template>
+                  <template x-if="t.source === 'manual'"><span class="chip chip-warn text-[10px] ml-1">手动预约</span></template>
+                </div>
+              </div>
+              <span class="chip shrink-0" :class="toneOf(t)" x-text="statusLabel(t)"></span>
             </div>
             <template x-if="t.status === 'failed'">
-              <div>
-                <div class="text-xs text-danger mt-1 break-words" x-text="t.last_error || '未知原因'"></div>
+              <div class="mt-1 mb-1.5 ml-1">
+                <div class="text-xs text-danger break-words" x-text="t.last_error || '未知原因'"></div>
                 <form method="post" action="/tasks/quick-reserve" class="mt-2">
                   <input type="hidden" name="account_id" :value="t.account_id">
                   <input type="hidden" name="seat_num" :value="t.seat_num">

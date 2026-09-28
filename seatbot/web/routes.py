@@ -418,33 +418,17 @@ async def dashboard(request: Request):
     accounts = await store.list_accounts()
     target_seats = await store.list_target_seats()
     # 首屏骨架立返: 不在此处等超星占用查询 (冷启动登录可达数十秒),
-    # 覆盖数据由前端 boot 动画期间经 /api/dashboard-data 异步拉取补齐。
+    # 覆盖数据由前端经 /api/dashboard-data 异步拉取补齐。
     today = today_cst()
     tomorrow = today + timedelta(days=1)
 
     def _empty_shell(day: date) -> dict:
         return {"view_day": day.isoformat(), "rows": [], "gap_count": 0, "occ_err": None}
-    # 启动动画的时段徽章: 取 view_day 那天的期望时段（今天或明天的星期键）
-    boot_slots: list[str] = []
-    view_wd_today = weekday_key(today)
-    view_wd_tomorrow = weekday_key(tomorrow)
-    is_weekly_boot = (await _schedule_mode(request) == "weekly")
-    for s in target_seats:
-        for r in desired_slots_of(s, view_wd_today, is_weekly=is_weekly_boot):
-            label = r.split("-")[0][:2] + "–" + r.split("-")[1][:2]
-            if label not in boot_slots:
-                boot_slots.append(label)
-        for r in desired_slots_of(s, view_wd_tomorrow, is_weekly=is_weekly_boot):
-            label = r.split("-")[0][:2] + "–" + r.split("-")[1][:2]
-            if label not in boot_slots:
-                boot_slots.append(label)
-
     initial = {
         "today": _empty_shell(today),
         "tomorrow": _empty_shell(tomorrow),
         "now_hhmm": now_cst().strftime("%H:%M"),
         "recent_logs": [],
-        "boot_slots": boot_slots,
         "target_seat_count": len(target_seats),
         "account_count": len(accounts),
     }

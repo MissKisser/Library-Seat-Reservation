@@ -5,6 +5,12 @@ module.exports = {
     'cell-card',
     'chip', 'chip-accent', 'chip-success', 'chip-progress',
     'chip-warn', 'chip-danger', 'chip-muted', 'chip-target',
+    'card-title-row', 'card-sub',
+    'stat-card--slim',
+    'record-row', 'record-row/is-danger',
+    'choice-card',
+    'date-field',
+    'meter',
   ],
   darkMode: ['class', '[data-theme="dark"]'],
   theme: {

@@ -26,7 +26,7 @@
         <img src="/static/favicon.svg" alt="SeatBot">
         <span class="text-base font-semibold text-ink tracking-tight">SeatBot</span>
       </a>
-      {% if title %}<span class="header-crumb-sep">/</span><span class="header-title">{{ title }}</span>{% endif %}
+      {% if title %}<span class="header-crumb"><span class="header-crumb-sep">/</span><span class="header-title">{{ title }}</span></span>{% endif %}
     </div>
     <div class="flex items-center gap-2.5">
       <div class="topbar-clock" x-data="topbarClock()">

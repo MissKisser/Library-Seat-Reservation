@@ -5,6 +5,24 @@
   const THEME_KEY = 'seatbot-theme';
   const root = document.documentElement;
 
+  /* ===== 任务状态字典：前端状态语义的单点来源 =====
+   * 键集合必须与 _macros/badge.html 的映射一致，
+   * 由 tests/test_web_ui_desktop.py 的键集合一致性断言守护。 */
+  const STATUS_LABELS = {
+    active: '已预约',
+    signed: '已签到',
+    submitting: '提交中',
+    leaving: '签退中',
+    pending: '待执行',
+    ready: '待执行',
+    failed: '失败',
+    complete: '已完成',
+  };
+  window.SEATBOT_STATUS_LABELS = STATUS_LABELS;
+  window.seatbotStatusLabel = function (status) {
+    return STATUS_LABELS[status] || status || '—';
+  };
+
   /* ===== 主题：初始化 + 全局切换 ===== */
   function applyTheme(t) {
     root.setAttribute('data-theme', t);
@@ -505,7 +523,6 @@
       tomorrow: initial.tomorrow,
       recentLogs: initial.recent_logs || [],
       notifications: initial.notifications || [],
-      bootSlots: initial.boot_slots || [],
       targetSeatCount: initial.target_seat_count || 0,
       accountCount: initial.account_count || 0,
       now: initial.now_hhmm || '',
@@ -516,8 +533,6 @@
       clockOffsetMs: null,
       timer: null,
       card: null,
-      /* 首屏动画已注释停用: active 置 false + target 置满, 避免 tick/probe 被 boot 门控卡死 */
-      boot: { active: false, display: 100, target: 100, stage: '就绪' },
 
       formatTs(ts) {
         return window.formatTs(ts);
@@ -525,7 +540,6 @@
       init() {
         this.timer = setInterval(() => this.tick(), 1000);
         this._clockTimer = setInterval(() => this.tickClock(), 1000);
-        // this._initBoot();
         this.refresh();
         this._onVis = () => { if (!document.hidden) this.probe(); };
         document.addEventListener('visibilitychange', this._onVis);
@@ -533,8 +547,6 @@
       destroy() {
         clearInterval(this.timer);
         clearInterval(this._clockTimer);
-        clearInterval(this._bootTimer);
-        clearTimeout(this._bootGuard);
         document.removeEventListener('visibilitychange', this._onVis);
       },
 
@@ -546,43 +558,15 @@
         }
       },
 
-      /* 首屏加载动画: 缓动数字向 target 爬升, 首次数据到达后放行到 100% 揭幕 */
-      _initBoot() {
-        this._bootTimer = setInterval(() => {
-          const b = this.boot;
-          if (b.display < b.target) {
-            b.display = Math.min(b.target, b.display + (b.target - b.display) * 0.07 + 0.25);
-            if (b.display >= 99.6 && b.target >= 100) this._finishBoot();
-          }
-        }, 60);
-        setTimeout(() => {
-          if (this.boot.target < 88) {
-            this.boot.target = 88;
-            this.boot.stage = '正在拉取今日与次日占用数据…';
-          }
-        }, 200);
-        this._bootGuard = setTimeout(() => {
-          if (this.boot.target < 100) {
-            this.boot.target = 100;
-            this.boot.stage = '网络较慢，数据稍后自动补齐';
-          }
-        }, 15000);
-      },
-      _finishBoot() {
-        clearInterval(this._bootTimer);
-        this.boot.display = 100;
-        this.boot.stage = '就绪';
-        setTimeout(() => { this.boot.active = false; }, 320);
-      },
       tick() {
-        if (this.busy || this.boot.active) return;
+        if (this.busy) return;
         this.countdown = Math.max(0, this.countdown - 1);
         if (this.countdown === 0) this.probe();
       },
 
       /* 版本探针: 纯本地轻请求; 版本没变就不拉覆盖数据、不打超星 */
       async probe() {
-        if (this.busy || this.boot.active) return;
+        if (this.busy) return;
         this.countdown = 12;
         try {
           const r = await fetch('/api/version', { cache: 'no-store' });
@@ -608,6 +592,37 @@
       isSuccess(c) { return SUCCESS_STATUSES.includes(this.cellStatus(c)); },
       cellUserMark(c) { return !!c.user_reserved && !this.isSuccess(c); },
       cellOthersMark(c) { return !!c.others_occupied && !this.isSuccess(c); },
+      isCellColored(c) {
+        if (!c) return false;
+        return this.cellStatus(c) !== 'empty' || this.cellUserMark(c) || this.cellOthersMark(c);
+      },
+      cellSegmentKey(c) {
+        if (!c || !this.isCellColored(c)) return '';
+        if (this.cellUserMark(c)) return 'user_reserved';
+        if (this.cellOthersMark(c)) return 'others_occupied';
+        return this.cellStatus(c);
+      },
+      cellTimeLabel(cells, idx) {
+        if (!cells || idx < 0 || idx >= cells.length) return '';
+        const c = cells[idx];
+        if (!this.isCellColored(c)) return '';
+        const prev = idx > 0 ? cells[idx - 1] : null;
+        const next = idx < cells.length - 1 ? cells[idx + 1] : null;
+        const curKey = this.cellSegmentKey(c);
+        const prevKey = prev ? this.cellSegmentKey(prev) : '';
+        const nextKey = next ? this.cellSegmentKey(next) : '';
+
+        const isStart = curKey !== prevKey;
+        const isEnd = curKey !== nextKey;
+
+        if (isStart) return c.start;
+        if (isEnd) return c.end;
+        return '';
+      },
+      shortTime(t) {
+        if (!t) return '';
+        return t.slice(0, 2);
+      },
       cardHit(c) {
         const hit = (c.accounts_info && c.accounts_info[0]) || null;
         if (!hit || !hit.task_id) return null;
@@ -669,13 +684,11 @@
           this.notifications = j.notifications || [];
           this.now = j.now_hhmm || this.now;
           if (j.now_ms) this.clockOffsetMs = j.now_ms - Date.now();
-          if (this.boot.target < 100) this.boot.stage = '核对座位覆盖…';
         } catch (e) {
           console.warn('dashboard refresh failed:', e);
         } finally {
           this.countdown = 12;
           this.busy = false;
-          if (this.boot.target < 100) this.boot.target = 100;
           this._knownV = undefined;  // 拉取后重置基线, 由下轮探针重新对齐
         }
       },
@@ -702,6 +715,7 @@
           .sort((a, b) => a.start.localeCompare(b.start) || a.seat_num.localeCompare(b.seat_num));
       },
       count(col) { return this.ofCol(col).length; },
+      statusLabel(t) { return window.seatbotStatusLabel(t.status); },
       toneOf(t) {
         const col = this.columns.find(c => c.statuses.includes(t.status));
         return col ? col.tone : 'chip-muted';

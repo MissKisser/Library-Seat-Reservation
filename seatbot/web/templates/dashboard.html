@@ -4,43 +4,35 @@
 {% block content %}
 <div class="flex flex-col gap-5" x-data='coverageGrid({{ initial|tojson }})'>
 
-  {# 全屏首屏加载动画: 进度由真实数据拉取驱动, 100% 后揭幕 #}
-  <div class="boot-overlay" :class="boot.active ? '' : 'boot-hide'">
-    <div class="boot-halo boot-halo-a"></div>
-    <div class="boot-halo boot-halo-b"></div>
-    <div class="boot-box">
-      <div class="boot-brand"><span class="boot-logo">📚</span><span>SeatBot</span></div>
-      <div class="boot-slots">
-        <template x-for="(s, i) in bootSlots" :key="'boot-' + s">
-          <div class="boot-slot" :class="boot.display >= Math.ceil((i + 1) * 100 / (bootSlots.length + 1)) ? 'lit' : ''" x-text="s"></div>
-        </template>
-      </div>
-      <div class="boot-track">
-        <div class="boot-fill" :style="'width:' + boot.display + '%'"></div>
-      </div>
-      <div class="boot-num" x-text="Math.floor(boot.display) + '%'">0%</div>
-      <div class="boot-stage" x-text="boot.stage">正在唤醒守护系统…</div>
+  {# 页头：补齐层级锚点 + 全局刷新 #}
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">覆盖图</h1>
+      <p class="page-sub">按座位查看今日与明日的守护状态，缺口会以红框标出</p>
+    </div>
+    <div class="page-actions flex items-center gap-2">
+      <button class="btn btn-secondary btn-sm" type="button" @click="refresh(true)" :disabled="busy"
+              x-text="busy ? '刷新中…' : '立即刷新'"
+              title="跳过占用缓存直接查询平台实况（30 秒内仅强制一次，每次至多 4 个只读查询）"></button>
     </div>
   </div>
 
-  {# 指标卡 4 张 #}
+  {# 指标卡：一行式概览（时间见顶栏时钟，不重复占位） #}
   <div class="stat-grid">
-    <div class="stat-card">
+    <div class="stat-card stat-card--slim">
       <div class="stat-label">目标座位</div>
       <div class="stat-value" x-text="targetSeatCount"></div>
     </div>
-    <div class="stat-card">
+    <div class="stat-card stat-card--slim">
       <div class="stat-label">守护账号</div>
       <div class="stat-value" x-text="accountCount"></div>
     </div>
-    <div class="stat-card">
+    <div class="stat-card stat-card--slim">
       <div class="stat-label">今日覆盖</div>
-      <div class="stat-value" :class="today.gap_count ? 'accent' : ''" x-text="today.rows.length + ' 座'"></div>
-      <div class="stat-hint" x-text="today.gap_count ? (today.gap_count + ' 个空缺') : '全覆盖'"></div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">当前时间</div>
-      <div class="stat-value" x-text="now"></div>
+      <div class="flex items-baseline gap-1.5">
+        <div class="stat-value" :class="today.gap_count ? 'accent' : ''" x-text="today.rows.length + ' 座'"></div>
+        <div class="stat-hint" x-text="today.gap_count ? (today.gap_count + ' 个空缺') : '全覆盖'"></div>
+      </div>
     </div>
   </div>
 
@@ -72,7 +64,7 @@
               <div class="text-[10px] text-ink-muted truncate" x-text="row.label || '—'"></div>
             </div>
             <div class="gantt-cells">
-              <template x-for="c in row.cells" :key="'{{ scope }}-' + row.seat_num + '-' + c.start">
+              <template x-for="(c, idx) in row.cells" :key="'{{ scope }}-' + row.seat_num + '-' + c.start">
                 <div class="gantt-cell"
                      :class="[
                        'cell-' + cellStatus(c),
@@ -82,8 +74,16 @@
                      ]"
                      :title="row.seat_num + ' ' + c.start + '–' + c.end"
                      @click="openCard('{{ scope }}', row.seat_num, c, $event)">
-                  <span style="font-size:10px;line-height:1" x-show="cellUserMark(c)">👤</span>
-                  <span style="font-size:10px;line-height:1" x-show="cellOthersMark(c)">🔒</span>
+                  <div class="gantt-cell-content">
+                    <span style="font-size:10px;line-height:1" x-show="cellUserMark(c)">👤</span>
+                    <span style="font-size:10px;line-height:1" x-show="cellOthersMark(c)">🔒</span>
+                    <template x-if="cellTimeLabel(row.cells, idx)">
+                      <span class="gantt-cell-time">
+                        <span class="hidden md:inline" x-text="cellTimeLabel(row.cells, idx)"></span>
+                        <span class="md:hidden" x-text="shortTime(cellTimeLabel(row.cells, idx))"></span>
+                      </span>
+                    </template>
+                  </div>
                 </div>
               </template>
             </div>
@@ -97,8 +97,11 @@
   {% endmacro %}
   <template x-if="notifications && notifications.length">
     <div class="flex flex-col gap-2">
-      <div class="flex">
-        <button type="button" class="btn btn-sm btn-ghost ml-auto"
+      <div class="flex items-center justify-between gap-2 px-1">
+        <span class="text-xs text-ink-muted">
+          待处理通知 · <span x-text="notifications.length"></span> 条
+        </span>
+        <button type="button" class="btn btn-sm btn-ghost"
                 :disabled="dismissAllBusy" @click="dismissAllNotifications()">全部忽略</button>
       </div>
       <template x-for="n in notifications" :key="n.id">
@@ -135,19 +138,17 @@
     <span>覆盖稳固，全部目标座位均在守护中。</span>
   </div>
 
-  {# 主区：左列双甘特 + 右列侧栏 #}
+  {# 主区：两条甘特各占满整行 #}
   <div class="dashboard-grid">
     <div class="flex flex-col gap-5 min-w-0">
 
       {# 今天甘特 #}
       <div class="card">
         <div class="card-header">
-          <span class="card-title">覆盖情况（按座位）<span class="text-xs text-ink-muted ml-2 font-normal" x-text="'今天 ' + today.view_day"></span></span>
-          <div class="page-actions flex items-center gap-2">
-            <button class="btn btn-secondary btn-sm" type="button" @click="refresh(true)" :disabled="busy"
-                    x-text="busy ? '刷新中…' : '立即刷新'"
-                    title="跳过占用缓存直接查询平台实况（30 秒内仅强制一次，每次至多 4 个只读查询）"></button>
-          </div>
+          <span class="card-title-row">
+            <span class="card-title">覆盖情况（按座位）</span>
+            <span class="card-sub">今天 <span x-text="today.view_day"></span></span>
+          </span>
         </div>
         <div class="card-body">
           {{ coverage_strip('today') }}
@@ -168,44 +169,58 @@
       {# 明天甘特 #}
       <div class="card">
         <div class="card-header">
-          <span class="card-title">覆盖情况（按座位）<span class="text-xs text-ink-muted ml-2 font-normal" x-text="'明天 ' + tomorrow.view_day"></span></span>
+          <span class="card-title-row">
+            <span class="card-title">覆盖情况（按座位）</span>
+            <span class="card-sub">明天 <span x-text="tomorrow.view_day"></span></span>
+          </span>
           <span class="chip chip-warn" x-show="tomorrow.occ_err" x-text="'他人占用获取失败：' + (tomorrow.occ_err || '')"></span>
         </div>
         <div class="card-body">
           {{ coverage_strip('tomorrow') }}
+          <div class="gantt-legend">
+            <span><span class="swatch cell-active"></span>已预约</span>
+            <span><span class="swatch cell-signed"></span>已签到</span>
+            <span><span class="swatch cell-submitting"></span>提交中</span>
+            <span><span class="swatch cell-leaving"></span>签退中</span>
+            <span><span class="swatch cell-pending"></span>待执行</span>
+            <span><span class="swatch cell-failed"></span>失败</span>
+            <span><span class="swatch cell-complete"></span>已完成</span>
+            <span><span class="swatch cell-user-reserved"></span>👤 用户已约</span>
+            <span><span class="swatch cell-others-occupied"></span>🔒 他人已占</span>
+          </div>
         </div>
       </div>
     </div>
+  </div>
 
-    {# 侧栏 #}
-    <div class="flex flex-col gap-4">
-      <div class="card">
-        <div class="card-header"><span class="card-title">目标座位</span><a class="text-xs text-accent" href="/targets">全部 →</a></div>
-        <div class="card-body flex flex-col gap-1.5">
-          <template x-for="r in today.rows.slice(0, 6)" :key="r.seat_num">
-            <div class="flex items-center justify-between text-sm">
-              <span class="font-mono" x-text="r.seat_num"></span>
-              <span class="text-xs text-ink-secondary" x-text="r.label || '—'"></span>
-            </div>
-          </template>
-          <div class="text-xs text-ink-muted" x-show="today.rows.length === 0">暂无</div>
-        </div>
+  {# 底部信息区：目标座位与最近活动并排，底部对齐 #}
+  <div class="dashboard-rail">
+    <div class="card">
+      <div class="card-header"><span class="card-title">目标座位</span><a class="text-xs text-accent" href="/targets">全部 →</a></div>
+      <div class="card-body flex flex-col gap-1.5">
+        <template x-for="r in today.rows.slice(0, 6)" :key="r.seat_num">
+          <div class="flex items-center justify-between text-sm">
+            <span class="font-mono" x-text="r.seat_num"></span>
+            <span class="text-xs text-ink-secondary" x-text="r.label || '—'"></span>
+          </div>
+        </template>
+        <div class="text-xs text-ink-muted" x-show="today.rows.length === 0">暂无</div>
       </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">最近活动</span><a class="text-xs text-accent" href="/logs">全部 →</a></div>
-        <div class="card-body flex flex-col gap-2">
-          <template x-for="(log, i) in recentLogs.slice(0, 8)" :key="i + '-' + log.ts">
-            <div class="flex items-start gap-2 text-xs">
-              <span class="mt-1 h-1.5 w-1.5 rounded-full shrink-0"
-                    :class="log.level === 'ERROR' ? 'bg-danger' : (log.level === 'WARN' ? 'bg-warn' : 'bg-info')"></span>
-              <div class="flex-1 min-w-0">
-                <div class="text-ink-secondary truncate" x-text="log.message"></div>
-                <div class="text-ink-muted" x-text="log.account_id || '—'"></div>
-              </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">最近活动</span><a class="text-xs text-accent" href="/logs">全部 →</a></div>
+      <div class="card-body flex flex-col gap-2">
+        <template x-for="(log, i) in recentLogs.slice(0, 8)" :key="i + '-' + log.ts">
+          <div class="flex items-start gap-2 text-xs">
+            <span class="mt-1 h-1.5 w-1.5 rounded-full shrink-0"
+                  :class="log.level === 'ERROR' ? 'bg-danger' : (log.level === 'WARN' ? 'bg-warn' : 'bg-info')"></span>
+            <div class="flex-1 min-w-0">
+              <div class="text-ink-secondary truncate" x-text="log.message"></div>
+              <div class="text-ink-muted" x-text="log.account_id || '—'"></div>
             </div>
-          </template>
-          <div class="text-xs text-ink-muted" x-show="recentLogs.length === 0">暂无活动</div>
-        </div>
+          </div>
+        </template>
+        <div class="text-xs text-ink-muted" x-show="recentLogs.length === 0">暂无活动</div>
       </div>
     </div>
   </div>
