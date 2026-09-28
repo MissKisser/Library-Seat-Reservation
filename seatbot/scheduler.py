@@ -263,6 +263,8 @@ class Scheduler:
             await self._bootstrap_for_account(acc, today, [s.seat_num for s in target_seats])
 
     async def _bootstrap_for_account(self, acc: Account, day: date, fallback_seats: list[str]) -> None:
+        if getattr(acc, "status", "active") != "active":
+            return
         # 一个 (account, day, seat_num) 三元组视为一个 bootstrap 单位
         seats = acc.bound_seats or fallback_seats
         for seat_num in seats:
@@ -1091,8 +1093,9 @@ class Scheduler:
         （实弹 14:01 三连拒实证），故只认 start 晚于当前的时段。
         """
         today = today_cst()
+        active_ids = {a.id for a in await self.store.list_accounts()}
         for t in await self.store.list_tasks(day=today):
-            if t.status != TaskStatus.PENDING:
+            if t.status != TaskStatus.PENDING or t.account_id not in active_ids:
                 continue
             if at_cst(t.day, t.start_time) > now:
                 return True
@@ -1607,7 +1610,7 @@ class Scheduler:
         # 封堵"禁用瞬间恰有 SUBMITTING、对账回退成 PENDING 后悬空"的缝隙
         for acc in await self.store.list_accounts(include_inactive=True):
             for t in await self.store.list_tasks(account_id=acc.id):
-                if acc.status == "inactive" and t.status == TaskStatus.PENDING:
+                if acc.status == "inactive" and t.status in (TaskStatus.PENDING, TaskStatus.READY):
                     await self.store.update_task_status(
                         t.id, TaskStatus.FAILED, last_error="账号已禁用，任务作废",
                     )
@@ -1710,7 +1713,7 @@ class Scheduler:
 
     async def _bootstrap_for_account_if_needed(self, acc_id: str) -> None:
         acc_cfg = await self.store.get_account(acc_id)
-        if not acc_cfg:
+        if not acc_cfg or getattr(acc_cfg, "status", "active") != "active":
             return
         today = today_cst()
         seats = await self.store.list_target_seats()

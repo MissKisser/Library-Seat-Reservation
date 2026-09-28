@@ -6,6 +6,8 @@ __pycache__/
 config.yaml
 seatbot.db
 seatbot.db.bak
+seatbot.db-wal
+seatbot.db-shm
 logs/
 .playwright-mcp/
 *.png
@@ -13,6 +15,7 @@ logs/
 !seatbot/web/static/apple-touch-icon.png
 .pytest_cache/
 .tmp_pytest/
+.tmp_guard/
 .gitignore.tmp
 .coverage
 htmlcov/

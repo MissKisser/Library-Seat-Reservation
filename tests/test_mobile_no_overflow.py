@@ -141,7 +141,7 @@ def _assert_pages(base_url: str, width: int, height: int) -> None:
             offenders = []
             for path in PAGES:
                 page.goto(f"{base_url}{path}?token={TOKEN}", wait_until="networkidle")
-                # Alpine 初始化 + 首屏 boot-overlay 揭幕
+                # Alpine 初始化 + 首屏覆盖数据异步补齐
                 page.wait_for_timeout(2500)
                 sw = page.evaluate("document.documentElement.scrollWidth")
                 iw = page.evaluate("window.innerWidth")

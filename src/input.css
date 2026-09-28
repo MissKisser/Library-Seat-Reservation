@@ -73,7 +73,7 @@
   /* 细滚动条随主题换色（scrollbar-* 可继承，挂在根上全局生效） */
   html { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
   /* 原生表单控件（checkbox/radio/进度）统一品牌色，避免深色下系统默认蓝突兀 */
-  html { accent-color: var(--accent); color-scheme: light dark; }
+  html { accent-color: var(--accent); color-scheme: light; }
   [data-theme="dark"] { color-scheme: dark; }
   body {
     background-color: var(--bg-app);
@@ -119,7 +119,10 @@
   @media (max-width: 767px) {
     .card-header { @apply flex-col items-start gap-2; }
   }
-  .card-title { @apply text-[13px] font-bold text-ink; }
+  .card-title { @apply text-sm font-semibold text-ink; }
+  /* 标题与分类标同行容器：避免 chip 被 flex 挤成孤儿独立行 */
+  .card-title-row { @apply inline-flex items-center gap-2 flex-wrap min-w-0; }
+  .card-sub { @apply text-xs text-ink-muted; }
   .card-body { @apply p-[16px_18px_18px]; }
   .card-footer { @apply px-4 py-3 border-t border-edge-subtle bg-app-muted/30; }
 
@@ -141,16 +144,51 @@
     @apply bg-app-surface border border-edge-subtle rounded-2xl p-4 flex flex-col gap-1;
     box-shadow: var(--shadow-card);
   }
+  /* 瘦身档：收紧内外边距与标签行高，用于一行式 KPI 概览 */
+  .stat-card--slim { @apply p-3.5 gap-0.5; }
   .stat-label { @apply text-[11px] text-ink-secondary; }
   .stat-value { @apply text-xl font-extrabold text-ink tabular; }
   .stat-value.accent { @apply text-danger; }
   .stat-hint { @apply text-[11px] text-ink-muted; }
 
+  /* ===== 紧凑记录行：任务/日志/通知等「一条一卡」的统一形态 ===== */
+  .record-row {
+    @apply flex items-center gap-2 px-3 py-2 rounded-lg
+           bg-app-surface border border-edge-subtle;
+  }
+  .record-row.is-danger { @apply border-danger/40; }
+  .record-row .rr-main { @apply min-w-0 flex-1; }
+  .record-row .rr-title { @apply text-xs font-semibold text-ink; overflow-wrap: anywhere; }
+  .record-row .rr-meta {
+    @apply text-[11px] text-ink-muted truncate;
+    overflow-wrap: anywhere;
+  }
+  /* 窄屏：状态标仍与文本块同行右对齐，不另起一行 */
+  @media (max-width: 767px) {
+    .record-row { @apply items-start; }
+  }
+
+  /* ===== 单选卡片：整卡可点，选中态由 :checked 驱动 ===== */
+  .choice-card {
+    @apply flex gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors
+           border-edge-subtle bg-app-surface;
+  }
+  .choice-card:hover { @apply border-edge-strong; }
+  .choice-card:has(:checked) { @apply border-accent bg-accent-soft; }
+  .choice-card input[type="radio"] { @apply mt-0.5 shrink-0; }
+
+  /* ===== 细进度条（账号余量等）===== */
+  .meter {
+    @apply inline-flex items-center overflow-hidden bg-app-muted shrink-0;
+    height: 0.375rem; width: 3.5rem; border-radius: 9999px;
+  }
+  .meter > span { @apply block h-full bg-accent; }
+
   /* ===== 表单原子 ===== */
   .form-field { @apply flex flex-col gap-1.5; }
   .form-field > label { @apply text-xs font-medium text-ink-secondary; }
   .form-field .req { @apply text-danger ml-0.5; }
-  .form-field .hint { @apply text-xs text-ink-muted; }
+  .form-field .hint { @apply text-xs text-ink-muted leading-snug; }
   .form-field .error { @apply text-xs text-danger; }
   .input, .select, .textarea {
     @apply w-full h-9 px-3 text-sm rounded-[10px]
@@ -164,6 +202,18 @@
     .select.text-xs { font-size: 14px; }
   }
   .textarea { @apply h-auto py-2 min-h-[80px] resize-y font-mono text-xs; }
+  /* 日期控件：抹平浏览器原生长相，统一到 .input 的圆角/描边/聚焦环 */
+  .date-field {
+    @apply w-auto h-7 px-2.5 text-xs font-mono rounded-lg tabular
+           bg-app-surface border border-edge-strong text-ink-secondary
+           focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30
+           transition-colors;
+  }
+  .date-field::-webkit-calendar-picker-indicator {
+    @apply opacity-45 cursor-pointer;
+    filter: invert(var(--date-icon-invert, 0));
+  }
+  [data-theme="dark"] { --date-icon-invert: 1; }
   .form-row { @apply grid grid-cols-2 gap-3; }
   @media (max-width: 640px) { .form-row { @apply grid-cols-1; } }
   .checkbox-grid { @apply grid grid-cols-2 gap-2 sm:grid-cols-3; }
@@ -271,17 +321,29 @@
   .gantt-strip-inner .gantt-ruler-label,
   .gantt-strip-inner .gantt-row-label {
     @apply sticky left-0 z-[2] shrink-0 bg-app-table-header;
-    width: 4rem;
+    width: 3.25rem;
   }
+  /* 甘特卡片左右留白收紧：把省下的宽度让给格子，避免 1280 档格子过窄 */
+  .card > .card-body:has(> .gantt-strip-wrap) { @apply px-2.5; }
   .gantt-strip-inner .gantt-row-label { @apply flex flex-col justify-center; }
   .gantt-strip-inner .gantt-cells { @apply flex min-w-0; flex: 1 1 auto; gap: 1px; }
   /* 格子弹性：桌面随容器铺满（同旧 flex-1 行为），移动钉在 18px 触发横滚 */
   .gantt-strip-inner .gantt-cell {
-    @apply flex items-center justify-center cursor-pointer;
-    flex: 1 0 18px; height: 1.75rem; border-radius: 3px;
+    @apply relative flex items-center justify-center cursor-pointer overflow-hidden select-none;
+    flex: 1 0 18px; height: 1.75rem; border-radius: 2px;
   }
   @media (min-width: 768px) {
     .gantt-strip-inner .gantt-cell { height: 34px; }
+  }
+  .gantt-strip-inner .gantt-cell-content {
+    @apply absolute inset-0 flex flex-col items-center justify-center pointer-events-none select-none overflow-hidden;
+  }
+  .gantt-strip-inner .gantt-cell-time {
+    @apply font-mono font-medium text-ink whitespace-nowrap;
+    font-size: 9px; line-height: 11px;
+  }
+  @media (min-width: 768px) {
+    .gantt-strip-inner .gantt-cell-time { font-size: 10px; line-height: 12px; }
   }
   .gantt-strip-inner .gantt-ruler-cell {
     @apply relative text-ink-muted whitespace-nowrap overflow-hidden text-center;
@@ -301,9 +363,9 @@
     background: linear-gradient(to left, rgb(var(--bg-surface-rgb)) 10%, transparent 100%);
   }
   .gantt-strip-wrap.is-full::after { display: none; }
-  /* 滚动提示（仅首次出现，JS 可关闭） */
+  /* 滚动提示（仅首次出现，JS 可关闭）：贴 wrap 右下角，避开首行刻度 */
   .gantt-strip-hint {
-    @apply absolute top-2 right-3 text-[10px] font-medium text-accent bg-accent-soft px-2 py-0.5 rounded-full;
+    @apply absolute bottom-1.5 right-3 text-[10px] font-medium text-accent bg-accent-soft px-2 py-0.5 rounded-full;
     pointer-events: none;
     animation: gantt-hint-pulse 1.6s ease-in-out infinite;
   }
@@ -342,12 +404,13 @@
   }
   .cell-gap         { @apply bg-transparent border-2 border-danger/60; }
   .cell-empty       { @apply bg-transparent; }
-  .cell-active      { background-color: rgb(var(--accent-rgb) / .30); border: 1px solid rgb(var(--accent-rgb) / .55); }
-  .cell-signed      { background-color: rgb(var(--success-rgb) / .32); border: 1px solid rgb(var(--success-rgb) / .55); }
-  .cell-submitting  { background-color: rgb(var(--progress-rgb) / .32); border: 1px solid rgb(var(--progress-rgb) / .55); }
-  .cell-leaving     { background-color: rgb(var(--warn-rgb) / .34); border: 1px solid rgb(var(--warn-rgb) / .55); }
+  /* 已占用的连续时段靠底色成条：不再逐格描边，避免读成离散药丸 */
+  .cell-active      { background-color: rgb(var(--accent-rgb) / .34); }
+  .cell-signed      { background-color: rgb(var(--success-rgb) / .36); }
+  .cell-submitting  { background-color: rgb(var(--progress-rgb) / .36); }
+  .cell-leaving     { background-color: rgb(var(--warn-rgb) / .38); }
   .cell-pending     { background-color: rgb(var(--bg-muted-rgb)); border: 1px dashed rgb(var(--text-muted-rgb) / .8); }
-  .cell-failed      { background-color: rgb(var(--danger-rgb) / .30); border: 1px solid rgb(var(--danger-rgb) / .55); }
+  .cell-failed      { background-color: rgb(var(--danger-rgb) / .34); }
   .cell-complete    { background-color: rgb(var(--text-muted-rgb) / .18); }
   .cell-actionable { @apply cursor-pointer; }
   .cell-actionable:hover { @apply outline outline-2 outline-accent/50 outline-offset-1; }
@@ -358,10 +421,15 @@
            rounded-2xl p-3.5;
     box-shadow: var(--shadow-float);
   }
-  .gantt-legend { @apply grid grid-cols-2 md:flex md:flex-wrap gap-x-3 gap-y-1.5 mt-3 text-xs text-ink-secondary; }
+  .gantt-legend {
+    @apply grid grid-cols-3 md:flex md:flex-wrap gap-x-3 gap-y-1 mt-3 text-xs text-ink-secondary;
+  }
+  @media (max-width: 767px) {
+    .gantt-legend { @apply gap-x-2 text-[10px]; }
+  }
   .gantt-legend span { @apply inline-flex items-center gap-1.5 min-w-0; }
   .gantt-legend .cell, .gantt-legend .swatch {
-    @apply inline-block w-3.5 h-3.5 rounded-sm border border-edge-subtle;
+    @apply inline-block w-3 h-3 rounded-sm border border-edge-subtle;
   }
 
   /* ===== Popover（Alpine 驱动）===== */
@@ -418,6 +486,7 @@
   }
   .header-brand { @apply flex items-center gap-2 min-w-0; }
   .header-brand img { @apply h-7 w-7 rounded-lg; }
+  .header-crumb { @apply inline-flex items-center gap-2 min-w-0; }
   .header-crumb-sep { @apply text-ink-muted/70 text-sm; }
   .header-title { @apply text-sm text-ink-secondary truncate; }
 
@@ -452,8 +521,10 @@
   .topbar-clock .next-label { @apply text-ink-muted; }
   .app-content { @apply flex-1 w-full max-w-content mx-auto px-3 py-4 md:px-6 md:py-6; }
 
-  .dashboard-grid { @apply grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5; }
-  .stat-grid { @apply grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4; }
+  /* 覆盖图主轴：甘特独占整行，格宽由容器决定；底部信息区并排两卡 */
+  .dashboard-grid { @apply grid grid-cols-1 gap-5; }
+  .dashboard-rail { @apply grid grid-cols-1 lg:grid-cols-2 gap-5; }
+  .stat-grid { @apply grid grid-cols-3 gap-2.5 md:gap-3; }
 
   .mobile-toggle { @apply hidden; }
   /* 移动端抽屉 backdrop：与 sidebar 联动，按背景关闭 */
@@ -482,8 +553,7 @@
     .sidebar-group-label .group-label-text { @apply hidden; }
     .sidebar-link { @apply justify-center px-0; }
     .sidebar-link .count { @apply hidden; }
-    .stat-grid { @apply grid-cols-2; }
-    .dashboard-grid { @apply grid-cols-1; }
+    .stat-grid { @apply grid-cols-3; }
   }
   @media (max-width: 1023px) {
     .sidebar {
@@ -496,91 +566,8 @@
     .topbar-clock #next-relay-time,
     .topbar-clock .by,
     .topbar-clock #next-relay-account { @apply hidden; }
-    .header-title { @apply hidden; }
+    .header-crumb, .header-crumb-sep, .header-title { @apply hidden; }
   }
-
-  /* ===== 首屏加载动画（覆盖图）===== */
-  .boot-overlay {
-    @apply fixed inset-0 z-[100] flex items-center justify-center overflow-hidden;
-    background: linear-gradient(165deg,
-      rgb(var(--bg-app-rgb)) 0%,
-      rgb(var(--accent-rgb) / .07) 55%,
-      rgb(var(--progress-rgb) / .09) 100%);
-    transition: opacity .55s ease, visibility .55s;
-  }
-  .boot-overlay.boot-hide { @apply opacity-0 invisible pointer-events-none; }
-  .boot-halo {
-    @apply absolute rounded-full;
-    width: 46vmax; height: 46vmax; filter: blur(90px); opacity: .55;
-  }
-  .boot-halo-a {
-    background: rgb(var(--accent-rgb) / .16);
-    top: -12vmax; left: -10vmax;
-    animation: boot-drift 16s ease-in-out infinite alternate;
-  }
-  .boot-halo-b {
-    background: rgb(var(--progress-rgb) / .15);
-    bottom: -14vmax; right: -8vmax;
-    animation: boot-drift 21s ease-in-out infinite alternate-reverse;
-  }
-  @keyframes boot-drift {
-    from { transform: translate(0, 0) scale(1); }
-    to   { transform: translate(6vmax, 4vmax) scale(1.12); }
-  }
-  .boot-box {
-    @apply relative text-center;
-    width: min(340px, 84vw); padding: 34px 30px; border-radius: 22px;
-    background: rgb(var(--bg-surface-rgb) / .78);
-    backdrop-filter: blur(14px);
-    border: 1px solid rgb(var(--border-subtle-rgb));
-    box-shadow: var(--shadow-float);
-    transition: transform .5s ease, opacity .5s ease;
-  }
-  .boot-hide .boot-box { transform: translateY(-10px) scale(.97); opacity: 0; }
-  .boot-brand {
-    @apply flex items-center justify-center gap-2.5 mb-6;
-    font-size: 19px; font-weight: 800; color: rgb(var(--text-primary-rgb));
-  }
-  .boot-slots { @apply flex gap-2 justify-center mb-4; }
-  .boot-slot {
-    @apply flex-1 py-1.5 rounded-lg;
-    font-size: 11px; font-weight: 700; font-family: theme('fontFamily.mono');
-    color: rgb(var(--text-muted-rgb));
-    border: 1.5px dashed rgb(var(--border-strong-rgb));
-    transition: all .45s ease;
-  }
-  .boot-slot.lit {
-    color: #fff; border-color: transparent;
-    background: linear-gradient(135deg, rgb(var(--accent-rgb)), rgb(var(--progress-rgb)));
-    box-shadow: 0 4px 14px rgb(var(--accent-rgb) / .35);
-    transform: translateY(-1px);
-  }
-  .boot-track {
-    @apply relative rounded-full;
-    height: 8px; background: rgb(var(--bg-muted-rgb));
-  }
-  .boot-fill {
-    @apply h-full rounded-full relative overflow-hidden;
-    background: linear-gradient(90deg, rgb(var(--accent-rgb)), rgb(var(--progress-rgb)));
-    transition: width .18s linear;
-  }
-  .boot-fill::after {
-    content: ''; @apply absolute inset-0;
-    background: linear-gradient(100deg, transparent 20%, rgba(255,255,255,.5) 50%, transparent 80%);
-    animation: boot-shimmer 1.6s linear infinite;
-  }
-  @keyframes boot-shimmer {
-    from { transform: translateX(-100%); }
-    to   { transform: translateX(100%); }
-  }
-  .boot-num {
-    @apply mt-4 leading-none;
-    font-family: theme('fontFamily.mono'); font-size: 44px; font-weight: 800;
-    background: linear-gradient(120deg, rgb(var(--accent-rgb)), rgb(var(--progress-rgb)));
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-    font-variant-numeric: tabular-nums;
-  }
-  .boot-stage { @apply mt-2.5 text-xs min-h-[18px]; color: rgb(var(--text-secondary-rgb)); }
 
   /* ===== 设置页浮动保存栏（左下角，避开侧栏；仅在有未保存修改时由 Alpine 显示）===== */
   .float-save {

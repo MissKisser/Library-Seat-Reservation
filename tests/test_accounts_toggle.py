@@ -174,3 +174,20 @@ def test_accounts_page_shows_status_badges(tmp_path):
     assert "守护中" in r.text and "禁用中" in r.text
     assert 'data-status="inactive"' in r.text
     assert ">启用</button>" in r.text and ">禁用</button>" in r.text
+
+
+def test_inactive_account_never_bootstraps_tasks(tmp_path):
+    """禁用中账号在每分钟 tick 或排程生成时不得展开生成任何新任务。"""
+    c, store = _client(tmp_path, [_acc("a1", _MATRIX), _acc("a2", _MATRIX)])
+    sched = c.app.state.sched
+
+    async def disable_and_tick():
+        await store.set_account_status("a1", "inactive")
+        await sched._tick_account_with_bootstrap("a1")
+        acc1 = await store.get_account("a1")
+        await sched._bootstrap_for_account(acc1, today_cst(), ["104"])
+        return await store.list_tasks(account_id="a1")
+
+    tasks = asyncio.run(disable_and_tick())
+    assert tasks == []
+
