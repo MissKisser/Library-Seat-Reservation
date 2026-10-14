@@ -12,7 +12,6 @@
 """
 from __future__ import annotations
 
-import sqlite3
 from datetime import time
 from urllib.parse import parse_qs, urlparse
 
@@ -34,6 +33,7 @@ from seatbot.models import (
     TASK_SOURCE_MANUAL,
 )
 from seatbot.reconcile import diff_user_reserved, parse_reservations, plan_adoption
+from seatbot.store import DuplicateTaskError
 from seatbot.utils.timeutil import at_cst, today_cst
 from seatbot.utils.weekly import weekday_key
 from seatbot.web.app import new_templates
@@ -299,7 +299,7 @@ class FakeManualStore:
 
     async def add_task(self, t: Task) -> int:
         if self.fail_integrity:
-            raise sqlite3.IntegrityError("uq_tasks_active_identity")
+            raise DuplicateTaskError("uq_tasks_active_identity")
         t.id = len(self.tasks) + 1
         self.added_initial_status.append(t.status)
         self.added_initial_source.append(t.source)

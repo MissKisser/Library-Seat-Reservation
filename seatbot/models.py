@@ -11,7 +11,7 @@ from enum import Enum
 @dataclass
 class SeatTarget:
     """A seat the user wants to keep occupied during targeted time slots."""
-    seat_num: str            # '084'
+    seat_num: str            # 三位补零座位号, e.g. '084'
     label: str = ""          # 可选昵称, e.g. '靠窗主座'
     enabled: bool = True
     created_at: int = 0

@@ -20,10 +20,10 @@ class PlannerError(Exception):
 
 
 def _reject_overlong_ranges(slots: list[str], max_hours: float, account_id: str) -> None:
-    """★ v0.6: 单个 range 超过 max_hours 时直接拒绝, 不再自动拆段。
+    """校验单个 range 的时长：超过单段上限时直接拒绝，不自动拆段。
 
-    业务规则 (AGENTS.md 2026-08-24): 自动拆段 (如 19:00-21:30 → 2 段) 会破坏
-    "每账号每座位精确 1 段" 的守护矩阵; 超长 range 属配置错误, 应显式暴露。
+    自动拆段（如 19:00-21:30 拆成 2 段）会破坏"每账号每座位精确分配"的
+    守护矩阵语义；超长 range 属配置错误，应在配置层显式拆成多段后暴露。
     """
     for r in slots:
         s, e = parse_range(r)
@@ -57,13 +57,13 @@ class ReservationPlanner:
     def expand_for_day(self, day: date) -> list[Task]:
         """展开成 (account, seat, slot) → Task list.
 
-        矩阵模式:
-          account=guard_a, seat_slots={'104': ['09:00-11:00'], '105': ['15:00-17:00']}
-          → 2 Task: (guard_a, 104, 09:00-11:00) + (guard_a, 105, 15:00-17:00)
+        矩阵模式（推荐）:
+          seat_slots={'AAA': ['09:00-11:00'], 'BBB': ['15:00-17:00']}
+          → 2 Task：每对 (座位, 时段) 精确一条，不做笛卡尔积。
 
         扁平模式（遗留）:
-          account=guard_c, bound_seats=['084','085'], slots=['08:00-10:00']
-          → 2 Task: (guard_c, 084, 08:00-10:00) + (guard_c, 085, 08:00-10:00)
+          bound_seats=['AAA','BBB'], slots=['08:00-10:00']
+          → 2 Task：每个绑定座位各展开一遍 slots。
 
         未绑定（seat_slots 与 bound_seats 均为空）→ 空列表。
         """

@@ -233,8 +233,14 @@ def parse_stored(key: str, raw: str | None, fallback: object) -> object:
     return raw
 
 
-def validate_all(patch: dict[str, object]) -> dict[str, str]:
-    """校验待写入的键值对，返回 {key: error}，空即通过。"""
+def validate_all(
+    patch: dict[str, object], *, current: dict[str, object] | None = None,
+) -> dict[str, str]:
+    """校验待写入的键值对，返回 {key: error}，空即通过。
+
+    入参 patch 为本次提交的键值对；current 为库内现值（可选），用于把
+    单段上限与每日限额做交叉校验时补齐 patch 未包含的那一侧。
+    """
     errors: dict[str, str] = {}
     for k, v in patch.items():
         if k not in DEFAULTS:
@@ -280,21 +286,24 @@ def validate_all(patch: dict[str, object]) -> dict[str, str]:
         except Exception as e:
             errors[k] = str(e) if str(e) else "格式错误"
     # 交叉校验：单段上限不应超过日限额
-    try:
-        max_h = float(str(patch.get("max_reserve_hours", DEFAULTS["max_reserve_hours"])).strip()) if "max_reserve_hours" in patch else None
-        daily = float(str(patch.get("daily_reserve_hours_limit", DEFAULTS["daily_reserve_hours_limit"])).strip()) if "daily_reserve_hours_limit" in patch else None
-        # 若只改其中一个，用另一个的 fallback 补齐再比
-        if max_h is not None or daily is not None:
-            mh = float(str(patch.get("max_reserve_hours", DEFAULTS["max_reserve_hours"]))) if "max_reserve_hours" in patch else float(str(DEFAULTS["max_reserve_hours"]))
-            dh = float(str(patch.get("daily_reserve_hours_limit", DEFAULTS["daily_reserve_hours_limit"]))) if "daily_reserve_hours_limit" in patch else float(str(DEFAULTS["daily_reserve_hours_limit"]))
-            # 当 patch 只含其一时，上面 dh/mh 仍用 DEFAULTS 补，无法反映 DB 现有值；
-            # 真正交叉校验在 web 层用 effective 值二次校验，此处仅防明显倒挂
-            if mh > dh:
-                # 仅当两者都在 patch 中才报错，避免默认 2.0>5.0 误判
-                if "max_reserve_hours" in patch and "daily_reserve_hours_limit" in patch:
+    # 解析顺序：patch > current（库内现值）> DEFAULTS。
+    # 未提供 current 时，仅当两个键同时出现在 patch 中才判定，避免用默认值误判。
+    _mh_keys = ("max_reserve_hours", "daily_reserve_hours_limit")
+    if any(k in patch for k in _mh_keys):
+        if "max_reserve_hours" in patch or current is not None:
+            try:
+                def _resolve(key: str) -> float:
+                    raw: object = patch.get(key)
+                    if raw is None and current is not None:
+                        raw = current.get(key)
+                    if raw is None:
+                        raw = DEFAULTS[key]
+                    return float(str(raw).strip())
+
+                if _resolve("max_reserve_hours") > _resolve("daily_reserve_hours_limit"):
                     errors["max_reserve_hours"] = "单段上限不应超过每日限额"
-    except Exception:
-        pass
+            except Exception:
+                pass
     return errors
 
 

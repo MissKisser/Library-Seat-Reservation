@@ -16,7 +16,7 @@ from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.config import Config
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.planner import ReservationPlanner
-from seatbot.store import StateStore
+from seatbot.store import DuplicateTaskError, StateStore
 
 
 class NullHaRuntime:
@@ -78,7 +78,7 @@ class Scheduler:
         self._clients: dict[str, ChaoxingClient] = {}
         self._bootstrap_done_for: set[tuple[str, str, str]] = set()  # (account_id, day, seat_num)
         self._fail_streak: dict[int, int] = {}  # task_id → 签到/签退连续失败次数
-        self._supervise_seen: dict[int, str] = {}  # reserve_id → detected/resolved
+        self._supervise_seen: dict[tuple[str, int], str] = {}  # (账号, 预约号) → detected/resolved
         self.relay_lead_seconds: int = int(getattr(cfg.runtime, "relay_lead_seconds", 300))
         self.tick_interval_seconds: int = int(getattr(cfg.runtime, "tick_interval_seconds", 30))
         self.stagger_seconds: list[int] = list(getattr(cfg.runtime, "stagger_seconds", [0, 3]))
@@ -101,6 +101,19 @@ class Scheduler:
         # HA 闸门：默认 NullHaRuntime（can_act 永真），主备模式下换成 HaRuntime
         self.ha = NullHaRuntime()
         self._ha_notify_at: dict[str, float] = {}  # action -> last notify monotonic
+        # 分钟节拍互斥与看门狗：同一账号上一轮未结束时跳过后续轮次，
+        # 单轮超过 tick_watchdog_seconds 墙钟仍未结束则放弃本轮并告警，
+        # 避免一次卡死把该账号的签到/签退永久拖停。
+        self._tick_running: set[str] = set()  # account_id
+        self._tick_watchdog_trips: int = 0
+        self.tick_watchdog_seconds: int = int(
+            getattr(cfg.runtime, "tick_watchdog_seconds", 180)
+        )
+        # 分钟节拍的 misfire 宽限期（秒）。签到窗口通常只有时段开始后一段
+        # 有效时间，宽限度过短会在偶发延迟下直接丢弃整轮，代价是错过签到。
+        self.tick_misfire_grace_seconds: int = int(
+            getattr(cfg.runtime, "tick_misfire_grace_seconds", 180)
+        )
 
     async def load_runtime_settings(self) -> dict[str, object]:
         try:
@@ -124,6 +137,10 @@ class Scheduler:
         self.anchor_scan_limit = int(eff.get("anchor_scan_limit", self.anchor_scan_limit))
         self.submit_strategy = str(eff.get("submit_strategy", self.submit_strategy))
         self.reconcile_interval_seconds = int(eff.get("reconcile_interval_seconds", self.reconcile_interval_seconds))
+        self.tick_watchdog_seconds = int(eff.get("tick_watchdog_seconds", self.tick_watchdog_seconds))
+        self.tick_misfire_grace_seconds = int(
+            eff.get("tick_misfire_grace_seconds", self.tick_misfire_grace_seconds)
+        )
         try:
             self._reschedule_tick_interval()
         except Exception:
@@ -308,7 +325,7 @@ class Scheduler:
                         acc.id,
                     )
                     continue
-                # ★ E4 防护: 同 (account_id, day, start_time) 已存在任务则跳过
+                # E4 防护: 同 (account_id, day, start_time) 已存在任务则跳过
                 from datetime import time as _t
                 start_t = _t(t.start_time.hour, t.start_time.minute)
                 if await self.store.has_active_task_for_account_day_start(
@@ -319,7 +336,15 @@ class Scheduler:
                         acc.id,
                     )
                     continue
-                await self.store.add_task(t)
+                try:
+                    await self.store.add_task(t)
+                except DuplicateTaskError:
+                    # 并发 bootstrap 穿过上面的非原子预检时，唯一索引兜底拦截
+                    await self._info(
+                        f"跳过重复任务 座位={seat_num} {start_t.strftime('%H:%M')}"
+                        "（唯一索引拦截）",
+                        acc.id,
+                    )
             self._bootstrap_done_for.add(key)
             await self._info(f"已为 {day} 座位={seat_num} 生成任务", acc.id)
         # 更新 bootstrap_day 一次 (一个账号每天只一次)
@@ -329,15 +354,14 @@ class Scheduler:
     async def tick_account(self, acc_id: str) -> None:
         """每分钟: 只处理**今天**的在途任务 (active/signed/leaving)。
 
-        v0.6 重写要点:
-          - 按 day=today 遍历, 不再用 find_active_task — 旧实现在 14:00 批量
-            提交后会抓到"明日最后一条 ACTIVE 任务"并 early-return, 导致当天
-            14:00 后的所有 sign/leave 被饿死。
-          - 移除"单日段数上限"闸门: tick 已不再 submit, 该闸门只会拦截进行中
-            任务的 sign/leave (limit=1 时自锁); 段数上限由 planner 生成端保证。
-          - sign 幂等: 成功 (或窗口已过) 置 SIGNED, 不再每分钟重复打 sign API。
-          - PENDING/FAILED 不在此 submit: 今天的交给 web quick-reserve,
-            明天的交给 _afternoon_bootstrap (14:00)。
+        按 day=today 遍历，不按"最近一条 ACTIVE"提前返回：那样会在批量
+        提交后抓到次日最后一条 ACTIVE 任务，导致当天 14:00 后的 sign/leave
+        被饿死。段数上限由 planner 生成端保证，tick 侧不再设闸门——该闸门
+        只会拦截进行中任务的 sign/leave。
+
+        sign 幂等：成功后置 SIGNED，不再每分钟重复打 sign API。
+        PENDING/FAILED 不在此 submit：今天的交给 web quick-reserve，
+        明天的交给每日 14:00 的批量预约。
         """
         acc_cfg = await self.store.get_account(acc_id)
         if not acc_cfg:
@@ -411,7 +435,9 @@ class Scheduler:
             await self._warn(f"监督检测失败: {e}", acc.id)
             return
         if not supervised:
-            self._supervise_seen.clear()
+            # 仅清理本账号的检测标记，避免清掉其他账号的监督状态
+            for key in [k for k in self._supervise_seen if k[0] == acc.id]:
+                del self._supervise_seen[key]
             return
         today = today_cst()
         local_tasks = {
@@ -424,8 +450,8 @@ class Scheduler:
             if not rid:
                 continue
             seat = str(rec.get("seatNum") or "?")
-            if self._supervise_seen.get(rid) != "detected":
-                self._supervise_seen[rid] = "detected"
+            if self._supervise_seen.get((acc.id, rid)) != "detected":
+                self._supervise_seen[(acc.id, rid)] = "detected"
                 await self._warn(
                     f"检测到监督: 座位={seat} 预约号#{rid}，"
                     f"20 分钟窗口内自动重新签到", acc.id)
@@ -447,7 +473,7 @@ class Scheduler:
                 bool(sr.get("success")), str(sr.get("msg")),
             )
             if sr.get("success"):
-                self._supervise_seen[rid] = "resolved"
+                self._supervise_seen[(acc.id, rid)] = "resolved"
                 await self._info(
                     f"监督已解除: 座位={seat} 预约号#{rid} 自动落座成功", acc.id)
                 await self.store.add_notification(
@@ -463,9 +489,9 @@ class Scheduler:
                 await self._warn(
                     f"监督落座被拒（{sr.get('msg')}）: 预约号#{rid}，"
                     f"下个周期重试", acc.id)
-        live = {r.get("id") for r in supervised}
-        for rid in [k for k in self._supervise_seen if k not in live]:
-            del self._supervise_seen[rid]
+        live = {(acc.id, r.get("id")) for r in supervised}
+        for key in [k for k in self._supervise_seen if k not in live]:
+            del self._supervise_seen[key]
 
     async def peek_next_relay(self) -> NextRelay | None:
         now = now_cst()
@@ -501,11 +527,10 @@ class Scheduler:
         return best[1] if best else None
 
     async def _maybe_relay(self, t: Task, now: datetime) -> None:
-        """(v2) 跨 account / 跨 seat 的接力:leave 当前段。
+        """跨账号 / 跨座位的接力：只 leave 当前段。
 
-        注意 (v0.5+): 接力只 leave 当前段,**不** submit 下一段。
-        下一段已经在 _afternoon_bootstrap (14:00) 被预约过,无需再次 submit。
-        sign 由下一段的 pre_sign 窗口 tick_account 触发。
+        接力不 submit 下一段——下一段已在每日 14:00 的批量预约中提交过，
+        重复 submit 会造成真实重复预约。下一段的签到由其 pre_sign 窗口触发。
         """
         t_end = at_cst(t.day, t.end_time)
         lead = t_end - timedelta(seconds=self.relay_lead_seconds)
@@ -518,7 +543,7 @@ class Scheduler:
         await self.store.update_task_status(t.id, TaskStatus.LEAVING)
         # leave 当前段
         await self._run_leave(acc, t)
-        # ★ v0.5+: 不再 submit 下一段 — 由 _afternoon_bootstrap 14:00 统一处理
+        # 接力不 submit 下一段 — 下一段由每日 14:00 的批量预约统一处理
         nxt = await self.store.find_next_task_after(
             t.day, t.end_time,
             statuses=("pending", "ready", "failed"),
@@ -879,17 +904,24 @@ class Scheduler:
         msg = str(sr.get("msg") or "")
         if "不在签到时间" in msg:
             # 消息无法区分"未到签到时间"(任务时间早于预约真实开始)与
-            # "窗口已关闭"。开始后 60 分钟内保持重试以自愈时间偏差,
-            # 超过则预约必然已生效或失效, 置 SIGNED 终止无效调用。
+            # "窗口已关闭"。开始后 60 分钟内保持重试以自愈时间偏差；
+            # 超过后服务端状态无法确证，标失败交人工核对：不得标成
+            # SIGNED，否则看板会呈现为已占座而实际从未落座，
+            # 时段结束时产生未签到违约且全程无告警。
             deadline = at_cst(t.day, t.start_time) + timedelta(minutes=60)
             if now_cst() < deadline:
                 await self._warn(f"签到被拒（{msg}）；窗口状态不明，保持重试", acc.id)
                 await self.store.update_task_status(t.id, t.status, last_error=msg)
                 await self._track_signleave_failure(t, "签到", f"窗口状态不明（{msg}）")
                 return
-            await self.store.update_task_status(t.id, TaskStatus.SIGNED, last_error="")
+            await self.store.update_task_status(
+                t.id, TaskStatus.FAILED,
+                last_error=f"签到: 窗口已关闭且未签到，服务端状态待人工核对（{msg}）",
+            )
             self._clear_fail_streak(t.id)
-            await self._warn(f"签到窗口已关闭（{msg}）；标记已签到，停止重试", acc.id)
+            await self._warn(
+                f"签到窗口已关闭且未签到（{msg}）；任务标失败，请人工核对服务端预约",
+                acc.id)
             return
         if "不存在" in msg:
             # 预约已在服务端消失 (被取消/退座), 永远签不上 → 终态, 停止空转
@@ -1037,16 +1069,33 @@ class Scheduler:
                 return
         self._reconcile_running = True
         try:
-            await self.reconcile_sweep()
-            await self.sync_user_reserved()
+            await asyncio.wait_for(
+                self._reconcile_cycle(), timeout=self.tick_watchdog_seconds,
+            )
+        except asyncio.TimeoutError:
+            await self._warn(
+                f"实况核对看门狗: 一轮超过 {self.tick_watchdog_seconds}s 未结束，已放弃本轮",
+                "scheduler",
+            )
+        except Exception as e:
+            await self._error(f"实况核对异常: {type(e).__name__}: {e}", "scheduler")
         finally:
             self._reconcile_running = False
 
+    async def _reconcile_cycle(self) -> None:
+        """一轮实况核对：占用核对与 user_reserved 实况同步。"""
+        await self.reconcile_sweep()
+        await self.sync_user_reserved()
+
     async def _pre_sign_due(self, now: datetime) -> bool:
-        """今天是否有进行前任务将在 30 分钟内开始（签到窗口前核对）。"""
-        for t in await self.store.list_tasks(day=today_cst()):
-            if t.status not in (TaskStatus.ACTIVE, TaskStatus.SUBMITTING):
-                continue
+        """今天是否有进行前任务将在 30 分钟内开始（签到窗口前核对）。
+
+        只查当日在途状态的任务，终态行在 SQL 层过滤，避免整日全表载入。
+        """
+        for t in await self.store.list_tasks(
+            day=today_cst(),
+            statuses=(TaskStatus.ACTIVE.value, TaskStatus.SUBMITTING.value),
+        ):
             lead = at_cst(t.day, t.start_time) - now
             if timedelta(0) < lead <= timedelta(minutes=30):
                 return True
@@ -1258,7 +1307,7 @@ class Scheduler:
                 if not client.cookies():
                     if not await self.login_and_persist(acc, client, "实况同步登录"):
                         continue
-                entries = await client.reserve_list()
+                entries = await client.reserve_list_all()
                 parsed = parse_reservations(entries, days)
                 # ★ 已采纳占位纳入 known：托管期间由采纳方显式维护占位行，
                 # 实况同步不再为已托管预约补登 user_reserved。
@@ -1550,16 +1599,30 @@ class Scheduler:
             except Exception:
                 pass
         for i, acc in enumerate(accounts):
+            job_id = f"tick_{acc.id}"
             if acc.id in existing_ids:
+                # 已注册的 job 需随 stagger / 宽限期热配置刷新 trigger，
+                # 否则设置页改动要等到下次进程启动才生效。
+                try:
+                    self.scheduler.reschedule_job(
+                        job_id,
+                        trigger="cron",
+                        second=f"{int(random.uniform(*self.stagger_seconds))}",
+                        misfire_grace_time=self.tick_misfire_grace_seconds,
+                    )
+                except Exception:
+                    pass
                 continue
             delay = random.uniform(*self.stagger_seconds)
             self.scheduler.add_job(
                 self._tick_account_with_bootstrap,
                 "cron", second=f"{int(delay)}",
                 args=[acc.id],
-                id=f"tick_{acc.id}",
+                id=job_id,
                 replace_existing=True,
-                misfire_grace_time=30, coalesce=True,
+                misfire_grace_time=self.tick_misfire_grace_seconds,
+                coalesce=True,
+                max_instances=1,
             )
 
     def start(self) -> None:
@@ -1708,6 +1771,37 @@ class Scheduler:
             )
 
     async def _tick_account_with_bootstrap(self, acc_id: str) -> None:
+        """分钟节拍入口：同账号串行 + 墙钟超时 + 异常落库。
+
+        APScheduler 对协程作业只派发 EVENT_JOB_ERROR 事件，不写应用日志，
+        异常一旦逃逸即静默停摆且无任何现场可查。此处兜住三类故障：
+        上一轮未结束导致的重入（互斥跳过）、单轮卡死（墙钟超时放弃）、
+        以及未预期异常（落库告警），保证下一轮节拍仍可继续推进。
+        """
+        if acc_id in self._tick_running:
+            return
+        self._tick_running.add(acc_id)
+        try:
+            await asyncio.wait_for(
+                self._tick_account_once(acc_id),
+                timeout=self.tick_watchdog_seconds,
+            )
+        except asyncio.TimeoutError:
+            self._tick_watchdog_trips += 1
+            await self._warn(
+                f"tick 看门狗: 单轮超过 {self.tick_watchdog_seconds}s 未结束，"
+                f"本轮放弃（累计 {self._tick_watchdog_trips} 次）",
+                acc_id,
+            )
+        except Exception as e:
+            await self._error(
+                f"tick 异常: {type(e).__name__}: {e}", acc_id,
+            )
+        finally:
+            self._tick_running.discard(acc_id)
+
+    async def _tick_account_once(self, acc_id: str) -> None:
+        """一轮账号节拍的实际工作：补生成任务后处理在途任务。"""
         await self._bootstrap_for_account_if_needed(acc_id)
         await self.tick_account(acc_id)
 
@@ -1739,16 +1833,13 @@ class Scheduler:
     async def _afternoon_bootstrap_locked(self) -> None:
         """每天14:00触发：为明天生成预约任务并立即提交。
 
-        超星预约系统在14:00后开放次日预约窗口(`reserveBeforeTime: 14:00`),
-        此时立即提交预约请求,服务端按 `reserveBeforeTime` 校验后接受/拒绝。
-        bootstrap_for_account 内部有 (account_id, day, seat_num) 三元组防重保护,
-        重复调用时幂等。
+        超星预约系统在14:00后开放次日预约窗口，此时立即提交预约请求，
+        服务端按预约窗口校验后接受或拒绝。bootstrap_for_account 内部有
+        (账号, 日期, 座位) 三元组防重保护，重复调用时幂等。
 
-        错误恢复 (v0.5+):
-          - 每个 task 的 _run_submit 独立 try/except
-          - 一个 task 失败不中断后续 task
-          - 失败的 task 状态保持 PENDING (让明天的 _afternoon_bootstrap 重试)
-          - 显式 ERROR 日志
+        错误恢复：每个 task 的 _run_submit 独立 try/except，单个 task 失败
+        不中断后续 task；未提交成功的 task 保持 PENDING 交由后续轮次重试，
+        已判定 FAILED 的 task 不自动重试，须人工在面板确认。
         """
         if self._ha_blocked("submit"):
             return
@@ -1775,8 +1866,9 @@ class Scheduler:
                 tasks = await self.store.list_tasks(account_id=acc.id, day=tomorrow)
                 todo = [
                     t for t in tasks
+                    # FAILED 一律留给人工确认：提交可能已在服务端成功但未解析出
+                    # 预约号，自动重试会造成真实重复预约并追加违约记录。
                     if t.status == TaskStatus.PENDING
-                    or (round_no > 0 and t.status == TaskStatus.FAILED)
                 ]
                 if not todo:
                     continue
@@ -1857,6 +1949,13 @@ class Scheduler:
             )
 
     async def shutdown(self) -> None:
-        self.scheduler.shutdown(wait=False)
+        """停止调度器并回收全部超星客户端会话。
+
+        未调用过 start() 的实例（如一次性 CLI 路径）跳过调度器停止，
+        避免 APScheduler 对未运行实例抛 SchedulerNotRunningError。
+        """
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
         for c in self._clients.values():
             await c.close()
+        self._clients.clear()
