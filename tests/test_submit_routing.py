@@ -40,7 +40,7 @@ class RoutingClient:
     def cookies(self):
         return {"_uid": "x"}
 
-    def reset_session(self):
+    async def reset_session(self):
         self.resets += 1
 
     async def login(self, phone, password):

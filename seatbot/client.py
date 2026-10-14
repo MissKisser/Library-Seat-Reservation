@@ -39,7 +39,15 @@ class ChaoxingClient:
 
     def __init__(self, *, ua: str | None = None):
         self._ua = ua or random_ua()
-        self._client = httpx.AsyncClient(
+        self._client = self._build_client()
+        self._cookie_jar = self._client.cookies
+
+    def _build_client(self) -> httpx.AsyncClient:
+        """构造底层 HTTP 客户端。
+
+        Returns: 带统一 User-Agent / headers / 超时与重定向跟随的 AsyncClient。
+        """
+        return httpx.AsyncClient(
             timeout=httpx.Timeout(15.0, connect=10.0),
             follow_redirects=True,
             headers={
@@ -48,13 +56,27 @@ class ChaoxingClient:
                 "Accept": "application/json,text/plain,*/*",
             },
         )
-        self._cookie_jar = self._client.cookies
 
     async def close(self) -> None:
         await self._client.aclose()
 
     def cookies(self) -> dict[str, str]:
         return {c.name: c.value for c in self._cookie_jar.jar}
+
+    def _fresh_jar(self) -> httpx.Cookies:
+        """给当前客户端换上一只全新的空 cookie jar。
+
+        httpx 的 `client.cookies = jar` 会复制 jar 而非引用它，赋值之后再往原
+        jar 写入的 cookie 不会进入客户端，请求因此不带任何 cookie。故换 jar 后
+        必须回读客户端实际持有的对象，保持 `self._cookie_jar` 与
+        `self._client.cookies` 始终是同一只——这是全类唯一被允许的换 jar 入口。
+
+        Returns: 客户端当前实际持有的空 Cookies 对象。
+        """
+        from httpx import Cookies
+        self._client.cookies = Cookies()
+        self._cookie_jar = self._client.cookies
+        return self._cookie_jar
 
     def set_cookies(self, cookies: dict[str, str]) -> bool:
         """注入持久化 cookie 恢复会话；含 `_uid`/`vc3` 等鉴权 cookie 时返回 True。
@@ -66,8 +88,7 @@ class ChaoxingClient:
         if not cookies:
             return False
         if not isinstance(self._cookie_jar, Cookies):
-            self._cookie_jar = Cookies()
-            self._client.cookies = self._cookie_jar
+            self._cookie_jar = self._fresh_jar()
         for name, value in cookies.items():
             self._cookie_jar.set(
                 name, value,
@@ -75,15 +96,44 @@ class ChaoxingClient:
             )
         return any(c.name in ("_uid", "vc3") for c in self._cookie_jar.jar)
 
-    def reset_session(self) -> None:
-        """Drop all cookies so the next login starts clean.
+    async def reset_session(self) -> None:
+        """彻底重建底层 HTTP 客户端：清空全部 cookie 并丢弃连接池状态。
 
-        陈旧 cookie 的症状: API 返回 "您当前未登录" / 浏览器被重定向到
-        passport 登录页。调用方捕获后应 reset_session() + login() 重试一次。
+        仅清空 cookie 不足以恢复失效会话：keep-alive 连接池里钉死的旧连接
+        会被重登后的立即重试复用。陈旧会话的症状是 API 返回"您当前未登录" /
+        浏览器被重定向到 passport 登录页，调用方捕获后应
+        `await reset_session()` + `login()` 重试一次。
+
+        Returns:
+            None。先换上新客户端再关闭旧客户端，旧客户端关闭失败不影响重建结果。
         """
-        from httpx import Cookies
-        self._cookie_jar = Cookies()
-        self._client.cookies = self._cookie_jar
+        old = self._client
+        self._client = self._build_client()
+        self._cookie_jar = self._fresh_jar()
+        try:
+            await old.aclose()
+        except Exception:
+            pass
+
+    def _rebuild_flattened_jar(self, authoritative: dict[str, str]) -> None:
+        """以给定 cookie 为权威值摊平重建 jar：同名唯一、统一 .chaoxing.com 域。
+
+        办公端首页的响应会以更窄的域名作用域回写同名 cookie，与浏览器收获值
+        并存造成域污染。摊平后每个 cookie 名字只保留一个值：权威值优先，
+        其余名字仅作为补充，不覆盖权威值。
+
+        Args:
+            authoritative: 浏览器收获的 cookie，作为各名字的唯一权威值。
+
+        Returns:
+            None。就地替换 self._cookie_jar 与 self._client.cookies。
+        """
+        merged = dict(authoritative)
+        for name, value in self.cookies().items():
+            merged.setdefault(name, value)
+        self._cookie_jar = self._fresh_jar()
+        for name, value in merged.items():
+            self._cookie_jar.set(name, value, domain=".chaoxing.com", path="/")
 
     # ---------- low-level helpers ----------
     async def _post_form(
@@ -114,8 +164,7 @@ class ChaoxingClient:
         # Inject cookies into httpx's cookie jar.
         from httpx import Cookies
         if not isinstance(self._cookie_jar, Cookies):
-            self._cookie_jar = Cookies()
-            self._client.cookies = self._cookie_jar
+            self._cookie_jar = self._fresh_jar()
         for name, value in cookies.items():
             self._cookie_jar.set(
                 name, value,
@@ -131,6 +180,8 @@ class ChaoxingClient:
             )
         except Exception:
             pass
+        self._rebuild_flattened_jar(cookies)
+
     @staticmethod
     async def _dismiss_consent_dialog(page) -> None:
         """点"登录"后可能弹出隐私协议确认框,必须点"已阅读并同意"登录才会继续。

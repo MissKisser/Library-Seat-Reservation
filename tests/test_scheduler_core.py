@@ -34,7 +34,7 @@ class DummyClient:
     def cookies(self):
         return {"_uid": "x"} if self._has_cookies else {}
 
-    def reset_session(self):
+    async def reset_session(self):
         self.resets += 1
 
     async def login(self, phone, password):

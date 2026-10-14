@@ -205,7 +205,7 @@ async def _fetch_others_occupied(
     # 重置会话并重登一次再试 (区分"查到空数据"——空数据是正常结果不重试)
     if (sched is not None and not just_logged_in and results
             and all(isinstance(r, Exception) for r in results)):
-        client.reset_session()
+        await client.reset_session()
         if await sched.login_and_persist(acc, client, "占用查询重登"):
             results = await _gather()
 
