@@ -423,7 +423,7 @@ class Scheduler:
                 await self._warn(f"监督检测失败: {e}", acc.id)
                 return
             await self._warn("监督检测: 会话过期 → 重置会话并重登重试", acc.id)
-            client.reset_session()
+            await client.reset_session()
             if not await self.login_and_persist(acc, client, "监督检测重登"):
                 return
             try:
@@ -839,7 +839,7 @@ class Scheduler:
                 return result
 
             await self._warn(f"{label}: 会话过期（未登录）→ 重置会话并重登重试", acc.id)
-            client.reset_session()
+            await client.reset_session()
             login_ok = await self.login_and_persist(acc, client, f"{label}重登")
             if login_ok:
                 new_result = await retry_fn()
@@ -1220,7 +1220,7 @@ class Scheduler:
 
         out = await self._sweep_once(acc, client, groups, write)
         if not just_logged_in and not out["fetch_ok"] and out["checked"] == 0:
-            client.reset_session()
+            await client.reset_session()
             relogin_ok = await self.login_and_persist(acc, client, "实况核对重登")
             if relogin_ok:
                 out = await self._sweep_once(acc, client, groups, write)

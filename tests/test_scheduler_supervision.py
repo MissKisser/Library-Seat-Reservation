@@ -220,7 +220,7 @@ def test_session_expiry_relogins_and_retries():
 
     client.supervised_reservations = supervised_reservations
 
-    def reset_session():
+    async def reset_session():
         client.resets += 1
 
     client.reset_session = reset_session

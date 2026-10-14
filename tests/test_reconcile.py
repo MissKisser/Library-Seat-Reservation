@@ -112,7 +112,7 @@ def test_sweep_heals_stale_session_and_retries(tmp_path, monkeypatch):
             def cookies(self):
                 return {"_uid": "x"}
 
-            def reset_session(self):
+            async def reset_session(self):
                 self.resets += 1
 
             async def login(self, phone, password):
