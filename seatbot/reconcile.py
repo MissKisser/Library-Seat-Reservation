@@ -30,12 +30,40 @@ def _to_min(hhmm: str) -> int:
     return int(h) * 60 + int(m)
 
 
+def _merge_windows(
+    start: str, end: str, server_windows: list[tuple[str, str]],
+) -> list[tuple[int, int]]:
+    """把服务端占用区间裁剪到任务窗口后合并为不重叠的并集区间。
+
+    服务端可能对同一座位返回多个部分重叠窗口，直接累加会重复计数，
+    使覆盖比例虚高、掩盖实际未占用的尾段。
+    """
+    s, e = _to_min(start), _to_min(end)
+    spans: list[tuple[int, int]] = []
+    for ws, we in server_windows:
+        lo, hi = max(s, _to_min(ws)), min(e, _to_min(we))
+        if hi > lo:
+            spans.append((lo, hi))
+    if not spans:
+        return []
+    spans.sort()
+    merged: list[tuple[int, int]] = [spans[0]]
+    for lo, hi in spans[1:]:
+        last_lo, last_hi = merged[-1]
+        if lo <= last_hi:
+            merged[-1] = (last_lo, max(last_hi, hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
 def classify_task(
     start: str, end: str, server_windows: list[tuple[str, str]],
 ) -> tuple[float, bool]:
     """任务窗口 [start, end) 被服务端占用区间覆盖的比例与是否失守。
 
     入参均为 "HH:MM" 字符串；server_windows 为 getusedtimes 返回的占用区间。
+    服务端区间先合并为并集再计算覆盖，避免重叠窗口重复累加导致漏报。
     covered_ratio == 1.0 判一致，其余（含部分覆盖）均判失守——部分失守
     意味着时段后半段他人可抢，同样需要人工介入。
     返回 (covered_ratio, mismatch)。
@@ -44,11 +72,7 @@ def classify_task(
     span = e - s
     if span <= 0:
         return 1.0, False
-    covered = 0
-    for ws, we in server_windows:
-        lo, hi = max(s, _to_min(ws)), min(e, _to_min(we))
-        if hi > lo:
-            covered += hi - lo
+    covered = sum(hi - lo for lo, hi in _merge_windows(start, end, server_windows))
     ratio = min(1.0, covered / span)
     return ratio, ratio < 1.0
 
@@ -98,14 +122,19 @@ def parse_reservations(
     for e in entries:
         if e.get("status") not in ACTIVE_RESERVE_STATUSES:
             continue
-        day = date.fromisoformat(e["today"])
-        if day not in days:
+        try:
+            day = date.fromisoformat(str(e["today"]))
+            if day not in days:
+                continue
+            start = datetime.fromtimestamp(e["startTime"] / 1000, tz=CST).time()
+            end = datetime.fromtimestamp(e["endTime"] / 1000, tz=CST).time()
+            seat = str(e["seatNum"])
+            reserve_id = int(e["id"])
+        except (KeyError, TypeError, ValueError, OSError, OverflowError):
+            # 上游条目字段缺失或畸形：跳过该条，不中断本账号整轮同步
             continue
-        start = datetime.fromtimestamp(e["startTime"] / 1000, tz=CST).time()
-        end = datetime.fromtimestamp(e["endTime"] / 1000, tz=CST).time()
-        seat = str(e["seatNum"])
         out.append({
-            "reserve_id": int(e["id"]),
+            "reserve_id": reserve_id,
             "seat_num": seat.zfill(3) if seat.isdigit() else seat,
             "day": day, "start": start, "end": end,
             "status": int(e["status"]),
@@ -265,6 +294,10 @@ def plan_adoption(
                     })
                     break
                 else:
+                    # 在途任务（submitting/active/signed/leaving）：预约号一致
+                    # 则已由本地托管，无需动作；不一致或本地尚未记录预约号
+                    # 一律报冲突，避免真实预约既不托管也不进 user_reserved
+                    # 而被静默丢弃。
                     if t.get("reserve_id") and int(t["reserve_id"]) != rid:
                         out.append({
                             "kind": "conflict",
@@ -276,6 +309,19 @@ def plan_adoption(
                             "end": p["end"],
                             "task_id": t["id"],
                             "existing_reserve_id": int(t["reserve_id"]),
+                            "upstream_status": upstream,
+                        })
+                    elif not t.get("reserve_id"):
+                        out.append({
+                            "kind": "conflict",
+                            "account_id": account_id,
+                            "reserve_id": rid,
+                            "seat_num": p["seat_num"],
+                            "day": p["day"],
+                            "start": p["start"],
+                            "end": p["end"],
+                            "task_id": t["id"],
+                            "existing_reserve_id": None,
                             "upstream_status": upstream,
                         })
                     break

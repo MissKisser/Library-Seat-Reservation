@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from datetime import date, datetime as _dt, timedelta
 from datetime import time as _time
 
@@ -29,8 +28,9 @@ from seatbot import settings as _settings
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
 from seatbot.models import Account, SeatTarget, Task, TaskStatus, TASK_SOURCE_IMPORT, TASK_SOURCE_MANUAL
-from seatbot.scheduler import NextRelay, NullHaRuntime
+from seatbot.scheduler import NextRelay
 from seatbot.reconcile import AUTO_SYNC_NOTE, pick_read_account
+from seatbot.store import DuplicateTaskError
 
 from seatbot.utils.timeutil import (
     RESERVE_WINDOW_HOUR, at_cst, now_cst, parse_hhmm, parse_range, today_cst,
@@ -371,9 +371,12 @@ async def _annotate_rows(rows, store, day: date) -> list[dict]:
       - 未来格子/未来日期: 按矩阵归属显示计划态 (pending)
     任务是 planner 产出的 1-2h 块，格子是 30min，按区间重叠匹配。
     """
+    # READY 是 scheduler 认可的可提交态：矩阵已改但任务仍待提交时必须参与
+    # 标注，否则该格既不显示任务也不落 pending，会被计成幻影缺口
     REAL_STATUSES = (
         TaskStatus.ACTIVE, TaskStatus.SIGNED, TaskStatus.SUBMITTING,
         TaskStatus.LEAVING, TaskStatus.FAILED, TaskStatus.COMPLETE,
+        TaskStatus.READY,
     )
     real_by_seat: dict[str, list[Task]] = {}
     for t in await store.list_tasks(day=day):
@@ -668,14 +671,58 @@ async def targets_create(
         from urllib.parse import quote
         msg = quote(f"座位号必须是 1-4 位数字：{seat_num!r}")
         return RedirectResponse(f"/targets?error={msg}", status_code=303)
-    await store.add_target_seat(sn.zfill(3), label=label)
+    zn = sn.zfill(3)
+    # 重复登记会让 ON CONFLICT 静默覆盖标签；已软删的座位号也不应被无意复活
+    if zn in {s.seat_num for s in await store.list_target_seats()}:
+        from urllib.parse import quote as _q
+        return RedirectResponse(
+            f"/targets?error={_q(f'座位 {zn} 已在目标座位列表')}", status_code=303)
+    await store.add_target_seat(zn, label=label)
     return RedirectResponse("/targets?created=1", status_code=303)
 
 
 @router.post("/targets/{seat_num}/delete")
 async def targets_delete(request: Request, seat_num: str):
+    """软删目标座位，并同步摘除各账号矩阵中的该座位。
+
+    在途真实预约（已拿预约号且时段未结束）必须先处理：与换座流程一致，
+    存在在途预约时拒绝删除并提示，避免真实预约继续占座而本地已无座位记录。
+    """
+    from urllib.parse import quote
+
     store = request.app.state.store
-    await store.delete_target_seat(seat_num)
+    sn = seat_num.strip().zfill(3)
+    seats = [s.seat_num for s in await store.list_target_seats()]
+    if sn not in seats:
+        return RedirectResponse(
+            f"/targets?error={quote(f'座位 {sn} 不在目标座位列表')}", status_code=303)
+
+    today = today_cst()
+    now = now_cst()
+    inflight = [
+        t for t in await store.list_tasks(seat_num=sn)
+        if t.reserve_id and t.day >= today
+        and now < at_cst(t.day, t.end_time)
+        and t.status not in (TaskStatus.COMPLETE, TaskStatus.FAILED)
+    ]
+    if inflight:
+        ids = "、".join(f"#{t.id}" for t in inflight[:5])
+        return RedirectResponse(
+            f"/targets?error={quote('该座位仍有在途预约（'+ids+'），请先签退或改绑后再删除')}",
+            status_code=303)
+
+    # 摘除矩阵中的该座位：否则孤儿键仍被账号余量统计计入，
+    # 且绑定页只遍历已注册座位，孤儿键在界面里看不到也解不掉。
+    for acc in await store.list_accounts():
+        m = dict(acc.seat_slots or {})
+        if sn not in m:
+            continue
+        m.pop(sn, None)
+        acc.seat_slots = m
+        acc.bound_seats = sorted(m.keys())
+        await store.upsert_account(acc)
+
+    await store.delete_target_seat(sn)
     return RedirectResponse("/targets?deleted=1", status_code=303)
 
 
@@ -930,22 +977,47 @@ async def targets_replace(
 # =========================================================================
 
 async def _schedule_mode(request: Request) -> str:
-    """读取守护时段模式（uniform=全局统一 / weekly=按天自定义）。"""
+    """读取守护时段模式（uniform=全局统一 / weekly=按天自定义）。
+
+    该值决定覆盖检查读期望时段的哪一列。此处不得因读取失败抛错：
+    有近二十个页面依赖它，一次瞬时读取失败会放大为大面积 500。
+    但也不能静默回落——回落会用错列并给出「已覆盖」的错误安全信号，
+    因此回落时必须落库告警，使其可被事后发现。
+    """
     try:
         eff, _rows = await _effective_and_raw(request)
         return _settings.normalize_schedule_mode(
             eff.get("schedule_mode") or "uniform")
-    except Exception:
+    except Exception as exc:
+        await _log_setting_fallback(request, "schedule_mode", exc)
         return "uniform"
 
+
 async def _allocation_strategy(request: Request) -> str:
-    """读取时间分配策略（safe=安全模式 / minimal=最简模式）。"""
+    """读取时间分配策略（safe=安全模式 / minimal=最简模式）。
+
+    同 _schedule_mode：回落时落库告警，避免自动绑定按错策略静默执行。
+    """
     try:
         eff, _rows = await _effective_and_raw(request)
         return _settings.normalize_allocation_strategy(
             eff.get("allocation_strategy") or "safe")
-    except Exception:
+    except Exception as exc:
+        await _log_setting_fallback(request, "allocation_strategy", exc)
         return "safe"
+
+
+async def _log_setting_fallback(request: Request, key: str, exc: Exception) -> None:
+    """记录设置读取回落：写日志失败不影响主流程。"""
+    try:
+        store = getattr(request.app.state, "store", None)
+        if store is not None:
+            await store.log_message(
+                "WARN", None,
+                f"读取设置 {key} 失败，已回落默认值：{type(exc).__name__}: {exc}",
+            )
+    except Exception:
+        pass
 
 
 @router.post("/bindings/mode")
@@ -966,12 +1038,19 @@ async def bindings_mode(request: Request, mode: str = Form(...)):
 
 
 def _count_bindings(matrices: dict[str, dict[str, dict[str, list[str]]]]) -> int:
-    """统计一批矩阵里的绑定总数（支持新星期嵌套形态）。"""
+    """统计一批矩阵里的绑定总数（支持星期嵌套形态与 "full" 语义）。
+
+    "full" 表示整天营业时段，是单个绑定形态而非 4 条时段，按字符串长度
+    计数会虚报。
+    """
     total = 0
     for m in matrices.values():
         for spec in m.values():
             if isinstance(spec, dict):
-                total += sum(len(v) for v in spec.values())
+                for v in spec.values():
+                    total += 1 if isinstance(v, str) else len(v)
+            elif isinstance(spec, str):
+                total += 1
             else:
                 total += len(spec)   # 旧 list 形态兼容
     return total
@@ -1836,12 +1915,15 @@ async def accounts_create(
             name = unquote(jar.get("oa_name") or "")
             if not name:
                 # 登录链路可能未途经办公端鉴权, 读一次座位占用接口补齐身份 cookie
-                try:
-                    await client.get_used_times(
-                        request.app.state.cfg.library.room_id, "001",
-                        today_cst().isoformat())
-                except Exception:
-                    pass
+                # 座位号取当前注册的目标座位, 不硬编码业务实例
+                probe_seats = [s.seat_num for s in await store.list_target_seats()]
+                if probe_seats:
+                    try:
+                        await client.get_used_times(
+                            request.app.state.cfg.library.room_id, probe_seats[0],
+                            today_cst().isoformat())
+                    except Exception:
+                        pass
                 name = unquote(client.cookies().get("oa_name") or "")
         except ChaoxingError as e:
             return _templates(request).TemplateResponse(
@@ -1924,6 +2006,26 @@ async def accounts_update(
     if not existing:
         raise HTTPException(404)
     lib = request.app.state.cfg.library
+    # 手机号格式与唯一性校验（与新建路径一致）：重复手机号会让余量按两个
+    # 独立账号计算，提交时后一个被超星以"该时间段您已有预约"拒绝
+    phone_val = (phone or "").strip()
+    if not phone_val.isdigit() or not (8 <= len(phone_val) <= 20):
+        return _templates(request).TemplateResponse(
+            request, "accounts_form.html",
+            await _ctx(request, account=existing, error="手机号必须是 8-20 位数字",
+                       active_page="accounts"),
+            status_code=400,
+        )
+    dup = [a.id for a in await store.list_accounts()
+           if a.id != acc_id and (a.phone or "").strip() == phone_val]
+    if dup:
+        return _templates(request).TemplateResponse(
+            request, "accounts_form.html",
+            await _ctx(request, account=existing,
+                       error=f"手机号已存在于账号：{'、'.join(dup)}",
+                       active_page="accounts"),
+            status_code=400,
+        )
     try:
         seat_slots_val = _parse_seat_slots(
             seat_slots, lib.max_reserve_hours, lib.daily_reserve_hours_limit)
@@ -1933,7 +2035,7 @@ async def accounts_update(
             await _ctx(request, account=existing, error=str(e), active_page="accounts"),
             status_code=400,
         )
-    existing.phone = phone
+    existing.phone = phone_val
     if password.strip():
         existing.password = password
     existing.slots = "full"
@@ -2092,14 +2194,37 @@ async def accounts_toggle(
 
 @router.post("/accounts/{acc_id}/delete")
 async def accounts_delete(request: Request, acc_id: str, confirm_force: int = Form(0)):
+    """软删账号。
+
+    删除前走与禁用一致的排水：作废未提交任务，避免它们继续被批量提交；
+    删除后必须 sync_jobs，否则每分钟 tick 作业会残留并持续按分钟访问
+    一个已删除的账号。
+    """
+    from urllib.parse import quote
+
     store = request.app.state.store
-    inflight, _pending = await _account_task_census(store, acc_id)
+    sched = request.app.state.sched
+    acc = await store.get_account(acc_id)
+    if not acc:
+        raise HTTPException(404, f"account {acc_id} not found")
+    inflight, pending = await _account_task_census(store, acc_id)
     if inflight and confirm_force != 1:
         raise HTTPException(
             409, f"该账号仍有 {inflight} 条真实预约在履约，删除后无人签到将产生违约；"
                  f"建议先禁用排水，确要删除请二次确认")
+    voided = 0
+    for t in await store.list_tasks(account_id=acc_id):
+        if t.status in (TaskStatus.PENDING, TaskStatus.READY):
+            await store.update_task_status(
+                t.id, TaskStatus.FAILED, last_error="账号已删除，任务作废")
+            voided += 1
     await store.delete_account(acc_id)
-    return RedirectResponse("/accounts?deleted=1", status_code=303)
+    await sched.sync_jobs()
+    msg = f"已删除 {acc_id}：作废未提交任务 {voided} 条"
+    if inflight:
+        msg += f"；在途预约 {inflight} 段仍需人工完成签到/签退"
+    await store.log_action(acc_id, "delete", None, "delete", True, msg)
+    return RedirectResponse(f"/accounts?msg={quote(msg)}", status_code=303)
 
 
 @router.post("/accounts/{acc_id}/test-login")
@@ -2246,12 +2371,19 @@ async def tasks_import(
         if t.start_time == s and t.reserve_id:
             raise HTTPException(
                 400, f"同账号同座位同时段已存在任务 #{t.id}（预约号 {t.reserve_id}）")
-    tid = await store.add_task(Task(
-        id=None, account_id=acc.id, day=d,
-        start_time=s, end_time=e, seat_num=sn,
-        status=TaskStatus.ACTIVE, reserve_id=rid,
-        source=TASK_SOURCE_IMPORT,
-    ))
+        if t.start_time == s and not t.reserve_id:
+            # 同身份存在未预约的活跃任务，插入会被活跃态唯一索引拒绝
+            raise HTTPException(
+                400, f"同账号同座位同时段已存在待提交任务 #{t.id}，请先处理该任务")
+    try:
+        tid = await store.add_task(Task(
+            id=None, account_id=acc.id, day=d,
+            start_time=s, end_time=e, seat_num=sn,
+            status=TaskStatus.ACTIVE, reserve_id=rid,
+            source=TASK_SOURCE_IMPORT,
+        ))
+    except DuplicateTaskError as exc:
+        raise HTTPException(400, str(exc)) from exc
     await store.log_action(
         acc.id, "import", str(rid),
         f"手动导入预约: seat={sn} {d.isoformat()} "
@@ -2318,7 +2450,18 @@ async def task_reassign(
         return RedirectResponse(
             f"/tasks?day={t.day.isoformat()}&error={quote(str(e))}", status_code=303)
     if old_acc:
-        old_matrix = _matrix_set_day(dict(old_acc.seat_slots or {}), t.seat_num, wd, [])
+        # 只从旧账号矩阵里摘掉被改绑的这一段，保留该座位当天的其余时段
+        # （_matrix_set_day 是整日替换语义，直接传空列表会连带抹掉其他段，
+        #  导致旧账号仍实际持有的时段下次 bootstrap 不再生成任务）
+        old_day = slots_for_weekday(
+            (old_acc.seat_slots or {}).get(t.seat_num), wd,
+        )
+        keep = [
+            r for r in (old_day if isinstance(old_day, list) else [])
+            if r != rng
+        ]
+        old_matrix = _matrix_set_day(
+            dict(old_acc.seat_slots or {}), t.seat_num, wd, keep)
         old_acc.seat_slots = old_matrix
         old_acc.bound_seats = sorted(set(old_matrix.keys()))
         await store.upsert_account(old_acc)
@@ -2455,14 +2598,14 @@ async def hosting_page(
 
     # 当前列表：state ∈ queued/hosting/pending_decision
     current_rows = await store.list_hosted(states=list(_HOSTING_STATES_CURRENT), limit=None)
+    # 批量取关联任务，避免逐行 get_task 的 N+1
+    _cur_tasks = await store.get_tasks_by_ids(
+        [int(h["task_id"]) for h in current_rows if h.get("task_id")])
     current_view: list[dict] = []
     for h in current_rows:
-        task = None
-        if h.get("task_id"):
-            task = await store.get_task(int(h["task_id"]))
+        task = _cur_tasks.get(int(h["task_id"])) if h.get("task_id") else None
         v = _hosted_to_view(h, task.status.value if task else None)
         # now >= start：锁定置灰（只有 hosting 状态的开关受影响；pending_decision 仍可操作）
-        
         start_dt = at_cst(date.fromisoformat(h["day"]),
                             _time(v["start_h"], v["start_m"]))
         v["locked"] = now >= start_dt
@@ -2475,11 +2618,11 @@ async def hosting_page(
         states=list(_HOSTING_STATES_HISTORY),
         limit=_HOSTING_PAGE_SIZE, offset=offset,
     )
+    _his_tasks = await store.get_tasks_by_ids(
+        [int(h["task_id"]) for h in history_rows if h.get("task_id")])
     history_view: list[dict] = []
     for h in history_rows:
-        task = None
-        if h.get("task_id"):
-            task = await store.get_task(int(h["task_id"]))
+        task = _his_tasks.get(int(h["task_id"])) if h.get("task_id") else None
         v = _hosted_to_view(h, task.status.value if task else None)
         history_view.append(v)
     total_history = await store.count_hosted(states=list(_HOSTING_STATES_HISTORY))
@@ -2529,19 +2672,16 @@ async def hosting_toggle(
                 int(row["task_id"]), TaskStatus.FAILED,
                 last_error="手动停止托管",
             )
-        # 删 AUTO_SYNC 占位行（保留手动行）
+        # 删 AUTO_SYNC 占位行（保留手动行）。
+        # 不写"托管停止登记"手工占位：user_reserved 由实况同步全自动维护，
+        # 手工登记会越过该表归属，且其占位语义按座位生效，会连带阻断
+        # 该座位该时段所有守护账号的任务生成。上游预约若仍存在，
+        # 下一轮实况同步会按 AUTO_SYNC 语义重建该行。
         ur_rows = await store.list_user_reserved(day=day_d, seat_num=row["seat_num"])
         for r in ur_rows:
             if (r["note"] == AUTO_SYNC_NOTE
                 and r["account_id"] == row["account_id"]):
                 await store.delete_user_reserved(int(r["id"]))
-        # 加手动占位行
-        await store.add_user_reserved(
-            row["account_id"], row["seat_num"], day_d,
-            _time(*map(int, row["start_time"].split(":"))),
-            _time(*map(int, row["end_time"].split(":"))),
-            note="托管停止登记",
-        )
         await store.update_hosted(hosted_id, state="stopped", outcome="手动停止托管")
         return RedirectResponse(
             f"/hosting?msg={quote('已停止托管')}", status_code=303)
@@ -2581,7 +2721,7 @@ async def hosting_regrab(request: Request, hosted_id: int):
         return RedirectResponse(
             f"/hosting?error={quote('时段已结束，无法重抢')}", status_code=303)
     # 校验：每日限额、时段合法、该 (account, day, seat, start) 已存在则放弃
-    lib = request.app.state.config.library
+    lib = request.app.state.cfg.library
     from seatbot.utils.timeutil import at_cst as _at_cst
     hours = (_at_cst(day_d, end_t) - _at_cst(day_d, start_t)).total_seconds() / 3600
     if hours > float(lib.max_reserve_hours):
@@ -2616,12 +2756,15 @@ async def hosting_regrab(request: Request, hosted_id: int):
             f"/hosting?error={quote('重抢失败：'+str(e))}", status_code=303)
     loaded = await store.get_task(new_tid)
     if loaded:
+        # 账号已被软删时不得用空凭据兜底：那是向超星发一次无效登录尝试（计入风控）
+        regrab_acc = await store.get_account(row["account_id"])
+        if not regrab_acc or not regrab_acc.phone or not regrab_acc.password:
+            await store.update_hosted(
+                hosted_id, state="stopped", outcome="重抢失败：账号不存在或缺少凭据")
+            return RedirectResponse(
+                f"/hosting?error={quote('重抢失败：账号不存在或缺少凭据')}", status_code=303)
         try:
-            await sched._run_submit(
-                await store.get_account(row["account_id"]) or Account(
-                    id=row["account_id"], phone="", password="", slots=[]),
-                loaded,
-            )
+            await sched._run_submit(regrab_acc, loaded)
         except Exception as e:
             await store.update_hosted(hosted_id, state="stopped",
                                        outcome=f"重抢失败：{type(e).__name__}")
@@ -2686,34 +2829,15 @@ async def hosting_add_matrix(request: Request, hosted_id: int):
     mode = await _schedule_mode(request)
     target_wds = list(WEEKDAY_KEYS) if mode == "uniform" else [weekday_key(day_d)]
 
-    # 座位自动注册
-    existing_seats = {s.seat_num for s in await store.list_target_seats()}
-    if sn not in existing_seats:
-        await store.add_target_seat(sn)
-
-    # 期望时段：补时段
-    seat_obj = next((s for s in await store.list_target_seats()
-                     if s.seat_num == sn), None)
-    is_weekly = (mode == "weekly")
-    if seat_obj:
-
-        # 收集所有要写入的天已有期望时段
-        cur = seat_obj.desired_slots_weekly if is_weekly else seat_obj.desired_slots
-        if not isinstance(cur, dict):
-            cur = {wd: [] for wd in WEEKDAY_KEYS}
-        else:
-            cur = {wd: list(cur.get(wd, [])) for wd in WEEKDAY_KEYS}
-        for wd in target_wds:
-            if rng not in cur.get(wd, []):
-                cur[wd] = list(cur.get(wd, [])) + [rng]
-        await store.set_target_seat_desired(sn, cur, is_weekly=is_weekly)
-
+    # 座位注册与期望时段写入延后到选号成功之后：
+    # 先写后选会在无账号可用时留下"期望时段有块却无人绑定"的半迁移状态，
+    # 绑定页覆盖检查会长期报缺口。
     # 选号：优先行内账号
     accounts = await store.list_accounts()
     primary = next((a for a in accounts if a.id == row["account_id"]), None)
     chosen = None
     reason = ""
-    lib = request.app.state.config.library
+    lib = request.app.state.cfg.library
     candidates: list[Account] = []
     if primary and primary.status == "active":
         candidates.append(primary)
@@ -2752,6 +2876,23 @@ async def hosting_add_matrix(request: Request, hosted_id: int):
     if chosen is None:
         return RedirectResponse(
             f"/hosting?error={quote('无可用账号：'+reason)}", status_code=303)
+    # 选号成功后再注册座位并补期望时段，保证不留半迁移
+    existing_seats = {s.seat_num for s in await store.list_target_seats()}
+    if sn not in existing_seats:
+        await store.add_target_seat(sn)
+    seat_obj = next((s for s in await store.list_target_seats()
+                     if s.seat_num == sn), None)
+    is_weekly = (mode == "weekly")
+    if seat_obj:
+        cur = seat_obj.desired_slots_weekly if is_weekly else seat_obj.desired_slots
+        if not isinstance(cur, dict):
+            cur = {wd: [] for wd in WEEKDAY_KEYS}
+        else:
+            cur = {wd: list(cur.get(wd, [])) for wd in WEEKDAY_KEYS}
+        for wd in target_wds:
+            if rng not in cur.get(wd, []):
+                cur[wd] = list(cur.get(wd, [])) + [rng]
+        await store.set_target_seat_desired(sn, cur, is_weekly=is_weekly)
     # 范围说明
     if mode == "uniform":
         scope_text = "周一至周日"
@@ -2843,7 +2984,7 @@ async def reservations_page(
             client = await sched.client_ready(acc)
             if not client.cookies() and not await sched.login_and_persist(acc, client, "预约记录登录"):
                 raise ChaoxingError("登录失败")
-            items = await client.reserve_list()
+            items = await client.reserve_list_all()
         except Exception as e:
             err = str(e)
         _RESERVE_CACHE[acc.id] = (now, items, err)
@@ -3005,6 +3146,8 @@ async def settings_view(request: Request):
 
 @router.post("/settings")
 async def settings_save(request: Request):
+    from urllib.parse import quote
+
     store = request.app.state.store
     sched = getattr(request.app.state, "sched", None)
     form = await request.form()
@@ -3034,24 +3177,17 @@ async def settings_save(request: Request):
         else:
             patch[k] = v
 
-    errors = _settings.validate_all(patch)
-
-    # 交叉：单段不应超过日限额（用有效值二次校验）
-    if not errors:
-        try:
-            eff, rows = await _effective_and_raw(request)
-            mh_raw = patch.get("max_reserve_hours", eff.get("max_reserve_hours"))
-            dh_raw = patch.get("daily_reserve_hours_limit", eff.get("daily_reserve_hours_limit"))
-            mh = float(str(mh_raw).strip()) if isinstance(mh_raw, str) else float(mh_raw)  # type: ignore[arg-type]
-            dh = float(str(dh_raw).strip()) if isinstance(dh_raw, str) else float(dh_raw)  # type: ignore[arg-type]
-            if mh > dh:
-                errors["max_reserve_hours"] = "单段上限不应超过每日限额"
-        except Exception:
-            pass
+    # 交叉：单段不应超过日限额（用库内现值补齐 patch 未含的一侧）
+    _cur: dict[str, object] = {}
+    try:
+        eff, _rows = await _effective_and_raw(request)
+        _cur = {k: eff.get(k) for k in ("max_reserve_hours", "daily_reserve_hours_limit")}
+    except Exception:
+        _cur = {}
+    errors = _settings.validate_all(patch, current=_cur)
 
     if errors:
         # 回显错误：用 303 带参重定向，错误摘要进 query（前端同时展示字段级错误需回填，此处先用 banner）
-        from urllib.parse import quote
         first = next(iter(errors.values()))
         return RedirectResponse(f"/settings?error={quote(first)}", status_code=303)
 
@@ -3071,25 +3207,31 @@ async def settings_save(request: Request):
         to_store[k] = _settings.coerce_for_storage(k, v)
 
     await store.set_settings(to_store)
+    reload_note = ""
     if sched is not None:
         try:
             await sched.load_runtime_settings()
-        except Exception:
-            pass
-    return RedirectResponse("/settings?saved=1", status_code=303)
+        except Exception as ex:
+            # 落库成功但运行时热生效失败：调度器仍在用旧配置，必须回显，
+            # 否则页面显示"已保存"而实际未生效
+            reload_note = quote(f"；运行时生效失败，需重启服务：{type(ex).__name__}")
+    return RedirectResponse(f"/settings?saved=1{reload_note}", status_code=303)
 
 
 @router.post("/settings/reset")
 async def settings_reset(request: Request):
+    from urllib.parse import quote
+
     store = request.app.state.store
     sched = getattr(request.app.state, "sched", None)
     await store.clear_settings()
+    reload_note = ""
     if sched is not None:
         try:
             await sched.load_runtime_settings()
-        except Exception:
-            pass
-    return RedirectResponse("/settings?reset=1", status_code=303)
+        except Exception as ex:
+            reload_note = quote(f"；运行时生效失败，需重启服务：{type(ex).__name__}")
+    return RedirectResponse(f"/settings?reset=1{reload_note}", status_code=303)
 
 
 
@@ -3311,7 +3453,7 @@ async def manual_reserve(
     )
     try:
         tid = await store.add_task(task)
-    except sqlite3.IntegrityError:
+    except DuplicateTaskError:
         return RedirectResponse(
             "/manual?error=" + quote("该账号当日该座位已有进行中任务"), status_code=303)
     loaded = await store.get_task(tid)

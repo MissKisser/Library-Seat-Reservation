@@ -76,6 +76,10 @@ class FakeHostingStore:
     async def get_task(self, task_id):
         return next((t for t in self.tasks if t.id == task_id), None)
 
+    async def get_tasks_by_ids(self, task_ids):
+        wanted = {int(i) for i in task_ids}
+        return {t.id: t for t in self.tasks if t.id in wanted}
+
     async def list_tasks(self, account_id=None, day=None, seat_num=None):
         return [t for t in self.tasks
                 if (account_id is None or t.account_id == account_id)
@@ -164,11 +168,17 @@ class StubHostingConfig:
         web_token = ""
 
 
-def _make_client(store, sched=None):
+def _make_client(store, sched=None, daily_limit_hours=None):
+    cfg = StubHostingConfig
+    if daily_limit_hours is not None:
+        cfg = type("StubHostingConfig", (StubHostingConfig,), {
+            "library": type("library", (StubHostingConfig.library,), {
+                "daily_reserve_hours_limit": daily_limit_hours,
+            }),
+        })
     app = FastAPI()
     app.include_router(router)
-    app.state.cfg = StubHostingConfig
-    app.state.config = StubHostingConfig
+    app.state.cfg = cfg
     app.state.store = store
     app.state.sched = sched
     app.state.templates = new_templates()
@@ -274,7 +284,8 @@ def test_hosting_add_matrix_merges_existing_slots():
         "start_time": "14:00", "end_time": "16:00",
         "state": "hosting", "outcome": "", "task_id": None,
     })
-    client = _make_client(store)
+    # 日限额 3h：张三已有 2h，再加 2h 超限，必须换绑给李四
+    client = _make_client(store, daily_limit_hours=3.0)
     r = client.post("/hosting/1/add-matrix", follow_redirects=False)
     assert r.status_code == 303
     from seatbot.utils.weekly import slots_for_weekday

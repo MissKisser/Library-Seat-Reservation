@@ -137,7 +137,7 @@ def _make_cfg():
 
 
 class FakeReserveClient:
-    """离线替身：cookies 恒有，reserve_list 按脚本返回。"""
+    """离线替身：cookies 恒有，预约列表按脚本返回。"""
 
     script: list = []
 
@@ -146,6 +146,9 @@ class FakeReserveClient:
 
     async def reserve_list(self):
         return FakeReserveClient.script.pop(0) if FakeReserveClient.script else []
+
+    async def reserve_list_all(self):
+        return await self.reserve_list()
 
 
 def test_sync_registers_then_prunes(tmp_path, monkeypatch):
@@ -259,6 +262,9 @@ def test_sync_ignores_manual_rows_and_skips_no_credential_accounts(
                 async def reserve_list(self):
                     calls.append(1)
                     return []
+
+                async def reserve_list_all(self):
+                    return await self.reserve_list()
 
             sched = Scheduler(_make_cfg(), store)
 

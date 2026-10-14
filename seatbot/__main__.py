@@ -8,7 +8,7 @@ from pathlib import Path
 
 from seatbot.config import load_config, ConfigError
 from seatbot.scheduler import Scheduler
-from seatbot.store import StateStore
+from seatbot.store import DuplicateTaskError, StateStore
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -116,15 +116,21 @@ async def _cmd_run(args) -> int:
         print(f"[WARN] load runtime settings failed: {e}")
     sched.start()
 
-    # 崩溃恢复 + 错过 14:00 窗口的补跑放后台执行, 不阻塞面板起服
+    # 崩溃恢复 + 错过 14:00 窗口的补跑放后台执行, 不阻塞面板起服。
+    # 各阶段独立容错: 前一阶段失败不得连带跳过后续阶段
+    # (startup_afternoon_catchup 是错过 14:00 后次日预约的唯一补跑入口)。
     async def _startup_recovery() -> None:
-        try:
-            await sched.startup_reconcile()
-            await sched.bootstrap_today()
-            await sched.startup_afternoon_catchup()
-            await sched.sync_jobs()
-        except Exception as e:
-            print(f"[ERROR] startup recovery failed: {type(e).__name__}: {e}")
+        for stage_name, stage in (
+            ("startup_reconcile", sched.startup_reconcile),
+            ("bootstrap_today", sched.bootstrap_today),
+            ("startup_afternoon_catchup", sched.startup_afternoon_catchup),
+            ("sync_jobs", sched.sync_jobs),
+        ):
+            try:
+                await stage()
+            except Exception as e:
+                print(f"[ERROR] startup recovery stage {stage_name} failed: "
+                      f"{type(e).__name__}: {e}")
 
     asyncio.create_task(_startup_recovery())
     from seatbot.web.app import make_app
@@ -293,7 +299,11 @@ async def _cmd_reserve(args) -> int:
             seat_num=seat_num,
             status=TaskStatus.READY,
         )
-        tid = await store.add_task(t)
+        try:
+            tid = await store.add_task(t)
+        except DuplicateTaskError as exc:
+            print(f"task conflict: {exc}", file=sys.stderr)
+            return 4
         loaded = await store.get_task(tid)
         if not loaded:
             print("failed to create task", file=sys.stderr)

@@ -66,7 +66,8 @@ def split_into_chunks(
 ) -> list[tuple[time, time]]:
     """Split a (start, end) range into chunks of at most max_hours.
 
-    Raises ValueError if max_hours is not positive.
+    Raises ValueError if max_hours does not yield at least one whole minute,
+    which would make the chunk cursor unable to advance.
     """
     if max_hours <= 0:
         raise ValueError(f"max_hours must be > 0, got {max_hours!r}")
@@ -74,6 +75,10 @@ def split_into_chunks(
     start_min = start.hour * 60 + start.minute
     end_min = end.hour * 60 + end.minute
     chunk_min = int(max_hours * 60)
+    if chunk_min < 1:
+        raise ValueError(
+            f"max_hours must be at least 1 minute, got {max_hours!r}"
+        )
     chunks: list[tuple[time, time]] = []
     cur = start_min
     while cur < end_min:

@@ -135,9 +135,10 @@ async def test_run_sign_success_marks_signed(store, monkeypatch):
     assert dummy.calls == [("sign", 1)]
 
 
-async def test_run_sign_window_closed_stops_retry(store, monkeypatch):
-    # "不在签到时间内" (已签过/窗口过) → SIGNED, 不再每分钟重打 API
-    # now 固定在时段结束之后，服务端仍拒签 → 判定"窗口已过"终止重试
+async def test_run_sign_window_closed_stops_retry_as_failed(store, monkeypatch):
+    # "不在签到时间内" 且已过 60 分钟窗口 → 标失败停止重打 API。
+    # 不得置 SIGNED：那会让看板呈现为已占座，而服务端该预约从未签到，
+    # 时段结束时产生未签到违约且系统全程不告警。
     fixed = at_cst(today_cst(), time(12, 0))
     monkeypatch.setattr("seatbot.scheduler.now_cst", lambda: fixed)
     dummy = DummyClient([{"success": False, "msg": "不在签到时间内无法签到"}])
@@ -148,7 +149,9 @@ async def test_run_sign_window_closed_stops_retry(store, monkeypatch):
              seat_num="104", status=TaskStatus.ACTIVE, reserve_id=1)
     t.id = await store.add_task(t)
     await sched._run_sign(await store.get_account("zhangsan"), t)
-    assert (await store.get_task(t.id)).status == TaskStatus.SIGNED
+    row = await store.get_task(t.id)
+    assert row.status == TaskStatus.FAILED
+    assert row.last_error and "窗口已关闭" in row.last_error
 
 
 async def test_run_sign_other_failure_keeps_active(store, monkeypatch):

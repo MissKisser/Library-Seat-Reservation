@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -161,8 +162,15 @@ _STATIC_DIR = TEMPLATES_DIR.parent / "static"
 
 
 def _static_v(name: str) -> str:
-    """静态资源的 mtime 数字版本号: 内容一变 URL 即变, 浏览器缓存自然失效。"""
-    return str(int((_STATIC_DIR / name).stat().st_mtime))
+    """静态资源的 mtime 数字版本号: 内容一变 URL 即变, 浏览器缓存自然失效。
+
+    入参为 static 目录下的相对文件名；文件缺失时回落到进程启动时刻，
+    不让这个辅助函数把整个渲染链带崩（否则所有页面一起 500）。
+    """
+    try:
+        return str(int((_STATIC_DIR / name).stat().st_mtime))
+    except OSError:
+        return str(int(time.time()))
 
 
 def new_templates() -> Jinja2Templates:

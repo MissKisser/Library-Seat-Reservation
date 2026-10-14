@@ -39,7 +39,6 @@ class ChaoxingClient:
 
     def __init__(self, *, ua: str | None = None):
         self._ua = ua or random_ua()
-        self._logged_at: float | None = None   # time.monotonic() of last successful login
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(15.0, connect=10.0),
             follow_redirects=True,
@@ -85,7 +84,6 @@ class ChaoxingClient:
         from httpx import Cookies
         self._cookie_jar = Cookies()
         self._client.cookies = self._cookie_jar
-        self._logged_at = None
 
     # ---------- low-level helpers ----------
     async def _post_form(
@@ -125,8 +123,6 @@ class ChaoxingClient:
             )
         if not any(c.name in ("_uid", "vc3") for c in self._cookie_jar.jar):
             raise ChaoxingError("login succeeded but no auth cookies set")
-        import time as _time
-        self._logged_at = _time.monotonic()
         try:
             await self._client.get(
                 f"{self.OFFICE_BASE}/front/third/apps/seat/index",
@@ -524,8 +520,6 @@ class ChaoxingClient:
                             c["name"], c["value"],
                             domain=c["domain"], path=c.get("path", "/"),
                         )
-                    import time as _time
-                    self._logged_at = _time.monotonic()
                     try:
                         await page.goto(url, timeout=12000, wait_until="domcontentloaded")
                         try:
@@ -699,6 +693,28 @@ class ChaoxingClient:
             )
         return (payload.get("data") or {}).get("reserveList") or []
 
+    #: reservelist 翻页上限，防止服务端异常分页时无限拉取。
+    RESERVE_LIST_MAX_PAGES = 40
+
+    async def reserve_list_all(
+        self, *, page_size: int = 50, type_: int = -1,
+    ) -> list[dict]:
+        """翻页取回全部预约记录。
+
+        单页结果不足以覆盖累计记录：账号历史预约超过 page_size 后，仍生效的
+        今日/明日预约会落到后续页，调用方据此判断会误清退有效预约。
+        按 indexId 逐页累积，末页（返回条数少于 page_size）即停止。
+        """
+        out: list[dict] = []
+        for index_id in range(self.RESERVE_LIST_MAX_PAGES):
+            page = await self.reserve_list(
+                index_id=index_id, page_size=page_size, type_=type_,
+            )
+            out.extend(page)
+            if len(page) < page_size:
+                break
+        return out
+
     async def supervised_reservations(self) -> list[dict]:
         """查询当前登录账号处于**被监督中**（status=5）的预约记录。
 
@@ -711,7 +727,7 @@ class ChaoxingClient:
                  id / roomId / seatNum / startTime / endTime 等。
         只读查询, 无预约/违约副作用。
         """
-        records = await self.reserve_list()
+        records = await self.reserve_list_all()
         return [
             r for r in records
             if r.get("status") == self.RESERVE_STATUS_SUPERVISED

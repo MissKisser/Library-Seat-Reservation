@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time as _time
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -12,6 +13,15 @@ import aiosqlite
 from seatbot.models import Account, SeatTarget, Task, TaskStatus
 from seatbot.utils.timeutil import CST, epoch_ms_to_cst_str
 from seatbot.utils.weekly import WEEKDAY_KEYS, normalize_weekly
+
+
+class DuplicateTaskError(Exception):
+    """活跃态任务唯一约束冲突。
+
+    触发条件：同 (账号, 日, 座位, 开始时间) 已存在未终态任务，插入被
+    活跃态唯一索引拒绝。调用方应将其视为幂等跳过或向用户报冲突。
+    """
+
 # v2 schema:
 #  - accounts:        + bound_seats_json
 #  - target_seats:    NEW (multi-seat registry)
@@ -292,6 +302,13 @@ class StateStore:
             await self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_source ON tasks(source)"
             )
+            await self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at)"
+            )
+            await self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hosted_updated_at "
+                "ON hosted_reservations(updated_at)"
+            )
         except Exception:
             pass
         # 5. target_seats: 增加期望时段列
@@ -332,11 +349,21 @@ class StateStore:
                 continue
             new = {}
             dirty = False
+            broken: list[str] = []
             for seat, val in data.items():
-                norm = normalize_weekly(val, allow_full=True)
+                try:
+                    norm = normalize_weekly(val, allow_full=True)
+                except ValueError as exc:
+                    broken.append(f"{seat}({exc})")
+                    continue
                 new[seat] = norm
                 if norm != val:
                     dirty = True
+            if broken:
+                await self.log_message(
+                    "WARN", None,
+                    "账号矩阵时段形态非法，已保留原值未归一：" + "；".join(broken),
+                )
             if dirty:
                 await self.db.execute(
                     "UPDATE accounts SET seat_slots_json=? WHERE id=?",
@@ -350,7 +377,12 @@ class StateStore:
                 val = json.loads(raw)
             except Exception:
                 continue
-            norm = normalize_weekly(val, allow_full=False)
+            try:
+                norm = normalize_weekly(val, allow_full=False)
+            except ValueError as exc:
+                await self.log_message(
+                    "WARN", None, f"座位 {sid} 期望时段形态非法，已保留原值：{exc}")
+                continue
             if norm is not None and norm != val:
                 await self.db.execute(
                     "UPDATE target_seats SET desired_slots_json=? WHERE seat_num=?",
@@ -365,7 +397,12 @@ class StateStore:
                 val = json.loads(raw)
             except Exception:
                 continue
-            norm = normalize_weekly(val, allow_full=False)
+            try:
+                norm = normalize_weekly(val, allow_full=False)
+            except ValueError as exc:
+                await self.log_message(
+                    "WARN", None, f"座位 {sid} 按周期望时段形态非法，已保留原值：{exc}")
+                continue
             if norm is not None and norm != val:
                 await self.db.execute(
                     "UPDATE target_seats SET desired_slots_weekly_json=? WHERE seat_num=?",
@@ -528,6 +565,7 @@ class StateStore:
                  reserve_id, state, outcome, task_id, now, now),
             )
             await self.db.commit()
+            await self._prune_hosted()
             return cur.lastrowid or 0
         await self.db.execute(
             """UPDATE hosted_reservations SET state=?, outcome=?, task_id=?,
@@ -536,6 +574,20 @@ class StateStore:
         )
         await self.db.commit()
         return row[0]
+
+    #: 终态托管行保留条数；超出后按 updated_at 由旧到新裁剪（仅终态可裁剪）。
+    HOSTED_KEEP = 500
+
+    async def _prune_hosted(self) -> None:
+        """裁剪终态托管行至 HOSTED_KEEP 条，保留排队/托管/待决策等在途行。"""
+        await self.db.execute(
+            "DELETE FROM hosted_reservations WHERE state IN ('stopped','ended') "
+            "AND id NOT IN ("
+            "  SELECT id FROM hosted_reservations WHERE state IN ('stopped','ended') "
+            "  ORDER BY updated_at DESC, id DESC LIMIT ?)",
+            (self.HOSTED_KEEP,),
+        )
+        await self.db.commit()
 
     async def get_hosted(self, hosted_id: int) -> dict | None:
         """按 hosted_reservations.id 取一行（含全部列）；不存在返回 None。"""
@@ -1028,23 +1080,35 @@ class StateStore:
         return int(row[0] or 0) if row else 0
 
     async def add_task(self, t: Task) -> int:
+        """插入任务行并返回自增主键。
+
+        入参为待落库的 Task。命中活跃态唯一索引（同账号/同日/同座位/同开始
+        时间已有未终态任务）时回滚本次插入并抛 DuplicateTaskError。
+        """
         self._bump()
         now = int(_time.time() * 1000)
-        cur = await self.db.execute(
-            """INSERT INTO tasks
-               (account_id, seat_num, day, start_time, end_time, status,
-                reserve_id, source, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                t.account_id, t.seat_num or "", t.day.isoformat(),
-                t.start_time.isoformat(timespec="minutes"),
-                t.end_time.isoformat(timespec="minutes"),
-                t.status.value, t.reserve_id,
-                t.source or "matrix",
-                now, now,
-            ),
-        )
-        await self.db.commit()
+        try:
+            cur = await self.db.execute(
+                """INSERT INTO tasks
+                   (account_id, seat_num, day, start_time, end_time, status,
+                    reserve_id, source, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    t.account_id, t.seat_num or "", t.day.isoformat(),
+                    t.start_time.isoformat(timespec="minutes"),
+                    t.end_time.isoformat(timespec="minutes"),
+                    t.status.value, t.reserve_id,
+                    t.source or "matrix",
+                    now, now,
+                ),
+            )
+            await self.db.commit()
+        except sqlite3.IntegrityError as e:
+            await self.db.rollback()
+            raise DuplicateTaskError(
+                f"账号 {t.account_id} 在 {t.day.isoformat()} "
+                f"{t.seat_num} {t.start_time.strftime('%H:%M')} 已有未完成任务"
+            ) from e
         return cur.lastrowid or 0
 
     async def update_task_status(
@@ -1056,10 +1120,19 @@ class StateStore:
         last_error: str | None = None,   # "" = 显式清空(成功路径); None = 保持不变
         source: str | None = None,        # None = 保持不变（COALESCE 语义）
     ) -> None:
+        """更新任务状态与关联字段。
+
+        入参 task_id 为目标任务主键；status 为目标状态；reserve_id 为预约号
+        （None 保持原值）；last_error 为 "" 时显式清空、None 时保持原值；
+        source 为来源标记（None 保持原值）。
+
+        状态变更立即提交，保证调用方返回后数据已落盘：隐式事务在
+        连接关闭时会被回滚，且在提交前会持续持有 WAL 写锁。
+        """
         self._bump()
         now = int(_time.time() * 1000)
         if last_error == "":
-            # ★ 成功路径清残留: 任务转 ACTIVE/SIGNED/COMPLETE 时不应再挂历史错误文案
+            # 成功路径清残留: 任务转 ACTIVE/SIGNED/COMPLETE 时不应再挂历史错误文案
             await self.db.execute(
                 """UPDATE tasks
                    SET status=?, reserve_id=COALESCE(?, reserve_id),
@@ -1078,6 +1151,7 @@ class StateStore:
                    WHERE id=?""",
                 (status.value, reserve_id, last_error, source, now, task_id),
             )
+        await self.db.commit()
 
     async def shorten_task_end(self, task_id: int, new_end: "time") -> None:
         """缩短任务结束时间（换座释放：时段开始签到后短持即签退）。"""
@@ -1115,7 +1189,13 @@ class StateStore:
         self, account_id: str | None = None,
         day: date | None = None,
         seat_num: str | None = None,
+        statuses: tuple[str, ...] | None = None,
     ) -> list[Task]:
+        """按账号/日期/座位/状态过滤任务，按 (日, 座位, 开始) 排序返回。
+
+        入参均为可选过滤条件；statuses 传入后在 SQL 层过滤，避免把终态行
+        一并载入内存。全部为空时返回全部任务。
+        """
         q = (
             "SELECT id, account_id, seat_num, day, start_time, end_time, "
             "status, reserve_id, last_error, source, created_at, updated_at "
@@ -1132,10 +1212,35 @@ class StateStore:
         if seat_num:
             q += " AND seat_num=?"
             args.append(seat_num)
+        if statuses:
+            q += " AND status IN (" + ",".join("?" for _ in statuses) + ")"
+            args.extend(statuses)
         q += " ORDER BY day, seat_num, start_time"
         cur = await self.db.execute(q, args)
         rows = await cur.fetchall()
         return [_row_to_task(r) for r in rows]
+
+    async def get_tasks_by_ids(self, task_ids: list[int]) -> dict[int, Task]:
+        """按主键批量取任务，返回 {id: Task}；入参为空或含不存在的 id 时按实际命中返回。
+
+        用于列表页按 task_id 关联任务，避免逐行查询的 N+1。
+        """
+        ids = [int(i) for i in task_ids if i]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        cur = await self.db.execute(
+            f"SELECT id, account_id, seat_num, day, start_time, end_time, "
+            f"status, reserve_id, last_error, source, created_at, updated_at "
+            f"FROM tasks WHERE id IN ({placeholders})",
+            ids,
+        )
+        out: dict[int, Task] = {}
+        for row in await cur.fetchall():
+            t = _row_to_task(row)
+            if t.id is not None:
+                out[t.id] = t
+        return out
 
     async def find_next_task_after(
         self, day: date, after_time: "time", *, statuses: tuple[str, ...] = ("pending", "ready", "failed")
@@ -1147,7 +1252,8 @@ class StateStore:
         placeholders = ",".join("?" for _ in statuses)
         cur = await self.db.execute(
             f"SELECT id, account_id, seat_num, day, start_time, end_time, "
-            f"status, reserve_id, last_error FROM tasks "
+            f"status, reserve_id, last_error, source, created_at, updated_at "
+            f"FROM tasks "
             f"WHERE day=? AND start_time > ? AND status IN ({placeholders}) "
             f"ORDER BY start_time ASC, account_id ASC LIMIT 1",
             (day.isoformat(),
