@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "seatbot"
-version = "0.1.0"
+version = "0.6.0"
 description = "超星图书馆座位自动预约/签到/签退"
 requires-python = ">=3.11"
 dependencies = [

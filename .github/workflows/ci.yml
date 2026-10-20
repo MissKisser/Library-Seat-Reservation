@@ -28,7 +28,7 @@ jobs:
         run: |
           cat > config.test.yaml <<'YAML'
           library:
-            room_id: 11692
+            room_id: 10000
             room_name: "smoke"
             open_time: "08:00"
             close_time: "22:00"

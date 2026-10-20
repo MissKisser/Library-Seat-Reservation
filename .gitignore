@@ -33,7 +33,7 @@ docs/screenshots/
 node_modules/
 .session_cache/
 
-# 文档规范: 除 docs/README.md 外文档不入库
+# 文档规范: docs/ 下全部文档（含总览 docs/docs.md）均不入库
 docs/*
 
 # 本地误输出残留

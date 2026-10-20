@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=seatbot
 WorkingDirectory=/opt/seatbot
+Environment=TZ=Asia/Shanghai
 ExecStart=/opt/seatbot/.venv/bin/python -m seatbot run --config /opt/seatbot/config.yaml
 Restart=on-failure
 RestartSec=10

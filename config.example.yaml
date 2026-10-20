@@ -1,80 +1,80 @@
-# Library Seat Reservation Bot — 多目标座位 + 时段满约 (v2)
+# SeatBot 配置模板
 #
-# 用法: cp config.example.yaml config.yaml → 填入真实账号/座位 →
-#       python -m seatbot init-db → python -m seatbot run
+# 用法:
+#   cp config.example.yaml config.yaml   → 填写真实参数
+#   python -m seatbot init-db
+#   python -m seatbot run
 #
-# ⚠️ 本文件是模板,全部凭证均为占位符。不要把真实密码写进本文件或提交 git。
+# ⚠️ 本文件是模板：所有凭据均为占位符，切勿把真实手机号/密码写回本文件。
 #
-# 核心概念 (v2):
-#   ★ target_seats: N 个想保护的目标座位
-#   ★ accounts: M 个守护账号, 推荐用 seat_slots 精确指定 (座位, 时段) 组合
-#   ★ 单段 ≤ max_reserve_hours (超长 range 会被 planner 拒绝, 不自动拆段)
+# 职责边界:
+#   ★ 数据库是业务数据唯一真源——目标座位、守护矩阵、账号增删都在 Web 面板完成；
+#     本文件只在首次启动时播种，且只增不覆盖（面板已删除的条目不会被这里复活）。
+#   ★ 目标座位（target_seats）用面板 /targets 管理更顺手，此处的列表仅作首次种子。
+#   ★ 单段时长 ≤ library.max_reserve_hours（超星硬约束 2h）：期望时段层会自动切片，
+#     账号矩阵层（seat_slots）超限时会被直接拒绝，不会静默拆段。
 
 library:
-  room_id: 11692                          # 超星房间 ID (抓包获得)
-  room_name: "2号楼图书馆-3F-3楼备考自习室"
-  open_time: "08:00"
-  close_time: "22:00"
-  max_reserve_hours: 2.0                  # 超星硬约束: 单次预约 ≤ 2h
+  room_id: 10000                          # 超星房间 ID（抓包获得）
+  room_name: "示例自习室"                 # 仅作展示与日志标识
+  open_time: "08:00"                      # 营业开始（零填充 HH:MM）
+  close_time: "22:00"                     # 营业结束（零填充 HH:MM）
+  max_reserve_hours: 2.0                  # 单段时长上限（超星硬约束 2.0）
+  daily_reserve_hours_limit: 14.0         # 单账号每日累计预约时长上限
 
-# 目标座位 — Web 面板 (/targets) 是主入口, 这里只是 seed
+# 目标座位种子——主入口是 Web 面板 /targets
 target_seats:
-  - seat_num: "104"
+  - seat_num: "001"
     label: "目标座位A (示例)"
-  - seat_num: "105"
+  - seat_num: "002"
     label: "目标座位B (示例)"
 
-# 守护账号 (M 个)
+# 守护账号种子——主入口是 Web 面板 /accounts
 #
-# ★ 推荐写法: seat_slots 精确矩阵 —
-#     每个账号对每个座位守哪些时段一目了然, planner 按 (seat, slot) 精确展开。
-#     下例即 "3 账号 × 2 座位 × 3 时段" 守护矩阵, 每天恰好 6 段。
-#
-#   seat_slots:
-#     "104": ["09:00-11:00"]        # 该账号在 104 守 09-11
-#     "105": ["15:00-17:00"]        # 该账号在 105 守 15-17
-#
-# ⚠️ 不推荐: 扁平 slots + bound_seats 会做笛卡尔积 (每座位都约全部时段),
-#    实测一天会生成 16-22 段, 违反 "6 段精确" 目标。
-#    slots: "full" / ["HH:MM-HH:MM"] 仅作为兜底语义保留。
+# ★ 矩阵字段 seat_slots：键是座位号，值是该账号负责的时段（本文件取整周统一形态）：
+#   "001": ["09:00-11:00", "15:00-17:00"]
+#   按星期几独立的形态（"001": {"mon": [...], "tue": [...]}）由 Web 面板维护，
+#   落库到 accounts.seat_slots_json；缺省的天 = 该天不守护。
+#   planner 按 (座位, 时段) 精确展开，不做笛卡尔积。
+# ★ 同一账号的时段不得跨座位重叠（超星会直接拒绝："该时间段您已有预约！"）。
 accounts:
-  - id: guard_a                           # 账号别名 (唯一)
-    phone: "138xxxxxxxx"                  # ← 真实手机号
-    password: "13800000000"        # ← 真实密码
+  - id: guard_a                           # 账号别名（唯一）
+    phone: "13800000000"                  # ← 真实手机号
+    password: "your-password-here"        # ← 真实密码
     seat_slots:
-      "104": ["09:00-11:00"]
-      "105": ["15:00-17:00"]
+      "001": ["09:00-11:00"]
+      "002": ["15:00-17:00"]
 
   - id: guard_b
-    phone: "139xxxxxxxx"
-    password: "13800000000"
+    phone: "13900000000"
+    password: "your-password-here"
     seat_slots:
-      "104": ["15:00-17:00"]
-      "105": ["19:00-21:00"]
+      "001": ["15:00-17:00"]
+      "002": ["19:00-21:00"]
 
-  - id: guard_c
-    phone: "137xxxxxxxx"
-    password: "13800000000"
-    seat_slots:
-      "104": ["19:00-21:00"]
-      "105": ["09:00-11:00"]
-
-# ★ 用户硬预约段 (你本人在超星 App 手动约过的段, scheduler 生成任务时跳过,
-#   避免重复预约/覆盖)。日期是具体某一天, 过期后可删除。
+# ★ 用户本人已手动预约的时段：scheduler 生成任务时跳过，避免重复预约。
+#   该表由实况同步自动维护（补登/清退），面板无手工入口。
 user_reserved: []
   # - account_id: guard_a
-  #   seat_num: "104"
-  #   day: "2026-08-26"
+  #   seat_num: "001"
+  #   day: "2026-01-01"
   #   start_time: "19:30"
   #   end_time: "21:30"
-  #   note: "本人已手动预约, scheduler 跳过"
+  #   note: "本人已手动预约，scheduler 跳过"
 
 runtime:
   stagger_seconds: [0, 3]                 # 各账号每分钟 tick 的错峰秒数
-  direct_submit_enabled: true             # 跨天预约直连通道开关 (关=未来日期任务直接 FAILED, 不误约当天)
+  direct_submit_enabled: true             # 兼容保留项，实际以 submit_strategy 为准
+  submit_strategy: direct_first           # direct_first / direct_only / page_rewrite_first / page_rewrite_only
+  relay_lead_seconds: 300                 # 签退提前量（秒，30–900）
+  tick_interval_seconds: 30               # 活跃任务轮询间隔（秒，5–300）
+  anchor_retry_enabled: true              # 页面无格子时用相邻空闲座位页作锚点
+  anchor_scan_limit: 12                   # 锚点扫描上限（4–20）
   notify_webhook: ""                      # 告警外推 (bark/Server酱/企微 webhook URL); 空=只落看板 banner
-  log_dir: ./logs
-  db_path: ./seatbot.db
-  web_host: 127.0.0.1                     # 默认仅本机访问; 局域网访问改 0.0.0.0 并务必设置 web_token
-  web_port: 8080
+  reconcile_interval_seconds: 300         # 后台实况核对间隔（秒，60–86400）
+  log_dir: ./logs                         # 日志目录（相对进程工作目录）
+  db_path: ./seatbot.db                   # SQLite 路径（相对进程工作目录）
+  web_host: 127.0.0.1                     # 默认仅本机访问; 局域网访问改 0.0.0.0 并务必设置 web_token 或 allowed_hosts
+  web_port: 8080                          # 面板端口
   web_token: ""                           # 面板令牌; 非空时所有请求需携带 (header/query/cookie)
+  allowed_hosts: []                       # 额外允许的主机名 (如反向代理域名/服务器 IP); 空=仅回环来源可访问
