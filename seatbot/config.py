@@ -14,10 +14,32 @@ class LibraryConfig(BaseModel):
     room_name: str
     open_time: str = "08:00"
     close_time: str = "22:00"
-    #: 单次预约的时长上限（小时）；必须为正，否则时段切分无法推进。
+    #: 单次预约的时长上限（小时）；须落在 settings.HOURS_RANGE 区间内，
+    #: 否则时段切分无法推进（切分粒度不足 1 分钟或上限非正）。
     max_reserve_hours: float = Field(default=2.0, gt=0, le=24)
-    #: 每个账号每天累计预约时长上限（可在设置页按馆方规则调整）
+    #: 每个账号每天累计预约时长上限（可在设置页按馆方规则调整）；同样受 HOURS_RANGE 约束。
     daily_reserve_hours_limit: float = Field(default=14.0, gt=0, le=24)
+
+    @field_validator("max_reserve_hours", "daily_reserve_hours_limit")
+    @classmethod
+    def _hours_in_range(cls, v: float) -> float:
+        """时长类字段与设置页共用同一区间（settings.HOURS_RANGE），避免两处口径漂移。
+
+        入参:
+            v: 待校验的小时数。
+
+        返回值:
+            校验通过的原始数值。
+
+        异常:
+            ValueError: 数值不在允许区间内。
+        """
+        from seatbot.settings import HOURS_RANGE
+
+        lo, hi = HOURS_RANGE
+        if not (lo <= v <= hi):
+            raise ValueError(f"must be within {lo}-{hi} hours, got {v!r}")
+        return v
 
     @field_validator("open_time", "close_time")
     @classmethod

@@ -62,10 +62,10 @@ def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, StateStore]:
     asyncio.run(store.init())
     # 预置最小可用数据：2 座位 + 3 账号，避免 /bindings 因空数据 302 干扰
     async def seed():
-        await store.add_target_seat("021", label="座位 030")
-        await store.add_target_seat("022", label="座位 031")
+        await store.add_target_seat("001", label="座位 001")
+        await store.add_target_seat("002", label="座位 002")
         from seatbot.models import Account
-        await store.upsert_account(Account(id="a1", phone="13800000000", password="x", slots=[], seat_slots={"021": {"mon": ["09:00-11:00"]}}))
+        await store.upsert_account(Account(id="a1", phone="13800000000", password="x", slots=[], seat_slots={"001": {"mon": ["09:00-11:00"]}}))
         await store.upsert_account(Account(id="a2", phone="13800000000", password="x", slots=[]))
         await store.upsert_account(Account(id="a3", phone="13800000000", password="x", slots=[]))
     asyncio.run(seed())
@@ -170,8 +170,8 @@ POST_CASES: list[tuple[str, dict]] = [
     ("/manual/reserve", {"account_id": "", "seat_num": "",
                          "day": "", "start": "", "end": ""}),
     # ---------- bindings ----------
-    ("/bindings/desired", {"seat_num": "021", "mode": "uniform"}),
-    ("/bindings/desired", {"seat_num": "021", "mode": "weekly"}),
+    ("/bindings/desired", {"seat_num": "001", "mode": "uniform"}),
+    ("/bindings/desired", {"seat_num": "001", "mode": "weekly"}),
     ("/bindings/desired", {"seat_num": "__ALL__", "mode": "uniform"}),
     ("/bindings/desired", {"seat_num": "__ALL__", "mode": "weekly"}),
     ("/bindings/auto", {}),

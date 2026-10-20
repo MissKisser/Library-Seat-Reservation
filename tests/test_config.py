@@ -10,8 +10,8 @@ def test_load_minimal_config(tmp_path: Path):
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(textwrap.dedent("""
         library:
-          room_id: 11692
-          room_name: "2号楼图书馆-3F"
+          room_id: 10000
+          room_name: "测试阅览室"
           time_unit_minutes: 30
           open_time: "08:00"
           close_time: "22:00"
@@ -32,7 +32,7 @@ def test_load_minimal_config(tmp_path: Path):
     """).strip(), encoding="utf-8")
 
     cfg = load_config(cfg_file)
-    assert cfg.library.room_id == 11692
+    assert cfg.library.room_id == 10000
     assert cfg.library.open_time == "08:00"
     assert cfg.library.max_reserve_hours == 2.0
     assert cfg.accounts[0].id == "zhangsan"

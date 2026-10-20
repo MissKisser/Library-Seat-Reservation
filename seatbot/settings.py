@@ -82,6 +82,7 @@ SUBMIT_CHANNEL_COMPARE: list[dict[str, str]] = [
 RELAY_LEAD_OPTIONS: list[int] = [60, 180, 300, 600]
 TICK_INTERVAL_OPTIONS: list[int] = [15, 30, 60]
 #: 时长类设置（单段上限 / 每日限额）的合法区间，单位小时。
+#: 配置层（seatbot.config.LibraryConfig）与设置层共用本区间，避免两处口径漂移。
 HOURS_RANGE: tuple[float, float] = (0.5, 24)
 # 守护时段模式：uniform=全局统一（每天相同时段，界面保持单套）；
 # weekly=按天自定义（界面显示周一至周日分别勾选）。仅是界面与录入约定，
@@ -165,6 +166,25 @@ def normalize_submit_strategy(v: object) -> str:
     raise ValueError(f"submit_strategy 须为 {', '.join(SUBMIT_STRATEGIES)}，得 {v!r}")
 
 
+def normalize_hours(v: object) -> float:
+    """时长类设置（单段上限 / 每日限额）归一化：必须是允许区间内的小时数。
+
+    入参:
+        v: 任意可转 float 的取值（数字或字符串）。
+
+    返回值:
+        归一化后的 float。
+
+    异常:
+        ValueError: 不是数字，或超出 HOURS_RANGE 允许的区间。
+    """
+    fv = float(str(v).strip())
+    lo, hi = HOURS_RANGE
+    if not (lo <= fv <= hi):
+        raise ValueError(f"须为 {lo}–{hi}")
+    return fv
+
+
 def normalize_stagger(v: object) -> list[int]:
     """接受 '0,3' / [0,3] / JSON 字符串，返回 [lo, hi]。"""
     if isinstance(v, str):
@@ -231,11 +251,7 @@ def parse_stored(key: str, raw: str | None, fallback: object) -> object:
                 raise ValueError
             return v
         if key in ("max_reserve_hours", "daily_reserve_hours_limit"):
-            fv = float(str(raw).strip())
-            lo, hi = HOURS_RANGE
-            if not (lo <= fv <= hi):
-                raise ValueError(f"{key} 须为 {lo}–{hi}")
-            return fv
+            return normalize_hours(raw)
         if key == "notify_webhook":
             return str(raw).strip()
         if key == "schedule_mode":
@@ -287,10 +303,7 @@ def validate_all(
                 if not (60 <= iv <= 86400):
                     raise ValueError("须为 60–86400 内整数")
             elif k in ("max_reserve_hours", "daily_reserve_hours_limit"):
-                fv = float(str(v).strip()) if isinstance(v, str) else float(v)  # type: ignore[arg-type]
-                lo, hi = HOURS_RANGE
-                if not (lo <= fv <= hi):
-                    raise ValueError(f"须为 {lo}–{hi}")
+                normalize_hours(v)
             elif k == "notify_webhook":
                 s = str(v).strip()
                 if s and not (s.startswith("http://") or s.startswith("https://")):

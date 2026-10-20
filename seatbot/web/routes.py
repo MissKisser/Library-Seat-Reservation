@@ -1883,12 +1883,16 @@ async def bindings_desired(
                 merged.append((t, e))
         ranges: list[str] = []
         for s, e in merged:
-            cur_dt = _dt.combine(date.today(), s)
-            end_dt = _dt.combine(date.today(), e)
-            while cur_dt < end_dt:
-                nxt_dt = min(cur_dt + timedelta(hours=lib.max_reserve_hours), end_dt)
-                ranges.append(f"{cur_dt.strftime('%H:%M')}-{nxt_dt.strftime('%H:%M')}")
-                cur_dt = nxt_dt
+            # 统一走公共切分实现：单段上限非法（非正数 / 不足 1 分钟）时它会快速
+            # 抛 ValueError，绝不出现游标不前进的死循环。
+            try:
+                chunks = split_into_chunks((s, e), lib.max_reserve_hours)
+            except ValueError as exc:
+                logger.warning(
+                    "期望时段切分失败（单段上限 %s）: %s", lib.max_reserve_hours, exc)
+                return [], f"单段上限非法（{lib.max_reserve_hours:g}h）：{exc}"
+            for cs, ce in chunks:
+                ranges.append(f"{cs.strftime('%H:%M')}-{ce.strftime('%H:%M')}")
         return ranges, None
 
     per_day: dict[str, list[str]] = {}

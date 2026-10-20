@@ -15,7 +15,7 @@ from seatbot.config import Config, LibraryConfig, RuntimeConfig
 def _cfg(**runtime_kw) -> Config:
     return Config(
         library=LibraryConfig(
-            room_id=11692, room_name="t",
+            room_id=10000, room_name="t",
             max_reserve_hours=2.0, daily_reserve_hours_limit=5.0,
         ),
         runtime=RuntimeConfig(stagger_seconds=[0, 3], **runtime_kw),

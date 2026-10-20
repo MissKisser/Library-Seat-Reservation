@@ -131,7 +131,7 @@ def test_diff_keeps_auto_row_still_present():
 def _make_cfg():
     from seatbot.config import Config, LibraryConfig, RuntimeConfig
     return Config(
-        library=LibraryConfig(room_id=11692, room_name="t"),
+        library=LibraryConfig(room_id=10000, room_name="t"),
         runtime=RuntimeConfig(stagger_seconds=[0, 0]),
     )
 

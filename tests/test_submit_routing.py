@@ -75,7 +75,7 @@ class RoutingClient:
 
 def make_cfg(**runtime_kw) -> Config:
     return Config(
-        library=LibraryConfig(room_id=11692, room_name="t"),
+        library=LibraryConfig(room_id=10000, room_name="t"),
         runtime=RuntimeConfig(stagger_seconds=[0, 0], **runtime_kw),
     )
 

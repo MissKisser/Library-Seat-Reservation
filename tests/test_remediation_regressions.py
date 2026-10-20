@@ -14,6 +14,7 @@ import asyncio
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -64,6 +65,137 @@ def test_routes_has_no_private_split_copy():
     """路由层不得再保留与 timeutil 漂移的私有切分副本。"""
     from seatbot.web import routes
     assert not hasattr(routes, "_split_range_ceiling")
+
+
+#: 在子进程里发起一次 /bindings/desired 的脚本：绕过 pydantic 构造期校验，
+#: 复现"运行期单段上限被改坏"的纵深防御场景。子进程自带 3 秒看门狗，
+#: 请求未返回即打印 HANG 并以退出码 3 结束（父进程据此判定死循环）。
+_CHILD_POST_DESIRED = textwrap.dedent("""
+    import asyncio, os, sys, tempfile, threading, time
+    from fastapi.testclient import TestClient
+    from seatbot.config import Config, LibraryConfig, RuntimeConfig
+    from seatbot.scheduler import Scheduler
+    from seatbot.store import StateStore
+    from seatbot.web.app import make_app
+
+    max_hours = float(sys.argv[1])
+
+    def _watchdog():
+        time.sleep(3)
+        print("HANG", flush=True)
+        os._exit(3)
+
+    threading.Thread(target=_watchdog, daemon=True).start()
+
+    tmp = tempfile.mkdtemp()
+    db = os.path.join(tmp, "f02.db")
+    lib = LibraryConfig.model_construct(
+        room_id=1, room_name="t", open_time="08:00", close_time="22:00",
+        max_reserve_hours=max_hours, daily_reserve_hours_limit=14.0)
+    rt = RuntimeConfig(stagger_seconds=[0, 0], web_token="tok", db_path=db)
+    cfg = Config.model_construct(
+        library=lib, runtime=rt, target_seats=[], accounts=[], user_reserved=[])
+    store = StateStore(db)
+    asyncio.run(store.init())
+    asyncio.run(store.add_target_seat("001", label="座位 001"))
+    app = make_app(cfg, store, Scheduler(cfg, store))
+    client = TestClient(app, base_url="http://127.0.0.1:8080")
+    resp = client.post(
+        "/bindings/desired?token=tok",
+        data={"seat_num": "001", "mode": "uniform",
+              "blocks": ["09:00", "09:30", "10:00"]},
+        headers={"Host": "127.0.0.1:8080"},
+        follow_redirects=False,
+    )
+    print("STATUS", resp.status_code, flush=True)
+    print("LOCATION", resp.headers.get("location", ""), flush=True)
+    asyncio.run(store.close())
+""")
+
+
+def _post_desired_child(max_hours: float) -> subprocess.CompletedProcess:
+    """在子进程里跑一次 /bindings/desired（看门狗保护，挂起也不会拖死测试进程）。"""
+    return subprocess.run(
+        [sys.executable, "-c", _CHILD_POST_DESIRED, str(max_hours)],
+        capture_output=True, text=True, timeout=60, check=False,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+
+
+@pytest.mark.parametrize("max_hours", [0.0, -1.0, 0.01])
+def test_bindings_desired_rejects_illegal_max_hours_without_hanging(max_hours):
+    """单段上限非法时 /bindings/desired 必须快速报错，绝不挂起（死循环守卫）。"""
+    proc = _post_desired_child(max_hours)
+    assert "HANG" not in proc.stdout, f"请求挂起（死循环）: {proc.stdout}"
+    assert proc.returncode == 0, (
+        f"单段上限 {max_hours} 时子进程未正常返回: {proc.stdout}{proc.stderr}")
+    assert "STATUS 303" in proc.stdout, proc.stdout
+    assert "error=" in proc.stdout, proc.stdout
+
+
+def test_routes_desired_merge_uses_shared_split_helper():
+    """期望时段合并必须复用公共切分实现，不得再自建内联切片循环。"""
+    src = (Path(__file__).resolve().parents[1] / "seatbot" / "web" / "routes.py")
+    text = src.read_text(encoding="utf-8")
+    assert "while cur_dt" not in text
+    assert "split_into_chunks" in text
+
+
+def test_config_rejects_out_of_range_hours():
+    """配置层与设置层同口径：单段上限 / 每日限额必须落在 0.5–24 小时区间。"""
+    import pydantic
+
+    for bad in (0.0, -1.0, 0.1, 25.0):
+        with pytest.raises(pydantic.ValidationError):
+            LibraryConfig(room_id=1, room_name="t", max_reserve_hours=bad)
+        with pytest.raises(pydantic.ValidationError):
+            LibraryConfig(room_id=1, room_name="t", daily_reserve_hours_limit=bad)
+    assert LibraryConfig(
+        room_id=1, room_name="t", max_reserve_hours=0.5).max_reserve_hours == 0.5
+
+
+def test_settings_hours_validation_uses_shared_caliber():
+    """settings 侧小时数校验与配置层同口径：非法值回退默认，合法值原样返回。"""
+    from seatbot import settings as S
+
+    assert S.parse_stored("max_reserve_hours", "2.5", 2.0) == 2.5
+    assert S.parse_stored("daily_reserve_hours_limit", "12", 14.0) == 12.0
+    for bad in ("0", "-1", "0.1", "25", "abc"):
+        assert S.parse_stored("max_reserve_hours", bad, 2.0) == 2.0
+        assert S.parse_stored("daily_reserve_hours_limit", bad, 14.0) == 14.0
+    assert S.validate_all({"max_reserve_hours": 0})["max_reserve_hours"]
+    assert S.validate_all({"daily_reserve_hours_limit": 0})["daily_reserve_hours_limit"]
+    assert S.validate_all({"max_reserve_hours": 2.0, "daily_reserve_hours_limit": 14.0}) == {}
+
+
+def test_bindings_desired_splits_blocks_by_max_hours(tmp_path):
+    """回归：期望时段合并仍按单段上限自动切片（3 个 30 分钟块 → 1 段 09:00-10:30）。"""
+    from seatbot.bindings import desired_slots_of
+
+    cfg = Config(
+        library=LibraryConfig(room_id=1, room_name="t"),
+        runtime=RuntimeConfig(stagger_seconds=[0, 0], web_token="tok",
+                              db_path=str(tmp_path / "desired.db")),
+    )
+    store = StateStore(cfg.runtime.db_path)
+    asyncio.run(store.init())
+    asyncio.run(store.add_target_seat("001", label="座位 001"))
+    app = make_app(cfg, store, Scheduler(cfg, store))
+    client = TestClient(app, base_url="http://127.0.0.1:8080")
+    try:
+        resp = client.post(
+            "/bindings/desired?token=tok",
+            data={"seat_num": "001", "mode": "uniform",
+                  "blocks": ["09:00", "09:30", "10:00"]},
+            headers={"Host": "127.0.0.1:8080"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303, resp.status_code
+        seats = asyncio.run(store.list_target_seats())
+        assert desired_slots_of(seats[0], "mon", is_weekly=False) == ["09:00-10:30"]
+    finally:
+        client.close()
+        asyncio.run(store.close())
 
 
 # ---------------------------------------------------------------- B3-01

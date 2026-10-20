@@ -104,7 +104,7 @@ def _task(task_id, rid, status=TaskStatus.SIGNED):
 
 def _rec(rid, seat="021"):
     return {"id": rid, "seatNum": seat, "status": 5,
-            "roomId": 11692, "startTime": 0, "endTime": 0}
+            "roomId": 10000, "startTime": 0, "endTime": 0}
 
 
 def _run_check(supervised, sign_results=None, tasks=None):

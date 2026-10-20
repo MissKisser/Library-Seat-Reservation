@@ -32,7 +32,7 @@ def _make_client(monkeypatch, html: str) -> ChaoxingClient:
 def _run(client: ChaoxingClient) -> dict:
     return asyncio.run(client.submit_direct(
         phone="13800000000", password="pw",
-        room_id=11692, seat_num="021",
+        room_id=10000, seat_num="021",
         day="2026-09-01", start_time="14:00", end_time="16:00",
     ))
 
@@ -52,7 +52,7 @@ def test_submit_direct_signs_full_field_set(monkeypatch):
     result = _run(client)
 
     fields = {
-        "roomId": "11692",
+        "roomId": "10000",
         "day": "2026-09-01",
         "startTime": "14:00",
         "endTime": "16:00",

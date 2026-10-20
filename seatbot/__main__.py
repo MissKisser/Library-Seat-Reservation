@@ -57,7 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # ★ 手动触发单次预约（可控性/调试/补救场景）
     reserve = sub.add_parser("reserve", parents=[common], help="手动触发单次预约")
     reserve.add_argument("--account", required=True, help="账号 ID")
-    reserve.add_argument("--seat", required=True, help="座位号 (如 084)")
+    reserve.add_argument("--seat", required=True, help="座位号 (如 001)")
     reserve.add_argument("--date", dest="day", default=None, help="YYYY-MM-DD，默认明天")
     reserve.add_argument("--start", required=True, help="开始时间 HH:MM")
     reserve.add_argument("--end", required=True, help="结束时间 HH:MM")

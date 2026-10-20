@@ -30,7 +30,7 @@ def test_zero_coverage_is_mismatch():
 
 def _make_cfg() -> Config:
     return Config(
-        library=LibraryConfig(room_id=11692, room_name="t"),
+        library=LibraryConfig(room_id=10000, room_name="t"),
         runtime=RuntimeConfig(stagger_seconds=[0, 0]),
     )
 
