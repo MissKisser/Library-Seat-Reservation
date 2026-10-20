@@ -24,7 +24,7 @@ class FakeSched:
 
 class _StubCfg:
     class library:
-        target_seat_num = "084"
+        target_seat_num = "001"
         room_id = 0
         room_name = ""
         open_time = time(8, 0)
@@ -60,7 +60,7 @@ def test_status_with_relay(client):
         delta_minutes=15,
         account_id="guard_a",
         task_id=42,
-        seat_num="084",
+        seat_num="001",
         start_time=time(10, 0),
         end_time=time(12, 0),
         status="pending",
