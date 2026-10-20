@@ -445,7 +445,7 @@
       wdLabel(wd) { return WD_LABELS[wd] || wd; },
       show(plan) {
         this.strategy = plan.strategy;
-        this.strategyLabel = ({ safe: '安全模式', minimal: '最简模式' })[plan.strategy] || plan.strategy;
+        this.strategyLabel = ({ safe: '独占优先·摊薄', minimal: '独占优先·省账号' })[plan.strategy] || plan.strategy;
         const s = plan.summary || {};
         this.summaryText = `新增 ${s.added_count || 0} / 移除 ${s.removed_count || 0}，影响 ${s.affected_count || 0} 个账号`;
         this.added = plan.added || [];

@@ -5,6 +5,8 @@
   - 单段时长 ≤ max_seg_hours
   - 每个账号每天累计预约时长 ≤ daily_limit_hours
   - 同一账号同一天内所有座位时段不得重叠（含同座位多段之间）
+自动分配（auto_assign / plan_matrix）遵循座位独占优先：座位与账号一一对应，
+同一座位优先由一个账号整座承接，账号之间不交叉。
 """
 from __future__ import annotations
 
@@ -368,6 +370,8 @@ def auto_assign(
     """为未被精确覆盖的 (星期几, 座位, 期望时段) 自动挑选账号绑定。
 
     既有绑定一律保留；在当天约束内做最大填充的精确匹配（回溯 + 剪枝）。
+    挑选账号时遵循座位独占优先：已持有该座位的账号优先承接该座位的其余分段，
+    避免同一座位被摊薄到多个账号。
     desired 形状 {seat: {wd: [want, ...]}}；返回 (每账号规范矩阵
     {aid: {seat: {wd: [want]}}, 未覆盖说明列表)。
     """
@@ -411,6 +415,11 @@ def auto_assign(
 
     best: dict = {"plan": []}
 
+    def _holds_seat(aid: str, seat: str) -> bool:
+        """账号当前是否已持有该座位的时段（含回溯过程中的临时占用）。"""
+        daymap = matrices.get(aid, {}).get(seat) or {}
+        return any(daymap.get(w) for w in WEEKDAY_KEYS)
+
     def dfs(i: int, plan: list[tuple[str, str, str, str]]) -> None:
         """回溯搜索：在容量与跨座不重叠约束下求最优分配。"""
         if len(plan) + (len(jobs) - i) <= len(best["plan"]):
@@ -423,8 +432,12 @@ def auto_assign(
             (a for a in accounts
              if used[a.id][wd] + wh <= daily_limit_hours + eps
              and not any(ws < e and s < we for s, e in windows[a.id][wd])),
-            key=lambda a: ((used[a.id][wd], a.id) if mode == "safe"
-                           else (-used[a.id][wd], a.id)),
+            # 座位独占优先：已持有该座位的账号优先，其次按策略平衡负载
+            key=lambda a: (
+                0 if _holds_seat(a.id, seat) else 1,
+                (used[a.id][wd], a.id) if mode == "safe"
+                else (-used[a.id][wd], a.id),
+            ),
         )
         for a in cands:
             matrices[a.id].setdefault(seat, {}).setdefault(wd, []).append(want)
@@ -504,17 +517,24 @@ def plan_matrix(
     mode: str,
     account_order: list[str] | None = None,
 ) -> tuple[dict[str, dict[str, dict[str, list[str]]]], list[str]]:
-    """全量重解守护矩阵（不保留既有绑定）。
+    """全量重解守护矩阵（座位独占优先，不保留既有绑定）。
 
     desired 形状 {seat: {wd: [want]}}；返回 (每账号规范矩阵
     {aid: {seat: {wd: [want]}}}, unfillable 列表)。
 
-    mode='safe'（摊薄）：任务按时长降序（LPT）贪心分配给"当天已用小时数最少"
-    的账号，无回溯——某天放不下的输出 unfillable；目标 min-max 单账号单日小时数。
-    mode='minimal'（打包）：逐天迭代加深 DFS 求"动用账号数最少"解；
-    池成员按 account_order 截取（默认 id 稳定序），单池无法覆盖某天时扩大池。
-    单账号可承包同座全天多段（受每日限额与跨座重叠约束）。
-    池超过账号总数 → 输出 unfillable（文案含"需至少 N 个账号"）。
+    分配原则（座位独占优先）：
+
+      - 座位按期望序（seat_num 字典序）、账号按 account_order（未给则 id 稳定序）
+        一一对应指派主账号；账号多于座位时多余账号保持空矩阵；
+      - 每个座位的全部分段优先整座交给主账号，账号之间互不交叉；
+      - 主账号当日限额装不下整座时，溢出段仍留在该座位内交给其他账号
+        （safe：当日已用最少者优先；minimal：优先复用已参与该座的账号）；
+      - 账号少于座位时，额外座位由已指派账号按顺序整座承接，跨座不可避免时
+        尽量减少跨座账号数。
+
+    硬约束在分配过程中即满足：单段 ≤ max_seg_hours、跨座同时段不重叠、
+    每账号每日总时长 ≤ daily_limit_hours；分不下的分段进入 unfillable，
+    账号数不足时附"需至少 N 个账号"说明。
     """
     eps = 1e-9
     if not accounts:
@@ -522,199 +542,223 @@ def plan_matrix(
     if mode not in ("safe", "minimal"):
         return {}, [f"未知分配策略 {mode!r}"]
 
-    n_acc = len(accounts)
+    # ---------- 账号优先级顺序 ----------
+    acc_ids = {a.id for a in accounts}
+    order: list[str] = []
+    seen: set[str] = set()
+    for aid in account_order or []:
+        if aid in acc_ids and aid not in seen:
+            seen.add(aid)
+            order.append(aid)
+    for aid in sorted(acc_ids - seen):
+        order.append(aid)
+    rank = {aid: i for i, aid in enumerate(order)}
+    n_acc = len(order)
 
-    # ---------- 解析所有 (wd, seat, slot, dur) jobs ----------
-    jobs_by_day: dict[str, list[tuple[str, str, str, float]]] = {wd: [] for wd in WEEKDAY_KEYS}
+    seats = sorted(desired)
+
+    # ---------- 解析期望时段 ----------
+    # jobs[seat][wd] = [(时段文本, 开始, 结束, 时长)]
+    jobs: dict[str, dict[str, list[tuple[str, time, time, float]]]] = {
+        seat: {wd: [] for wd in WEEKDAY_KEYS} for seat in seats
+    }
     bad: list[str] = []
-    for seat in sorted(desired):
+    for seat in seats:
         for wd in WEEKDAY_KEYS:
+            seen_want: set[str] = set()
             for want in desired[seat].get(wd, []):
+                if want in seen_want:
+                    continue
+                seen_want.add(want)
                 try:
                     ws, we = parse_range(want)
                     wh = _hours(ws, we)
                 except Exception:
                     bad.append(f"{WEEKDAY_LABELS[wd]}{seat} 期望时段 {want!r} 格式非法")
                     continue
-                jobs_by_day[wd].append((seat, want, ws, we, wh))
+                if wh > max_seg_hours + eps:
+                    bad.append(
+                        f"{WEEKDAY_LABELS[wd]}{seat} {want}："
+                        f"超过单段上限 {max_seg_hours:g}h")
+                    continue
+                jobs[seat][wd].append((want, ws, we, wh))
 
-    # ---------- 池成员：account_order 给定时只取前 K 个；未给定时按 id 稳定序 ----------
-    if account_order is None:
-        pool: list[str] = sorted(a.id for a in accounts)
-    else:
-        seen: set[str] = set()
-        pool = []
-        for aid in account_order:
-            if aid in seen:
-                continue
-            seen.add(aid)
-            pool.append(aid)
-    # 池大小由求解方按 _max_lower()/n_acc 控制（pool[:K] 截取）
+    # ---------- 主账号指派：座位 ↔ 账号 一一对应 ----------
+    primary: dict[str, str] = {}
+    for i, seat in enumerate(seats):
+        if i < n_acc:
+            primary[seat] = order[i]
 
-    def _empty_matrices() -> dict[str, dict[str, dict[str, list[str]]]]:
-        return {a.id: {} for a in accounts}
+    # 每账号 × 每天：已用小时数 / 已占时段；held = 实际持有（部分也算）的座位；
+    # planned = 计划持有（主账号指派 + 已承接），用于判断是否引入新的跨座。
+    used = {aid: {wd: 0.0 for wd in WEEKDAY_KEYS} for aid in order}
+    ranges = {aid: {wd: [] for wd in WEEKDAY_KEYS} for aid in order}
+    mats: dict[str, dict[str, dict[str, list[str]]]] = {aid: {} for aid in order}
+    held: dict[str, set[str]] = {aid: set() for aid in order}
+    planned: dict[str, set[str]] = {aid: set() for aid in order}
+    for seat, aid in primary.items():
+        planned[aid].add(seat)
 
-    def _validate(m: dict[str, dict[str, dict[str, list[str]]]]) -> None:
-        for a in accounts:
-            seat_slots = m.get(a.id, {})
-            if not seat_slots:
-                continue
-            try:
-                validate_matrix(
-                    seat_slots,
-                    max_seg_hours=max_seg_hours,
-                    daily_limit_hours=daily_limit_hours,
-                )
-            except ValueError as exc:
-                raise AssertionError(f"账号 {a.id} 矩阵非法: {exc}") from exc
+    def _fits(aid: str, wd: str, ws: time, we: time, wh: float) -> bool:
+        """账号 aid 当天能否再装下该分段（容量 + 时段不重叠）。"""
+        if used[aid][wd] + wh > daily_limit_hours + eps:
+            return False
+        return not any(ws < e and s < we for s, e in ranges[aid][wd])
 
-    def _solve_minimal(K: int) -> dict | None:
-        """迭代加深 DFS：容量 + 跨座重叠约束下求最少账号解，
-        用 daily_active 计数每天动用账号数；目标最小化 max(daily_active)。
-        池成员 = pool[:K]；K 不足以满足某天 L(wd) 时由调用方扩池重试。
-        """
-        pool_ids = pool[:K]
-        # 每账号 × 每天：已用小时数 / 已占时段（容量 + 重叠查重）
-        st_used: dict[str, dict[str, float]] = {
-            aid: {wd: 0.0 for wd in WEEKDAY_KEYS}
-            for aid in pool_ids
-        }
-        st_ranges: dict[str, dict[str, list[tuple[time, time]]]] = {
-            aid: {wd: [] for wd in WEEKDAY_KEYS}
-            for aid in pool_ids
-        }
-        # 每天本天激活账号集合（用于下限计数；不参与「同座位」约束）
-        daily_active: dict[str, set[str]] = {wd: set() for wd in WEEKDAY_KEYS}
-        # 全周累计已用（tie-break 让负载在账号间轮换）
-        week_used: dict[str, float] = {aid: 0.0 for aid in pool_ids}
+    def _put(aid: str, seat: str, wd: str, want: str,
+             ws: time, we: time, wh: float) -> None:
+        """把一个分段写入账号矩阵与状态。"""
+        mats[aid].setdefault(seat, {}).setdefault(wd, []).append(want)
+        used[aid][wd] += wh
+        ranges[aid][wd].append((ws, we))
+        held[aid].add(seat)
+        planned[aid].add(seat)
 
-        # 每天独立：长段优先（减少失败面）
-        flat_jobs: list[tuple[str, str, str, time, time, float]] = []
+    def _can_take_whole(aid: str, seat: str) -> bool:
+        """账号 aid 能否整座承接该座位的全部分段（逐天累计容量并检查重叠）。"""
         for wd in WEEKDAY_KEYS:
-            for seat, want, ws, we, wh in sorted(
-                    jobs_by_day[wd], key=lambda x: -x[4]):
-                flat_jobs.append((wd, seat, want, ws, we, wh))
+            total = used[aid][wd]
+            own: list[tuple[time, time]] = []
+            for _want, ws, we, wh in jobs[seat][wd]:
+                if total + wh > daily_limit_hours + eps:
+                    return False
+                if any(ws < e and s < we for s, e in ranges[aid][wd]):
+                    return False
+                if any(ws < e and s < we for s, e in own):
+                    return False
+                own.append((ws, we))
+                total += wh
+        return True
 
+    def _pick_overflow(wd: str, ws: time, we: time, wh: float,
+                       seat: str) -> str | None:
+        """为溢出分段挑选同座位的承接账号。
+
+        优先不引入新的跨座（不持有其他座位的账号在前），其次按策略：
+        safe=当日已用最少者优先；minimal=优先复用已参与该座的账号。
+        """
+        best_key: tuple | None = None
+        best_aid: str | None = None
+        for aid in order:
+            if not _fits(aid, wd, ws, we, wh):
+                continue
+            tier = 0 if not (planned[aid] - {seat}) else 1
+            if mode == "safe":
+                key = (tier, used[aid][wd], rank[aid])
+            else:
+                key = (tier, 0 if seat in held[aid] else 1, used[aid][wd], rank[aid])
+            if best_key is None or key < best_key:
+                best_key, best_aid = key, aid
+        return best_aid
+
+    def _greedy_take(aid: str, seat: str,
+                     day_items: dict[str, list[tuple[str, time, time, float]]],
+                     ) -> None:
+        """账号先取走装得下的分段（长段优先），装不下的转交溢出承接。"""
+        for wd in WEEKDAY_KEYS:
+            items = day_items.get(wd) or []
+            for want, ws, we, wh in sorted(items, key=lambda it: (-it[3], it[1], it[0])):
+                if _fits(aid, wd, ws, we, wh):
+                    _put(aid, seat, wd, want, ws, we, wh)
+                    continue
+                target = _pick_overflow(wd, ws, we, wh, seat)
+                if target is None:
+                    bad.append(
+                        f"{WEEKDAY_LABELS[wd]}{seat} {want}："
+                        f"无可用账号（余量不足或时段冲突）")
+                    continue
+                _put(target, seat, wd, want, ws, we, wh)
+
+    def _need_accounts() -> int:
+        """覆盖全部期望时段所需账号数的下界。"""
         from math import ceil
 
-        def _lower(wd: str) -> int:
-            n = len(jobs_by_day[wd])
-            if n == 0:
-                return 0
-            total = sum(j[4] for j in jobs_by_day[wd])
-            cap = ceil(total / daily_limit_hours - eps)
-            peak = max((sum(1 for o in jobs_by_day[wd] if o[2] <= j[2] < o[3])
-                        for j in jobs_by_day[wd]), default=0)
-            return max(1, cap, peak)
-
-        assignment: list[tuple[str, str, str, str]] = []
-
-        def _try(idx: int) -> bool:
-            if idx == len(flat_jobs):
-                return True
-            wd, seat, want, ws, we, wh = flat_jobs[idx]
-            limit = _lower(wd)
-            cands: list[str] = []
-            for aid in pool_ids:
-                # 容量 / 重叠
-                if (st_used[aid][wd] + wh > daily_limit_hours + eps
-                        or any(ws < e and s < we for s, e in st_ranges[aid][wd])):
-                    continue
-                # 避免无谓扩展 daily_active：已激活账号随时可接；未激活账号
-                # 仅在 active 数 < limit 时才纳入候选。
-                if aid not in daily_active[wd] and len(daily_active[wd]) >= limit:
-                    continue
-                cands.append(aid)
-            # tie-break：周累计已用升序 → id 稳定
-            cands.sort(key=lambda a: (week_used[a], a))
-            for aid in cands:
-                # 仅记录本次尝试实际激活的账号：回溯时按实际激活列表 discard
-                was_active = aid in daily_active[wd]
-                if not was_active:
-                    daily_active[wd].add(aid)
-                st_used[aid][wd] += wh
-                st_ranges[aid][wd].append((ws, we))
-                week_used[aid] += wh
-                assignment.append((wd, seat, want, aid))
-                if _try(idx + 1):
-                    return True
-                assignment.pop()
-                week_used[aid] -= wh
-                st_ranges[aid][wd].pop()
-                st_used[aid][wd] -= wh
-                if not was_active:
-                    daily_active[wd].discard(aid)
-            return False
-
-        if not _try(0):
-            return None
-        m = _empty_matrices()
-        for wd, seat, want, aid in assignment:
-            m[aid].setdefault(seat, {}).setdefault(wd, []).append(want)
-        return m
-
-    # ============ safe 模式：贪心（LPT）+ 回溯 ============
-    def _solve_safe() -> tuple[dict, list[str]]:
-        m = _empty_matrices()
-        used = {a.id: {wd: 0.0 for wd in WEEKDAY_KEYS} for a in accounts}
-        ranges = {a.id: {wd: [] for wd in WEEKDAY_KEYS} for a in accounts}
-        weekly = {a.id: 0.0 for a in accounts}
-        # 全部 jobs 按时长降序
-        all_jobs: list[tuple[str, str, str, time, time, float]] = []
+        need = 1
         for wd in WEEKDAY_KEYS:
-            for seat, want, ws, we, wh in jobs_by_day[wd]:
-                all_jobs.append((wd, seat, want, ws, we, wh))
-        all_jobs.sort(key=lambda x: -x[5])
-        for wd, seat, want, ws, we, wh in all_jobs:
-            cands = sorted(
-                (a for a in accounts
-                 if used[a.id][wd] + wh <= daily_limit_hours + eps
-                 and not any(ws < e and s < we for s, e in ranges[a.id][wd])),
-                key=lambda a: (weekly[a.id], used[a.id][wd], a.id),
-            )
-            if not cands:
-                bad.append(f"{WEEKDAY_LABELS[wd]}{seat} {want}：无可用账号")
+            items = [
+                (seat, ws, we, wh)
+                for seat in seats
+                for _want, ws, we, wh in jobs[seat][wd]
+            ]
+            if not items:
                 continue
-            a = cands[0]
-            m[a.id].setdefault(seat, {}).setdefault(wd, []).append(want)
-            used[a.id][wd] += wh
-            ranges[a.id][wd].append((ws, we))
-            weekly[a.id] += wh
-        return m, bad
+            total = sum(x[3] for x in items)
+            need = max(need, int(ceil(total / daily_limit_hours - eps)))
+            for _seat, ws, _we, _wh in items:
+                peak = sum(1 for o in items if o[1] <= ws < o[2])
+                need = max(need, peak)
+        for seat in seats:
+            for wd in WEEKDAY_KEYS:
+                total = sum(x[3] for x in jobs[seat][wd])
+                if total <= 0:
+                    continue
+                need = max(need, int(ceil(total / daily_limit_hours - eps)))
+        return need
 
-    if mode == "safe":
-        m, bad_extra = _solve_safe()
+    # ---------- 逐座位分配 ----------
+    for seat in seats:
+        day_items = {wd: items for wd, items in jobs[seat].items() if items}
+        if not day_items:
+            continue
+        owner = primary.get(seat)
+        if owner is not None:
+            # 主账号：能整座承接就整座交给它，否则主账号先取部分、其余溢出
+            if _can_take_whole(owner, seat):
+                for wd in WEEKDAY_KEYS:
+                    for want, ws, we, wh in day_items.get(wd, []):
+                        _put(owner, seat, wd, want, ws, we, wh)
+                continue
+            _greedy_take(owner, seat, day_items)
+            continue
+        # 账号数 < 座位数：额外座位优先整座交给已持座的账号
+        whole = [aid for aid in order if _can_take_whole(aid, seat)]
+        if whole:
+            # 优先已持座的账号（跨座不可避免时最小化跨座账号数）
+            aid = min(whole, key=lambda a: (0 if held[a] else 1, rank[a]))
+            for wd in WEEKDAY_KEYS:
+                for want, ws, we, wh in day_items.get(wd, []):
+                    _put(aid, seat, wd, want, ws, we, wh)
+            continue
+        # 无人能整座承接：由首个能承接分段的账号部分承接，其余溢出
+        owner = next(
+            (aid for aid in order
+             if any(_fits(aid, wd, ws, we, wh)
+                    for wd in WEEKDAY_KEYS
+                    for _want, ws, we, wh in day_items.get(wd, []))),
+            None,
+        )
+        if owner is None:
+            for wd in WEEKDAY_KEYS:
+                for want, _ws, _we, _wh in day_items.get(wd, []):
+                    bad.append(
+                        f"{WEEKDAY_LABELS[wd]}{seat} {want}："
+                        f"无可用账号（余量不足或时段冲突）")
+            continue
+        _greedy_take(owner, seat, day_items)
+
+    # ---------- 规范化输出：每天的时段按开始时刻排序 ----------
+    for aid in order:
+        for daymap in mats[aid].values():
+            for wd, slots in daymap.items():
+                daymap[wd] = sorted(
+                    slots, key=lambda s: (parse_range(s)[0], parse_range(s)[1], s))
+
+    # ---------- 校验兜底 ----------
+    for a in accounts:
+        seat_slots = mats.get(a.id) or {}
+        if not seat_slots:
+            continue
         try:
-            _validate(m)
-        except AssertionError as exc:
-            return {}, [str(exc)]
-        return m, bad_extra
+            validate_matrix(
+                seat_slots,
+                max_seg_hours=max_seg_hours,
+                daily_limit_hours=daily_limit_hours,
+            )
+        except ValueError as exc:
+            return {}, [f"账号 {a.id} 矩阵非法: {exc}"]
 
-    # minimal：池大小从 max(L(wd)) 起，到 n_acc
-    from math import ceil
-
-    def _max_lower() -> int:
-        mx = 0
-        for wd in WEEKDAY_KEYS:
-            n = len(jobs_by_day[wd])
-            if n == 0:
-                continue
-            total = sum(j[4] for j in jobs_by_day[wd])
-            cap = ceil(total / daily_limit_hours - eps)
-            peak = max((sum(1 for o in jobs_by_day[wd] if o[2] <= j[2] < o[3])
-                        for j in jobs_by_day[wd]), default=0)
-            mx = max(mx, max(1, cap, peak))
-        return mx
-
-    lo = _max_lower()
-    for K in range(lo, n_acc + 1):
-        m = _solve_minimal(K)
-        if m is not None:
-            try:
-                _validate(m)
-            except AssertionError as exc:
-                bad.append(str(exc))
-                continue
-            return m, bad
-    bad.append(f"最小模式无可行解：需至少 {lo} 个账号")
-    return {}, bad
+    if bad:
+        need = _need_accounts()
+        if need > n_acc:
+            bad.append(f"需至少 {need} 个账号（当前 {n_acc} 个）")
+    return mats, bad

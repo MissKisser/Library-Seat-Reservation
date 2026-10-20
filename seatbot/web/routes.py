@@ -1119,7 +1119,7 @@ async def _schedule_mode(request: Request) -> str:
 
 
 async def _allocation_strategy(request: Request) -> str:
-    """读取时间分配策略（safe=安全模式 / minimal=最简模式）。
+    """读取时间分配策略（safe=独占优先·摊薄 / minimal=独占优先·省账号）。
 
     同 _schedule_mode：回落时落库告警，避免自动绑定按错策略静默执行。
     """
