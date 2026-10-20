@@ -211,6 +211,26 @@ def _read_text(path: Path) -> str | None:
         return None
 
 
+def _display_path(path: Path) -> str:
+    """把路径转换为便于阅读的相对路径表示。
+
+    路径不在仓库根目录下时（例如针对临时目录构造的夹具做检查），
+    回退为绝对路径，避免相对化操作抛出异常。
+
+    参数
+    ----
+    path: 待转换的路径。
+
+    返回值
+    ------
+    仓库内为相对 POSIX 路径，仓库外为绝对 POSIX 路径。
+    """
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def _iter_files(root: Path) -> Iterator[Path]:
     """遍历目录下的全部文件，跳过缓存目录。
 
@@ -543,7 +563,7 @@ def check_no_redaction_marker_in_code() -> CheckOutcome:
             scanned += 1
             for index, line in enumerate(text.split("\n"), 1):
                 if REDACTION_MARKER in line:
-                    relative = path.relative_to(REPO_ROOT).as_posix()
+                    relative = _display_path(path)
                     hits.append(f"{relative}:{index}")
     summary = f"扫描 {scanned} 个代码与测试文件；脱敏标记命中 {len(hits)}"
     if hits:
@@ -577,7 +597,7 @@ def check_no_hardcoded_instance_in_source() -> CheckOutcome:
         if text is None:
             continue
         scanned += 1
-        relative = path.relative_to(REPO_ROOT).as_posix()
+        relative = _display_path(path)
         for index, line in enumerate(text.split("\n"), 1):
             for value, pattern in patterns.items():
                 if pattern.search(line):
@@ -646,7 +666,7 @@ def check_no_historical_trace() -> CheckOutcome:
         if text is None:
             continue
         scanned += 1
-        relative = path.relative_to(REPO_ROOT).as_posix()
+        relative = _display_path(path)
         exempt_lines = _docstring_confirmed_lines(path) if path.suffix == ".py" else set()
         for index, line in enumerate(text.split("\n"), 1):
             if TRACE_MARKER_PATTERN.search(line):
@@ -733,7 +753,7 @@ def check_docstring_coverage() -> CheckOutcome:
             tree = ast.parse(text)
         except SyntaxError:
             continue
-        relative = path.relative_to(REPO_ROOT).as_posix()
+        relative = _display_path(path)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
@@ -1067,10 +1087,10 @@ def check_no_undefined_name() -> CheckOutcome:
         try:
             tree = ast.parse(text)
         except SyntaxError as error:
-            skipped.append(f"{path.relative_to(REPO_ROOT).as_posix()}（语法错误：{error.msg}）")
+            skipped.append(f"{_display_path(path)}（语法错误：{error.msg}）")
             continue
         scanned += 1
-        relative = path.relative_to(REPO_ROOT).as_posix()
+        relative = _display_path(path)
         module_names = _collect_bindings(tree.body)
         module_names |= set(dir(builtins))
         module_names |= {
@@ -1130,7 +1150,7 @@ def check_docs_index_consistent() -> CheckOutcome:
     """
     name = "docs-index-consistent"
     if not DOCS_INDEX_PATH.is_file():
-        return CheckOutcome(name, STATUS_SKIP, f"文档索引不存在：{DOCS_INDEX_PATH.relative_to(REPO_ROOT).as_posix()}")
+        return CheckOutcome(name, STATUS_SKIP, f"文档索引不存在：{_display_path(DOCS_INDEX_PATH)}")
 
     index_text = _read_text(DOCS_INDEX_PATH) or ""
     tokens = _docs_index_tokens(index_text)
@@ -1152,8 +1172,8 @@ def check_docs_index_consistent() -> CheckOutcome:
     for path in _iter_files(DOCS_DIR):
         if path.suffix != ".md":
             continue
-        relative = path.relative_to(REPO_ROOT).as_posix()
-        if relative == DOCS_INDEX_PATH.relative_to(REPO_ROOT).as_posix():
+        relative = _display_path(path)
+        if relative == _display_path(DOCS_INDEX_PATH):
             continue
         actual.add(relative)
 
