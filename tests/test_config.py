@@ -53,7 +53,6 @@ def test_account_id_must_be_unique(tmp_path: Path):
         library:
           room_id: 1
           room_name: "x"
-          target_seat_num: "84"
           time_unit_minutes: 30
           open_time: "08:00"
           close_time: "22:00"
