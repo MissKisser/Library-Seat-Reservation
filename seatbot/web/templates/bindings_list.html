@@ -9,6 +9,23 @@
     <div>
       <h1 class="page-title">绑定矩阵</h1>
       <p class="page-sub">单段 ≤{{ '%g'|format(max_seg) }}h · 同座可多段（不重叠）· 每账号每日累计 ≤ {{ '%g'|format(daily_limit) }}h{% if mode == 'weekly' %} · 按天自定义模式{% endif %}</p>
+      {# 专属分配体检：座位↔账号是否严格一一对应 #}
+      <div class="flex items-center gap-2 flex-wrap mt-1">
+        <span class="text-xs text-ink-muted">专属体检</span>
+        <span class="chip chip-muted">{{ health.seat_count }} 座 / {{ health.account_count }} 账号</span>
+        {% if health.cross_seat_count %}
+        <span class="chip chip-danger" title="同时持有 2 个及以上座位的账号：{{ health.cross_seat_accounts|join('、') }}">{{ health.cross_seat_count }} 个账号跨座</span>
+        {% endif %}
+        {% if health.uncovered_count %}
+        <span class="chip chip-warn" title="没有任何账号覆盖的座位：{{ health.uncovered_seats|join('、') }}">{{ health.uncovered_count }} 座无覆盖</span>
+        {% endif %}
+        {% if health.one_to_one %}
+        <span class="chip chip-success">一一对应 ✓</span>
+        {% else %}
+        <button class="btn btn-ghost btn-sm" type="button"
+                @click="$dispatch('replan-open', {strategy: 'dedicated'})">按独占策略重排</button>
+        {% endif %}
+      </div>
     </div>
     <div class="page-actions flex items-center gap-2 flex-wrap">
       <form method="post" action="/bindings/mode" class="flex items-center gap-2"
@@ -411,7 +428,7 @@
   <script>window.addEventListener('DOMContentLoaded', () =>
     window.dispatchEvent(new CustomEvent('replan-open')));</script>
   {% endif %}
-  <div id="replan-modal" x-data="replanModal()" @replan-open.window="fetchPreview()">
+  <div id="replan-modal" x-data="replanModal()" @replan-open.window="fetchPreview($event.detail)">
     <div class="modal-backdrop" x-show="open" x-cloak style="display:none" @keydown.escape.window="cancel()">
       <div class="modal max-h-[85vh]" @click.outside="cancel()" style="max-width:560px">
         <div class="modal-title">按策略重排预览</div>

@@ -200,6 +200,51 @@ def account_margins(
     return out
 
 
+def _seat_has_slots(val: object) -> bool:
+    """座位条目是否含任何时段（list 形态或按星期几的 dict 形态）。"""
+    if isinstance(val, list):
+        return bool(val)
+    if isinstance(val, dict):
+        return any(bool(day) for day in val.values())
+    return False
+
+
+def exclusive_health(
+    accounts: list[Account], seat_nums: list[str],
+) -> dict:
+    """专属分配体检：座位数、账号数、跨座账号、缺口座位。
+
+    入参:
+        accounts: 参与守护的账号列表（通常只含启用账号）。
+        seat_nums: 目标座位号列表。
+
+    返回值:
+        dict：seat_count / account_count / cross_seat_accounts / cross_seat_count /
+        uncovered_seats / uncovered_count / one_to_one。
+        one_to_one 为真表示既无跨座账号、也无缺口座位（严格一一对应）。
+    """
+    covered: set[str] = set()
+    cross: list[str] = []
+    for a in accounts:
+        held = {
+            seat for seat, val in (a.seat_slots or {}).items()
+            if _seat_has_slots(val)
+        }
+        covered |= held
+        if len(held) >= 2:
+            cross.append(a.id)
+    uncovered = [s for s in seat_nums if s not in covered]
+    return {
+        "seat_count": len(seat_nums),
+        "account_count": len(accounts),
+        "cross_seat_accounts": sorted(cross),
+        "cross_seat_count": len(cross),
+        "uncovered_seats": list(uncovered),
+        "uncovered_count": len(uncovered),
+        "one_to_one": not cross and not uncovered,
+    }
+
+
 def candidate_accounts(
     accounts: list[Account],
     *,
@@ -372,6 +417,7 @@ def auto_assign(
     既有绑定一律保留；在当天约束内做最大填充的精确匹配（回溯 + 剪枝）。
     挑选账号时遵循座位独占优先：已持有该座位的账号优先承接该座位的其余分段，
     避免同一座位被摊薄到多个账号。
+    dedicated 档额外禁止引入跨座：已持有其他座位的账号不接手（宁可留缺口）。
     desired 形状 {seat: {wd: [want, ...]}}；返回 (每账号规范矩阵
     {aid: {seat: {wd: [want]}}, 未覆盖说明列表)。
     """
@@ -420,6 +466,13 @@ def auto_assign(
         daymap = matrices.get(aid, {}).get(seat) or {}
         return any(daymap.get(w) for w in WEEKDAY_KEYS)
 
+    def _held_seats(aid: str) -> set[str]:
+        """账号当前实际持有时段的所有座位（忽略全空残留条目）。"""
+        return {
+            s for s, daymap in matrices.get(aid, {}).items()
+            if any(daymap.get(w) for w in WEEKDAY_KEYS)
+        }
+
     def dfs(i: int, plan: list[tuple[str, str, str, str]]) -> None:
         """回溯搜索：在容量与跨座不重叠约束下求最优分配。"""
         if len(plan) + (len(jobs) - i) <= len(best["plan"]):
@@ -431,11 +484,13 @@ def auto_assign(
         cands = sorted(
             (a for a in accounts
              if used[a.id][wd] + wh <= daily_limit_hours + eps
-             and not any(ws < e and s < we for s, e in windows[a.id][wd])),
+             and not any(ws < e and s < we for s, e in windows[a.id][wd])
+             # 专属档：绝不引入跨座（已持有别的座位的账号不接手）
+             and (mode != "dedicated" or not (_held_seats(a.id) - {seat}))),
             # 座位独占优先：已持有该座位的账号优先，其次按策略平衡负载
             key=lambda a: (
                 0 if _holds_seat(a.id, seat) else 1,
-                (used[a.id][wd], a.id) if mode == "safe"
+                (used[a.id][wd], a.id) if mode in ("safe", "dedicated")
                 else (-used[a.id][wd], a.id),
             ),
         )
@@ -508,57 +563,23 @@ def diff_matrices(
     }
 
 
-def plan_matrix(
-    accounts: list[Account],
+def _parse_jobs(
     desired: dict[str, dict[str, list[str]]],
+    seats: list[str],
     *,
     max_seg_hours: float,
-    daily_limit_hours: float,
-    mode: str,
-    account_order: list[str] | None = None,
-) -> tuple[dict[str, dict[str, dict[str, list[str]]]], list[str]]:
-    """全量重解守护矩阵（座位独占优先，不保留既有绑定）。
+) -> tuple[dict[str, dict[str, list[tuple[str, time, time, float]]]], list[str]]:
+    """把期望时段展开成 jobs[seat][wd] = [(时段文本, 开始, 结束, 时长)]。
 
-    desired 形状 {seat: {wd: [want]}}；返回 (每账号规范矩阵
-    {aid: {seat: {wd: [want]}}}, unfillable 列表)。
+    入参:
+        desired: {seat: {wd: [时段文本]}}。
+        seats: 座位列表（字典序）。
+        max_seg_hours: 单段时长上限（小时）。
 
-    分配原则（座位独占优先）：
-
-      - 座位按期望序（seat_num 字典序）、账号按 account_order（未给则 id 稳定序）
-        一一对应指派主账号；账号多于座位时多余账号保持空矩阵；
-      - 每个座位的全部分段优先整座交给主账号，账号之间互不交叉；
-      - 主账号当日限额装不下整座时，溢出段仍留在该座位内交给其他账号
-        （safe：当日已用最少者优先；minimal：优先复用已参与该座的账号）；
-      - 账号少于座位时，额外座位由已指派账号按顺序整座承接，跨座不可避免时
-        尽量减少跨座账号数。
-
-    硬约束在分配过程中即满足：单段 ≤ max_seg_hours、跨座同时段不重叠、
-    每账号每日总时长 ≤ daily_limit_hours；分不下的分段进入 unfillable，
-    账号数不足时附"需至少 N 个账号"说明。
+    返回值:
+        (jobs, bad)：jobs 为展开结果；bad 为格式非法或超过单段上限的说明列表。
     """
     eps = 1e-9
-    if not accounts:
-        return {}, ["无可用账号"]
-    if mode not in ("safe", "minimal"):
-        return {}, [f"未知分配策略 {mode!r}"]
-
-    # ---------- 账号优先级顺序 ----------
-    acc_ids = {a.id for a in accounts}
-    order: list[str] = []
-    seen: set[str] = set()
-    for aid in account_order or []:
-        if aid in acc_ids and aid not in seen:
-            seen.add(aid)
-            order.append(aid)
-    for aid in sorted(acc_ids - seen):
-        order.append(aid)
-    rank = {aid: i for i, aid in enumerate(order)}
-    n_acc = len(order)
-
-    seats = sorted(desired)
-
-    # ---------- 解析期望时段 ----------
-    # jobs[seat][wd] = [(时段文本, 开始, 结束, 时长)]
     jobs: dict[str, dict[str, list[tuple[str, time, time, float]]]] = {
         seat: {wd: [] for wd in WEEKDAY_KEYS} for seat in seats
     }
@@ -582,6 +603,150 @@ def plan_matrix(
                         f"超过单段上限 {max_seg_hours:g}h")
                     continue
                 jobs[seat][wd].append((want, ws, we, wh))
+    return jobs, bad
+
+
+def _plan_dedicated(
+    accounts: list[Account],
+    desired: dict[str, dict[str, list[str]]],
+    *,
+    max_seg_hours: float,
+    daily_limit_hours: float,
+    order: list[str],
+    seats: list[str],
+) -> tuple[dict[str, dict[str, dict[str, list[str]]]], list[str]]:
+    """专属分配：座位与账号严格一一对应，装不下就留缺口，绝不跨座。
+
+    入参:
+        accounts: 参与分配的账号列表（仅取 id 做最终校验）。
+        desired: {seat: {wd: [时段文本]}}。
+        max_seg_hours: 单段时长上限（小时）。
+        daily_limit_hours: 每账号每日总时长上限（小时）。
+        order: 账号优先级顺序（已去重，且全部在 accounts 内）。
+        seats: 座位列表（字典序）。
+
+    返回值:
+        (每账号规范矩阵 {aid: {seat: {wd: [want]}}}, unfillable 列表)。
+    """
+    eps = 1e-9
+    jobs, bad = _parse_jobs(desired, seats, max_seg_hours=max_seg_hours)
+    mats: dict[str, dict[str, dict[str, list[str]]]] = {aid: {} for aid in order}
+    used = {aid: {wd: 0.0 for wd in WEEKDAY_KEYS} for aid in order}
+    ranges: dict[str, dict[str, list[tuple[time, time]]]] = {
+        aid: {wd: [] for wd in WEEKDAY_KEYS} for aid in order
+    }
+    # 只有存在期望时段的座位才需要专属账号
+    active = [s for s in seats if any(jobs[s][wd] for wd in WEEKDAY_KEYS)]
+    primary = {seat: order[i] for i, seat in enumerate(active) if i < len(order)}
+    for seat in active:
+        owner = primary.get(seat)
+        if owner is None:
+            # 账号不足：整座留缺口，不转交他人
+            for wd in WEEKDAY_KEYS:
+                for want, _ws, _we, _wh in jobs[seat][wd]:
+                    bad.append(
+                        f"{WEEKDAY_LABELS[wd]}{seat} {want}："
+                        f"缺专属账号（留缺口，不跨座）")
+            continue
+        for wd in WEEKDAY_KEYS:
+            for want, ws, we, wh in jobs[seat][wd]:
+                if used[owner][wd] + wh > daily_limit_hours + eps or any(
+                        ws < e and s < we for s, e in ranges[owner][wd]):
+                    # 主账号装不下：留缺口，不转交他人
+                    bad.append(
+                        f"{WEEKDAY_LABELS[wd]}{seat} {want}："
+                        f"主账号 {owner} 当日装不下（留缺口，不转交他人）")
+                    continue
+                mats[owner].setdefault(seat, {}).setdefault(wd, []).append(want)
+                used[owner][wd] += wh
+                ranges[owner][wd].append((ws, we))
+    # 规范化输出：每天的时段按开始时刻排序
+    for aid in order:
+        for daymap in mats[aid].values():
+            for wd, slots in daymap.items():
+                daymap[wd] = sorted(
+                    slots, key=lambda s: (parse_range(s)[0], parse_range(s)[1], s))
+    # 校验兜底
+    for a in accounts:
+        seat_slots = mats.get(a.id) or {}
+        if not seat_slots:
+            continue
+        try:
+            validate_matrix(
+                seat_slots,
+                max_seg_hours=max_seg_hours,
+                daily_limit_hours=daily_limit_hours,
+            )
+        except ValueError as exc:
+            return {}, [f"账号 {a.id} 矩阵非法: {exc}"]
+    if len(active) > len(order):
+        bad.append(f"需至少 {len(active)} 个账号（当前 {len(order)} 个）")
+    return mats, bad
+
+
+def plan_matrix(
+    accounts: list[Account],
+    desired: dict[str, dict[str, list[str]]],
+    *,
+    max_seg_hours: float,
+    daily_limit_hours: float,
+    mode: str,
+    account_order: list[str] | None = None,
+) -> tuple[dict[str, dict[str, dict[str, list[str]]]], list[str]]:
+    """全量重解守护矩阵（座位独占优先，不保留既有绑定）。
+
+    desired 形状 {seat: {wd: [want]}}；返回 (每账号规范矩阵
+    {aid: {seat: {wd: [want]}}}, unfillable 列表)。
+
+    分配原则（座位独占优先）：
+
+      - 座位按期望序（seat_num 字典序）、账号按 account_order（未给则 id 稳定序）
+        一一对应指派主账号；账号多于座位时多余账号保持空矩阵；
+      - 每个座位的全部分段优先整座交给主账号，账号之间互不交叉；
+      - 主账号当日限额装不下整座时，溢出段仍留在该座位内交给其他账号
+        （safe：当日已用最少者优先；minimal：优先复用已参与该座的账号）；
+      - 账号少于座位时，额外座位由已指派账号按顺序整座承接，跨座不可避免时
+        尽量减少跨座账号数；
+      - dedicated 档是严格版：座位↔账号一一对应，账号不足或主账号额度不够时
+        一律留缺口，任何情况下都不跨座。
+
+    硬约束在分配过程中即满足：单段 ≤ max_seg_hours、跨座同时段不重叠、
+    每账号每日总时长 ≤ daily_limit_hours；分不下的分段进入 unfillable，
+    账号数不足时附"需至少 N 个账号"说明。
+    """
+    eps = 1e-9
+    if not accounts:
+        return {}, ["无可用账号"]
+    if mode not in ("safe", "minimal", "dedicated"):
+        return {}, [f"未知分配策略 {mode!r}"]
+
+    # ---------- 账号优先级顺序 ----------
+    acc_ids = {a.id for a in accounts}
+    order: list[str] = []
+    seen: set[str] = set()
+    for aid in account_order or []:
+        if aid in acc_ids and aid not in seen:
+            seen.add(aid)
+            order.append(aid)
+    for aid in sorted(acc_ids - seen):
+        order.append(aid)
+    rank = {aid: i for i, aid in enumerate(order)}
+    n_acc = len(order)
+
+    seats = sorted(desired)
+
+    # ---------- 专属分配（严格一一对应，绝不跨座） ----------
+    if mode == "dedicated":
+        return _plan_dedicated(
+            accounts, desired,
+            max_seg_hours=max_seg_hours,
+            daily_limit_hours=daily_limit_hours,
+            order=order, seats=seats,
+        )
+
+    # ---------- 解析期望时段 ----------
+    # jobs[seat][wd] = [(时段文本, 开始, 结束, 时长)]
+    jobs, bad = _parse_jobs(desired, seats, max_seg_hours=max_seg_hours)
 
     # ---------- 主账号指派：座位 ↔ 账号 一一对应 ----------
     primary: dict[str, str] = {}

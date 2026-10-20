@@ -95,17 +95,18 @@ SCHEDULE_MODE_LABELS: dict[str, str] = {
 }
 
 
-# 时间分配策略：两档都以「座位独占优先」为核心——座位与账号一一对应，
-# 每座优先由一个账号整座承接，账号之间互不交叉；主账号当日额度装不下时，
-# 溢出段仍留在该座位内交给其他账号。
-#   safe    = 溢出摊薄：溢出段交给当日已用最少的账号
-#   minimal = 最少账号：溢出段优先复用已参与该座的账号
+# 时间分配策略：三档都以「座位独占优先」为核心——座位与账号一一对应，
+# 每座优先由一个账号整座承接，账号之间互不交叉。
+#   safe      = 溢出摊薄：主账号装不下时，溢出段交给当日已用最少的账号
+#   minimal   = 最少账号：主账号装不下时，溢出段优先复用已参与该座的账号
+#   dedicated = 专属分配：座位↔账号严格一一对应，装不下就留缺口，绝不跨座
 # 仅影响矩阵构建（自动绑定 + 显式重排），执行链路（14:00 提交 / 签到 / 签退）
 # 不受影响。
-ALLOCATION_STRATEGIES: tuple[str, ...] = ("safe", "minimal")
+ALLOCATION_STRATEGIES: tuple[str, ...] = ("safe", "minimal", "dedicated")
 ALLOCATION_STRATEGY_LABELS: dict[str, str] = {
     "safe": "独占优先·摊薄",
     "minimal": "独占优先·省账号",
+    "dedicated": "专属分配·不跨座",
 }
 ALLOCATION_STRATEGY_HELP: dict[str, dict[str, str]] = {
     "safe": {
@@ -119,6 +120,11 @@ ALLOCATION_STRATEGY_HELP: dict[str, dict[str, str]] = {
         "badge": "省账号",
         "desc": "座位与账号一一对应，每座由一个账号整座承接；主账号额度不足时，"
                 "优先复用已参与该座的账号，尽量少动用账号。",
+    },
+    "dedicated": {
+        "label": "专属分配（严格一一对应）",
+        "badge": "不跨座",
+        "desc": "座位与账号严格一一对应；账号不足时留缺口，绝不让账号跨座承接。",
     },
 }
 

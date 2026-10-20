@@ -16,6 +16,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 from seatbot import __version__
+from seatbot import settings as _settings
 from seatbot.config import Config
 from seatbot.scheduler import Scheduler
 from seatbot.store import StateStore
@@ -249,6 +250,7 @@ def new_templates() -> Jinja2Templates:
     templates.env.filters["epoch_ms"] = _epoch_ms
     templates.env.globals["static_v"] = _static_v
     templates.env.globals["app_version"] = __version__
+    templates.env.globals["settings"] = _settings
     return templates
 
 

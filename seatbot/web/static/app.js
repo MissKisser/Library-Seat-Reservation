@@ -442,10 +442,12 @@
       added: [],
       removed: [],
       unfillable: [],
+      /* 请求显式指定的档位（空 = 用系统设置里的当前档位） */
+      strategyOverride: '',
       wdLabel(wd) { return WD_LABELS[wd] || wd; },
       show(plan) {
         this.strategy = plan.strategy;
-        this.strategyLabel = ({ safe: '独占优先·摊薄', minimal: '独占优先·省账号' })[plan.strategy] || plan.strategy;
+        this.strategyLabel = ({ safe: '独占优先·摊薄', minimal: '独占优先·省账号', dedicated: '专属分配·不跨座' })[plan.strategy] || plan.strategy;
         const s = plan.summary || {};
         this.summaryText = `新增 ${s.added_count || 0} / 移除 ${s.removed_count || 0}，影响 ${s.affected_count || 0} 个账号`;
         this.added = plan.added || [];
@@ -454,10 +456,11 @@
         this.open = true;
       },
       close() { this.open = false; this.error = ''; },
-      async fetchPreview() {
+      async fetchPreview(detail) {
         this.loading = true; this.error = '';
+        this.strategyOverride = (detail && detail.strategy) || '';
         try {
-          const r = await fetch('/bindings/replan/preview', { method: 'POST' });
+          const r = await fetch(this.planUrl('/bindings/replan/preview'), { method: 'POST' });
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const j = await r.json();
           this.show(j);
@@ -470,13 +473,16 @@
       },
       async confirm() {
         try {
-          const r = await fetch('/bindings/replan/apply', { method: 'POST' });
+          const r = await fetch(this.planUrl('/bindings/replan/apply'), { method: 'POST' });
           if (!r.ok) throw new Error('HTTP ' + r.status);
           // fetch 已自动跟随 303：r.url 即带 ?msg= 的最终地址，赋回浏览器让 prgToast 弹提示
           location.assign(r.url);
         } catch (e) {
           this.error = '应用失败：' + (e && e.message || e);
         }
+      },
+      planUrl(path) {
+        return this.strategyOverride ? `${path}?strategy=${encodeURIComponent(this.strategyOverride)}` : path;
       },
       cancel() { this.close(); },
     };

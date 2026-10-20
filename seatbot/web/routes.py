@@ -22,6 +22,7 @@ from seatbot.bindings import (
     candidate_accounts,
     desired_slots_of,
     diff_matrices,
+    exclusive_health,
     matrix_windows,
     plan_matrix,
     rebind_candidates_for_days,
@@ -1118,11 +1119,22 @@ async def _schedule_mode(request: Request) -> str:
         return "uniform"
 
 
-async def _allocation_strategy(request: Request) -> str:
-    """读取时间分配策略（safe=独占优先·摊薄 / minimal=独占优先·省账号）。
+async def _allocation_strategy(request: Request, override: str | None = None) -> str:
+    """读取时间分配策略（safe=独占优先·摊薄 / minimal=独占优先·省账号 / dedicated=专属分配）。
+
+    入参:
+        request: 当前请求。
+        override: 请求显式指定的档位；非法值忽略，回落到页面设置。
+
+    返回值:
+        生效的档位名。
 
     同 _schedule_mode：回落时落库告警，避免自动绑定按错策略静默执行。
     """
+    if override:
+        s = str(override).strip().lower()
+        if s in _settings.ALLOCATION_STRATEGIES:
+            return s
     try:
         eff, _rows = await _effective_and_raw(request)
         return _settings.normalize_allocation_strategy(
@@ -1302,11 +1314,13 @@ async def bindings_list(request: Request):
     }
     ctx = await _ctx(request, active_page="bindings")
     alloc_mode = await _allocation_strategy(request)
+    health = exclusive_health(accounts, [s.seat_num for s in seats])
     ctx.update(
         weekday_cols=weekday_cols,
         mode=mode, mode_labels=_settings.SCHEDULE_MODE_LABELS,
         allocation_strategy=alloc_mode,
         allocation_labels=_settings.ALLOCATION_STRATEGY_LABELS,
+        health=health,
         diverged=diverged,
         seats=seats, desired=desired, seat_bindings=seat_bindings,
         uncovered=uncovered, margins=margins,
@@ -1452,7 +1466,8 @@ async def bindings_replan_preview(request: Request):
         accounts, desired,
         max_seg_hours=lib.max_reserve_hours,
         daily_limit_hours=lib.daily_reserve_hours_limit,
-        mode=await _allocation_strategy(request),
+        mode=await _allocation_strategy(
+            request, request.query_params.get("strategy")),
         recency=recency,
     )
     return JSONResponse(plan)
@@ -1485,7 +1500,8 @@ async def bindings_replan_apply(request: Request):
         accounts, desired,
         max_seg_hours=lib.max_reserve_hours,
         daily_limit_hours=lib.daily_reserve_hours_limit,
-        mode=await _allocation_strategy(request),
+        mode=await _allocation_strategy(
+            request, request.query_params.get("strategy")),
         recency=recency,
     )
     # 仅对受影响账号 upsert：服务端拿到 plan["new_matrix"] 直接写库。

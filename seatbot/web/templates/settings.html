@@ -89,7 +89,7 @@
       </div>
       <div class="card-body">
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
-          {% for key in ["safe", "minimal"] %}
+          {% for key in settings.ALLOCATION_STRATEGIES %}
           {% set h = strategy_help_allocation[key] %}
           <label class="choice-card">
             <input type="radio" name="allocation_strategy" value="{{ key }}" {% if eff.allocation_strategy == key %}checked{% endif %}>
