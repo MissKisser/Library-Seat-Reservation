@@ -4,7 +4,7 @@ from datetime import time, timedelta
 
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.utils.timeutil import today_cst
-from seatbot.scheduler import Scheduler
+from seatbot.scheduler import NullHaRuntime, Scheduler
 
 
 class _FakeStore:
@@ -51,6 +51,10 @@ class _FakeClient:
 
 
 class _StubSched(Scheduler):
+    """HA 闸门恒放行（与生产 Scheduler 的 NullHaRuntime 语义一致）。"""
+
+    ha = NullHaRuntime()
+
     async def client_ready(self, acc):
         return _FakeClient()
 

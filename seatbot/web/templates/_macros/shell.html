@@ -1,4 +1,5 @@
 {# Macro: shell. App 外壳——全宽顶栏 + 下方侧栏 + toast 容器 + 确认弹层。 #}
+{% set APP_VERSION = "0.6.0" %}
 {% macro shell(active='dashboard', title='', subtitle='', target_seats=[], accounts_count=0) %}
 {% set _icons = {
   'dashboard': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>',
@@ -12,6 +13,7 @@
   'sun': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>',
   'moon': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>',
   'manual': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9"/></svg>',
+  'audit': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l1 2h3a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h3l1-2z"/><path d="m9 13 2 2 4-4"/></svg>',
 } %}
 <div class="app-shell" x-data="mobileNav()" :data-mobile-nav="open ? 'open' : 'closed'">
   {# ===== 移动端抽屉 backdrop（点击关闭） ===== #}
@@ -43,7 +45,7 @@
           <span x-show="!isDark">{{ _icons['moon']|safe }}</span>
         </button>
       </div>
-      <span class="chip chip-muted hidden sm:inline-flex">v0.6.0</span>
+      <span class="chip chip-muted hidden sm:inline-flex">v{{ APP_VERSION }}</span>
     </div>
   </header>
 
@@ -63,6 +65,7 @@
         {{ nav_link('/manual', '手动预约', active, 'manual', icon=_icons['manual']) }}
         {{ nav_link('/reservations', '预约记录', active, 'reservations', icon=_icons['calendar']) }}
         {{ nav_link('/logs', '日志', active, 'logs', icon=_icons['logs']) }}
+        {{ nav_link('/audit', '审计', active, 'audit', icon=_icons['audit']) }}
         {{ nav_link('/settings', '系统设置', active, 'settings', icon=_icons['settings']) }}
     </aside>
     <main class="app-content">

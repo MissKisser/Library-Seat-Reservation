@@ -100,12 +100,17 @@ def test_csrf_same_origin_and_missing_origin_pass():
 
 
 def test_auth_decision_no_token_mode():
-    # 无 token 且未配 allowed_hosts: 完全放行, 不做二次拦截
+    # 无 token 且未配 allowed_hosts: 仅放行本机回环 Host, 其余 403
+    ok, code, _, _ = auth_decision(
+        web_token="", client_host="127.0.0.1", host_header="127.0.0.1:8080",
+        presented=None, allowed_hosts=None,
+    )
+    assert ok and code == 0
     ok, code, _, _ = auth_decision(
         web_token="", client_host="10.0.0.9", host_header="any-domain.com:8080",
         presented=None, allowed_hosts=None,
     )
-    assert ok and code == 0
+    assert not ok and code == 403
     # 无 token 但显式配置了 allowed_hosts: 仅做 Host 校验
     ok, code, _, _ = auth_decision(
         web_token="", client_host="10.0.0.9", host_header="evil.example.com",
@@ -117,6 +122,69 @@ def test_auth_decision_no_token_mode():
         presented=None, allowed_hosts=ALLOWED | {"seat.viaxv.cn"},
     )
     assert ok and code == 0
+
+
+def test_auth_decision_allowed_hosts_is_case_and_port_insensitive():
+    # 白名单命中: 大小写不敏感、端口剥离后比较
+    ok, code, _, _ = auth_decision(
+        web_token="", host_header="SEAT.VIAXV.CN:443",
+        allowed_hosts={"seat.viaxv.cn"},
+    )
+    assert ok and code == 0
+    ok, code, _, _ = auth_decision(
+        web_token="", host_header="seat.viaxv.cn",
+        allowed_hosts={"seat.viaxv.cn"},
+    )
+    assert ok and code == 0
+    # 未命中白名单 → 400
+    ok, code, _, _ = auth_decision(
+        web_token="", host_header="other.example.com",
+        allowed_hosts={"seat.viaxv.cn"},
+    )
+    assert not ok and code == 400
+
+
+def test_auth_decision_forwarded_host_takes_priority():
+    # 反向代理场景: X-Forwarded-Host 优先于 Host
+    ok, code, _, _ = auth_decision(
+        web_token="", host_header="127.0.0.1:8080",
+        forwarded_host="seat.viaxv.cn",
+        allowed_hosts={"seat.viaxv.cn"},
+    )
+    assert ok and code == 0
+    # 未配白名单时, 代理转发的公网主机名仍按非回环处理 → 403
+    ok, code, _, _ = auth_decision(
+        web_token="", host_header="127.0.0.1:8080",
+        forwarded_host="seat.viaxv.cn",
+    )
+    assert not ok and code == 403
+    # 代理链式头: 取第一段
+    ok, code, _, _ = auth_decision(
+        web_token="", host_header="127.0.0.1:8080",
+        forwarded_host="seat.viaxv.cn, inner.local",
+        allowed_hosts={"seat.viaxv.cn"},
+    )
+    assert ok and code == 0
+
+
+def test_auth_decision_loopback_exemption_requires_loopback_client():
+    """Host 头可被伪造: 回环豁免必须同时校验来源地址。"""
+    # 来源 IP 是回环 → 本机访问放行
+    ok, code, _, _ = auth_decision(
+        web_token="", client_host="127.0.0.1", host_header="127.0.0.1:8080",
+    )
+    assert ok and code == 0
+    # 来源 IP 非回环但 Host 伪造成回环 → 拒绝
+    ok, code, _, _ = auth_decision(
+        web_token="", client_host="10.0.0.9", host_header="127.0.0.1:8080",
+    )
+    assert not ok and code == 403
+    # 配了白名单时, 伪造的回环 Host 同样不得绕过白名单
+    ok, code, _, _ = auth_decision(
+        web_token="", client_host="10.0.0.9", host_header="127.0.0.1:8080",
+        allowed_hosts={"seat.viaxv.cn"},
+    )
+    assert not ok and code == 400
 
 
 def _panel_app(token: str, host: str = "127.0.0.1", allowed_hosts: list[str] | None = None) -> FastAPI:
@@ -142,12 +210,35 @@ def test_middleware_token_mode_enforced():
 
 
 def test_middleware_no_token_open_and_explicit_allowed_hosts():
-    # 未配 token 且未配 allowed_hosts: 直接放行
-    client = TestClient(_panel_app(""))
+    # 未配 token 且未配 allowed_hosts: 仅放行本机回环访问（来源地址也须回环）
+    client = TestClient(
+        _panel_app(""), base_url="http://127.0.0.1:8080",
+        client=("127.0.0.1", 50000),
+    )
     assert client.get("/static/style.css").status_code == 200
+    # 非回环 Host 且无 token → 403
+    public = TestClient(_panel_app(""), base_url="http://seat.viaxv.cn")
+    assert public.get("/static/style.css").status_code == 403
     # 显式配了 allowed_hosts: 拦截不在白名单的 host (TestClient 默认 Host 为 testserver)
     restricted_client = TestClient(_panel_app("", allowed_hosts=["seat.viaxv.cn"]))
     assert restricted_client.get("/static/style.css").status_code == 400
+    # allowed_hosts 命中 → 放行 (反向代理经 X-Forwarded-Host 转发同样放行)
+    allowed_client = TestClient(
+        _panel_app("", allowed_hosts=["seat.viaxv.cn"]), base_url="http://seat.viaxv.cn")
+    assert allowed_client.get("/static/style.css").status_code == 200
+    proxied = TestClient(
+        _panel_app("", allowed_hosts=["seat.viaxv.cn"]),
+        base_url="http://127.0.0.1:8080",
+        headers={"x-forwarded-host": "seat.viaxv.cn"},
+    )
+    assert proxied.get("/static/style.css").status_code == 200
+    # 本机回环访问不受 allowed_hosts 影响（来源地址为回环时豁免）
+    local = TestClient(
+        _panel_app("", allowed_hosts=["seat.viaxv.cn"]),
+        base_url="http://127.0.0.1:8080",
+        client=("127.0.0.1", 50000),
+    )
+    assert local.get("/static/style.css").status_code == 200
 
 # ---------- P0-2 数据库备份 ----------
 

@@ -32,9 +32,8 @@ class ChaoxingClient:
 
     # fidEnc values used by different Chaoxing frontends.
     # The mobile (学习通 app) fidEnc is REQUIRED for /getusedtimes to return
-    # others' reservations; the PC web fidEnc (documented in
-    # docs/superpowers/specs/2026-07-09-chaoxing-api-reference.md) returns
-    # an empty array, so only the mobile value is used in code.
+    # others' reservations; the PC web fidEnc returns an empty array,
+    # so only the mobile value is used in code.
     FID_ENC_MOBILE = "24680a1d287b60c7"
 
     def __init__(self, *, ua: str | None = None):
@@ -186,8 +185,8 @@ class ChaoxingClient:
     async def _dismiss_consent_dialog(page) -> None:
         """点"登录"后可能弹出隐私协议确认框,必须点"已阅读并同意"登录才会继续。
 
-        2026-08-25 实测: 该弹窗间歇性出现 (与账号无关), 不处理时表现为
-        轮询超时无 auth cookie 且页面无错误文案 —— 曾被误判为风控拦截。
+        该弹窗间歇性出现 (与账号无关), 不处理时表现为轮询超时无 auth cookie
+        且页面无错误文案。
         """
         for sel in (
             "button:has-text('已阅读并同意')",
@@ -293,10 +292,10 @@ class ChaoxingClient:
 
     @staticmethod
     async def _click_cell_verified(page, label: str) -> bool:
-        """点 30 分钟格子并验证选中态 (2026-08-26 修复计划 通道B)。
+        """点 30 分钟格子并验证选中态。
 
-        R2 根因: noSelect 格子点击静默无效 (页面吞掉事件且无报错),
-        旧行为把"点了"当"选中", 导致只约到尾部时段。
+        noSelect 格子点击静默无效 (页面吞掉事件且无报错), 只点不验会把
+        "点了"当"选中", 导致只约到尾部时段。
         加固: 点击后该格 class 必须发生变化且不带 noSelect, 否则重试 (最多 3 次)。
         """
         selectors = [f"li:has-text('{label}')"]
@@ -452,16 +451,12 @@ class ChaoxingClient:
         end_time: str,       # 'HH:MM'
         anchor_seat: str | None = None,  # 开页用座位号; 目标座位页可能处于占用详情态无格子
     ) -> dict[str, Any]:
-        """跨天预约通道 B1 (2026-08-26 下午): 页面内改写放行。
-
-        前代通道 A (abort 截获 enc + httpx 重放) 被 303 风控全量拒绝
-        (14:00 批量 0/6): 服务端校验的不只是 enc 字段, 还绑定请求环境
-        (TLS 指纹 / header 序列 / 全部 cookie), 跨进程重放无法仿真。
+        """跨天预约通道 B1: 页面内改写放行。
 
         本通道让页面 JS 在真实 Chromium 里自己构造并发出 /submit,
         在网络层改写 day/时段字段并按页面自有算法 (submitVerify.min.js 逆向:
         md5("[k=v]"按 key 排序拼接 + "[submit_enc种子]") 重算 enc 后放行。
-        303 实证: 只改字段不重算 enc, 服务端判为篡改直接拒绝。
+        服务端会校验 enc, 只改字段不重算 enc 会被判为篡改直接拒绝。
         """
         from playwright.async_api import async_playwright
         from urllib.parse import parse_qs, urlencode
@@ -660,7 +655,6 @@ class ChaoxingClient:
 
         与 leave (暂离) 不同: 暂离要求剩余时长 ≥20min 且只是暂时释放,
         signback 才是真正的"签退", 时段进行中任意时刻可用, 结束使用。
-        2026-08-25 实测验证 (来源: github MGJ520/XXT_Library_Web)。
         """
         url = f"{self.OFFICE_BASE}/data/apps/seat/signback"
         return await self._post_form(
@@ -801,17 +795,10 @@ class ChaoxingClient:
         Returns:   list of ('HH:MM', 'HH:MM') in Beijing time. Empty list
                    when nobody has reserved the seat on that day.
 
-        CRITICAL:
-            You MUST pass the mobile fidEnc (`self.FID_ENC_MOBILE`,
-            i.e. ``24680a1d287b60c7``). The PC-web fidEnc
-            (``85a5894481db5d7a``) returns ``data: []`` even when the
-            seat is genuinely occupied. Discovered 2026-07-09 by the
-            user on the 学习通 mobile app; see
-            ``docs/superpowers/specs/2026-07-09-investigation-status.md``.
-
-        Verified on 2026-07-09 with cookies of uid=u000000000:
-            seat 104 → [("19:30","21:30")]
-            seat 105 → [("15:30","17:30"), ("19:00","21:00")]
+        The mobile fidEnc (`self.FID_ENC_MOBILE`, i.e.
+        ``24680a1d287b60c7``) is mandatory: the PC-web fidEnc
+        (``85a5894481db5d7a``) returns ``data: []`` even when the seat is
+        genuinely occupied, so only the mobile value is used in code.
         """
         url = f"{self.OFFICE_BASE}/data/apps/seat/getusedtimes"
         referer = (

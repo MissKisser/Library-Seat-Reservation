@@ -1,4 +1,4 @@
-"""FastAPI routes for the SeatBot web panel (v2: multi-seat + per-task seat_num).
+"""FastAPI routes for the SeatBot web panel (multi-seat + per-task seat_num).
 
 Dashboard 覆盖图以"目标座位"为行(取代 v1 的"账号"为行)。
 """
@@ -33,10 +33,89 @@ from seatbot.reconcile import AUTO_SYNC_NOTE, pick_read_account
 from seatbot.store import DuplicateTaskError
 
 from seatbot.utils.timeutil import (
-    RESERVE_WINDOW_HOUR, at_cst, now_cst, parse_hhmm, parse_range, today_cst,
+    RESERVE_WINDOW_HOUR, at_cst, now_cst, parse_hhmm, parse_range,
+    split_into_chunks, today_cst,
 )
 
 router = APIRouter()
+
+#: 已落日志的数据异常签名（面板高频刷新时同一异常只落一次）。
+_LOGGED_ANOMALIES: set[str] = set()
+
+
+async def _log_anomaly(store, signature: str, message: str) -> None:
+    """把数据异常落进日志表（同一签名只落一次，避免面板高频刷新刷屏）。
+
+    入参:
+        store: 状态存储对象；需实现 log_message(level, account_id, message)。
+        signature: 异常去重签名。
+        message: 异常描述文本。
+
+    返回值:
+        None。存储未实现日志接口或写入失败时只打印，不影响主流程。
+    """
+    if signature in _LOGGED_ANOMALIES:
+        return
+    _LOGGED_ANOMALIES.add(signature)
+    if len(_LOGGED_ANOMALIES) > 512:
+        _LOGGED_ANOMALIES.clear()
+    logger = getattr(store, "log_message", None)
+    if logger is None:
+        print(f"[WARN] routes - {message}")
+        return
+    try:
+        await logger("WARN", None, message)
+    except Exception as e:
+        print(f"[WARN] routes - {message} (日志写入失败: {e})")
+
+
+def _parse_desired_range(raw: str) -> tuple[_time, _time] | None:
+    """宽松解析期望时段 'HH:MM-HH:MM'。
+
+    入参:
+        raw: 时段文本。
+
+    返回值:
+        (开始, 结束) 时间对；无法判定时返回 None，调用方须按数据异常处理。
+    """
+    try:
+        return parse_range(raw)
+    except ValueError:
+        pass
+    parts = raw.split("-")
+    if len(parts) != 2:
+        return None
+    minutes: list[int] = []
+    for part in parts:
+        digits = "".join(ch for ch in part if ch.isdigit())
+        if len(digits) not in (3, 4):
+            return None
+        hh, mm = int(digits[:-2]), int(digits[-2:])
+        if hh > 23 or mm > 59:
+            return None
+        minutes.append(hh * 60 + mm)
+    if minutes[1] <= minutes[0]:
+        return None
+    return (
+        _time(minutes[0] // 60, minutes[0] % 60),
+        _time(minutes[1] // 60, minutes[1] % 60),
+    )
+
+
+def _row_cell_starts(annotated: list[dict], seat_num: str) -> set[str]:
+    """取某座位覆盖行里全部格子的起点（'HH:MM' 集合）。
+
+    入参:
+        annotated: _annotate_rows 的产物。
+        seat_num: 座位号。
+
+    返回值:
+        该座位所有格子的起点集合；行不存在时返回空集。
+    """
+    for row in annotated:
+        if row["seat"].seat_num == seat_num:
+            return {c["start"].strftime("%H:%M") for c in row["cells"]}
+    return set()
 
 
 def _parse_seat_slots(
@@ -256,8 +335,9 @@ async def _collect_user_reserved(store, day: date) -> list[tuple[str, _time, _ti
             sh, sm = map(int, u["start_time"].split(":"))
             eh, em = map(int, u["end_time"].split(":"))
             out.append((u["seat_num"], _time(sh, sm), _time(eh, em)))
-        except Exception:
-            continue
+        except (ValueError, KeyError, TypeError) as e:
+            msg = f"user_reserved 行解析失败（id={u.get('id')}）: {e}"
+            await _log_anomaly(store, f"user_reserved:{u.get('id')}", msg)
     return out
 
 
@@ -286,6 +366,7 @@ async def _collect_day_bundle(
       'rows':      compute+_annotate 产物 (seat 对象 + time 对象, 供 Jinja),
       'gap_count': 未涂色且无叠加标记的格子数,
       'occ_err':   他人占用查询失败原因 (None 表示成功),
+      'desired_errors': 期望时段数据异常清单 (非空表示覆盖检查按最坏情况计缺口),
     }
     """
     user_reserved = await _collect_user_reserved(store, view_day)
@@ -297,30 +378,46 @@ async def _collect_day_bundle(
     own_intervals = own_intervals + [(sn, s, e) for sn, s, e in user_reserved]
     others_occupied = _filter_self_occupied(others_occupied, own_intervals)
 
+    coverage_errors: list[str] = []
     rows = compute_seat_coverage(
         accounts, target_seats, view_day,
         open_time=cfg.library.open_time,
         close_time=cfg.library.close_time,
         user_reserved=user_reserved,
         others_occupied=others_occupied,
+        errors=coverage_errors,
     )
+    for msg in coverage_errors:
+        await _log_anomaly(store, f"coverage:{msg}", msg)
     annotated = await _annotate_rows(rows, store, view_day)
     # 缺口只统计**期望时段内**的未覆盖块：需有成功任务或用户/他人占用才算覆盖
     # 成功 = active/signed/etc 且无 last_error；future 的 pending 视为已计划覆盖
     desired_blocks: dict[str, set[str]] = {}
+    desired_errors: list[str] = []
     view_wd = weekday_key(view_day)
     is_weekly = (await _schedule_mode(request) == "weekly")
     for s in target_seats:
         blocks: set[str] = set()
+        unparsable: list[str] = []
         for r in desired_slots_of(s, view_wd, is_weekly=is_weekly):
-            try:
-                rs, re_ = parse_range(r)
-            except Exception:
+            parsed = _parse_desired_range(r)
+            if parsed is None:
+                unparsable.append(r)
                 continue
+            rs, re_ = parsed
             cur, end = rs.hour * 60 + rs.minute, re_.hour * 60 + re_.minute
             while cur < end:
                 blocks.add(f"{cur // 60:02d}:{cur % 60:02d}")
                 cur += 30
+        if unparsable:
+            # 期望时段不可判定 → 保守按整段营业时间计入缺口。
+            # 不得当作"该时段无缺口"：数据异常必须显式反映在覆盖检查结果里。
+            blocks = _row_cell_starts(annotated, s.seat_num)
+            for r in unparsable:
+                msg = (f"座位 {s.seat_num} 期望时段 {r!r} 无法解析，"
+                       f"该座位按整段营业时间计入缺口")
+                desired_errors.append(msg)
+                await _log_anomaly(store, f"desired:{s.seat_num}:{r}", msg)
         desired_blocks[s.seat_num] = blocks
     now_time = now_cst().time()
     is_today_view = view_day == today_cst()
@@ -343,7 +440,12 @@ async def _collect_day_bundle(
                     has_success = True
             if not has_success and not c["user_reserved"] and not c["others_occupied"]:
                 gap_count += 1
-    return {"rows": annotated, "gap_count": gap_count, "occ_err": occ_err}
+    return {
+        "rows": annotated,
+        "gap_count": gap_count,
+        "occ_err": occ_err,
+        "desired_errors": desired_errors,
+    }
 
 
 def _rows_to_json(annotated_rows: list[dict]) -> list[dict]:
@@ -426,7 +528,10 @@ async def dashboard(request: Request):
     tomorrow = today + timedelta(days=1)
 
     def _empty_shell(day: date) -> dict:
-        return {"view_day": day.isoformat(), "rows": [], "gap_count": 0, "occ_err": None}
+        return {
+            "view_day": day.isoformat(), "rows": [], "gap_count": 0,
+            "occ_err": None, "desired_errors": [],
+        }
     initial = {
         "today": _empty_shell(today),
         "tomorrow": _empty_shell(tomorrow),
@@ -479,12 +584,14 @@ async def _build_dashboard_data(request: Request, *, fresh: bool = False) -> dic
             "rows": _rows_to_json(bundle_today["rows"]),
             "gap_count": bundle_today["gap_count"],
             "occ_err": bundle_today["occ_err"],
+            "desired_errors": bundle_today["desired_errors"],
         },
         "tomorrow": {
             "view_day": tomorrow.isoformat(),
             "rows": _rows_to_json(bundle_tomorrow["rows"]),
             "gap_count": bundle_tomorrow["gap_count"],
             "occ_err": bundle_tomorrow["occ_err"],
+            "desired_errors": bundle_tomorrow["desired_errors"],
         },
         "now_hhmm": now_cst().strftime("%H:%M"),
         "now_ms": int(_dt.now().timestamp() * 1000),
@@ -570,8 +677,11 @@ async def api_version(request: Request):
     v = getattr(store, "data_version", 0)
     try:
         v += await store.max_task_updated_at()
-    except Exception:
-        pass
+    except Exception as e:
+        await _log_anomaly(
+            store, "version-probe",
+            f"覆盖图数据版本探针失败（退回内存计数）: {e}",
+        )
     return JSONResponse({
         "v": v,
         "now": now_cst().isoformat(timespec="seconds"),
@@ -729,20 +839,6 @@ async def targets_delete(request: Request, seat_num: str):
 # =========================================================================
 # Targets — 换座（整席迁移事务）
 # =========================================================================
-
-def _split_range_ceiling(s: _time, e: _time, max_hours: float) -> list[tuple[_time, _time]]:
-    """把时段按单段时长上限切成子段列表（服务端 max_reserve_hours 硬约束）。"""
-    base = date(2000, 1, 1)
-    cur = _dt.combine(base, s)
-    end = _dt.combine(base, e)
-    step = timedelta(hours=max_hours)
-    out: list[tuple[_time, _time]] = []
-    while cur < end:
-        nxt = min(cur + step, end)
-        out.append((cur.time(), nxt.time()))
-        cur = nxt
-    return out
-
 
 def _overlaps(a1: _dt, a2: _dt, b1: _dt, b2: _dt) -> bool:
     """两个 [start, end) 窗口是否有交集。"""
@@ -923,11 +1019,18 @@ async def targets_replace(
             for rng in ranges:
                 try:
                     rs, re_ = parse_range(rng)
-                except Exception:
+                except ValueError:
                     report["errors"].append(
                         f"{acc.id}: 时段 {rng!r} 无法解析, 跳过")
                     continue
-                for s, e in _split_range_ceiling(rs, re_, max_h):
+                try:
+                    chunks = split_into_chunks((rs, re_), max_h)
+                except ValueError as e:
+                    # 单段上限非法（非正数）: 记入报告并跳过, 不得让请求 500
+                    report["errors"].append(
+                        f"{acc.id}: 时段 {rng!r} 无法切分（{e}）, 跳过")
+                    continue
+                for s, e in chunks:
                     seg_desc = (f"{acc.id} {new_sn} {day.isoformat()} "
                                 f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}")
                     if day == today and now >= at_cst(day, e):
@@ -1123,13 +1226,22 @@ async def bindings_list(request: Request):
             uncovered[seat][wd] = [
                 s_ for s_ in per_day[wd] if s_ not in bound]
 
-    def _blocks_of(ranges: list[str]) -> list[str]:
-        """把 HH:MM-HH:MM 时段展开成 30 分钟块起点列表（复选框预勾选用）。"""
+    def _blocks_of(ranges: list[str], anomalies: list[str]) -> list[str]:
+        """把 HH:MM-HH:MM 时段展开成 30 分钟块起点列表（复选框预勾选用）。
+
+        入参:
+            ranges: 时段文本列表。
+            anomalies: 解析失败的时段收集器（就地追加）。
+
+        返回值:
+            30 分钟块起点列表（去重排序）。
+        """
         out: list[str] = []
         for r in ranges:
             try:
                 s, e = parse_range(r)
-            except Exception:
+            except ValueError as exc:
+                anomalies.append(f"期望时段 {r!r} 无法解析: {exc}")
                 continue
             cur = _dt.combine(date.today(), s)
             end = _dt.combine(date.today(), e)
@@ -1145,12 +1257,17 @@ async def bindings_list(request: Request):
         nxt = t + timedelta(minutes=30)
         ticks.append((t.strftime("%H:%M"), nxt.strftime("%H:%M")))
         t = nxt
+    block_anomalies: list[str] = []
     desired_blocks: dict[str, dict[str, list[str]]] = {
         s.seat_num: {
-            wd: _blocks_of(desired_slots_of(s, wd, is_weekly=is_weekly)) for wd in WEEKDAY_KEYS
+            wd: _blocks_of(
+                desired_slots_of(s, wd, is_weekly=is_weekly), block_anomalies,
+            ) for wd in WEEKDAY_KEYS
         }
         for s in seats
     }
+    for msg in block_anomalies:
+        await _log_anomaly(store, f"bindings:{msg}", msg)
     using_default = {
         s.seat_num: not (s.desired_slots_weekly if is_weekly else s.desired_slots) for s in seats
     }
@@ -1791,7 +1908,7 @@ async def bindings_desired(
 
 
 # =========================================================================
-# Accounts CRUD (v2: 包含 bound_seats)
+# Accounts CRUD (含 bound_seats)
 # =========================================================================
 def _slots_view(acc: Account) -> dict:
     """守护账号页时段展示模型，供前端按星期渲染：
@@ -2045,21 +2162,29 @@ async def accounts_update(
     return RedirectResponse("/accounts?updated=1", status_code=303)
 
 
-def _matrix_conflicts(acc: Account, others: list[Account]) -> int:
+async def _matrix_conflicts(store, acc: Account, others: list[Account]) -> int:
     """账号矩阵与其他账号的跨账号重叠段数（同座位且时间相交）。
 
     用于启用账号时的冲突提醒：禁用期间其他账号可能经重排接管了时段。
-    格式非法（如含 "full"）的矩阵按无法解析处理，不计冲突。
+    格式非法（如含 "full"）的矩阵按无法解析处理，不计冲突，并记录数据异常。
     """
     try:
         mine = {(seat, s, e) for seat, s, e, _ in matrix_windows(acc.seat_slots)}
-    except ValueError:
+    except ValueError as e:
+        await _log_anomaly(
+            store, f"matrix:{acc.id}",
+            f"账号 {acc.id} 矩阵无法解析，冲突统计按 0 计: {e}",
+        )
         return 0
     n = 0
     for o in others:
         try:
             windows = matrix_windows(o.seat_slots)
-        except ValueError:
+        except ValueError as e:
+            await _log_anomaly(
+                store, f"matrix:{o.id}",
+                f"账号 {o.id} 矩阵无法解析，冲突统计跳过该账号: {e}",
+            )
             continue
         for seat, s, e, _ in windows:
             if any(mseat == seat and s < me and ms < e for mseat, ms, me in mine):
@@ -2158,7 +2283,7 @@ async def accounts_toggle(
         await store.set_account_status(acc_id, "active")
         await sched.sync_jobs()
         others = [a for a in await store.list_accounts() if a.id != acc_id]
-        n_conflict = _matrix_conflicts(acc, others)
+        n_conflict = await _matrix_conflicts(store, acc, others)
         msg = f"已启用 {acc_id}"
         if n_conflict:
             msg += f"；其绑定时段与 {n_conflict} 段其他账号时段重叠，建议在绑定矩阵页重排"

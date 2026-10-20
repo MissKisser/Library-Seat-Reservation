@@ -1,15 +1,10 @@
 {# Macro: badge. 状态药丸。
    - badge(tone, label)：渲染已解析的语义色调与文案。
    - status_badge(status)：服务端渲染入口，先经下方字典解析为 (tone, label)。
+   - status_tones_json()：把同一份字典的「色调」部分输出为 JSON，供前端复用
+     （前端文案取 app.js 的 SEATBOT_STATUS_LABELS）——避免出现第三份状态字典。
    字典键集合必须与 app.js 的 SEATBOT_STATUS_LABELS 一致，
    由 tests/test_web_ui_desktop.py 的键集合一致性断言守护，防止两侧漂移。 #}
-{% macro badge(tone='muted', label='') %}
-{% set _tones = ['success', 'info', 'warn', 'danger', 'accent', 'progress', 'target', 'faded'] %}
-{% set _tone = tone if tone in _tones else 'muted' %}
-<span class="badge badge-{{ _tone }}"><span class="dot"></span>{{ label or '—' }}</span>
-{% endmacro %}
-
-{% macro status_badge(status='') %}
 {% set _status_map = {
   'active':     ('success', '已预约'),
   'signed':     ('success', '已签到'),
@@ -20,6 +15,21 @@
   'failed':     ('danger',  '失败'),
   'complete':   ('faded',   '已完成'),
 } %}
+{% set _badge_tones = ['success', 'info', 'warn', 'danger', 'accent', 'progress', 'target', 'faded'] %}
+
+{% macro badge(tone='muted', label='') %}
+{% set _tone = tone if tone in _badge_tones else 'muted' %}
+<span class="badge badge-{{ _tone }}"><span class="dot"></span>{{ label or '—' }}</span>
+{% endmacro %}
+
+{% macro status_badge(status='') %}
 {% set _e = _status_map.get(status, ('muted', status or '—')) %}
 {{ badge(_e[0], _e[1]) }}
+{% endmacro %}
+
+{% macro status_tones_json() -%}
+{# 状态 → 语义色调 的 JSON 映射（前端状态药丸色调的唯一来源） #}
+{%- set _tones = {} -%}
+{%- for _status, _pair in _status_map.items() -%}{%- set _ = _tones.update({_status: _pair[0]}) -%}{%- endfor -%}
+{{- _tones | tojson -}}
 {% endmacro %}

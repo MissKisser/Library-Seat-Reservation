@@ -1,4 +1,4 @@
-"""APScheduler wrapper (v2: per-task seat_num, cross-account/cross-seat relay)."""
+"""APScheduler wrapper (per-task seat_num, cross-account/cross-seat relay)."""
 from __future__ import annotations
 
 import asyncio
@@ -101,6 +101,10 @@ class Scheduler:
         # HA 闸门：默认 NullHaRuntime（can_act 永真），主备模式下换成 HaRuntime
         self.ha = NullHaRuntime()
         self._ha_notify_at: dict[str, float] = {}  # action -> last notify monotonic
+        # 已告警过的 tick 作业注册失败: 同一作业只通知一次, 避免每轮刷屏
+        self._tick_job_notified: set[str] = set()
+        # tick 作业最后一次上报的错误: 同一作业同一错误只落一次日志
+        self._tick_job_errors: dict[str, str] = {}
         # 分钟节拍互斥与看门狗：同一账号上一轮未结束时跳过后续轮次，
         # 单轮超过 tick_watchdog_seconds 墙钟仍未结束则放弃本轮并告警，
         # 避免一次卡死把该账号的签到/签退永久拖停。
@@ -166,39 +170,56 @@ class Scheduler:
     def _ha_blocked(self, action: str) -> bool:
         """闸门：返回 True 表示本次真实动作必须被拦截。
 
+        闸门自身抛异常时按 fail-closed 处理（返回 True 拦截本次动作）：
+        无法确认 HA 状态时不得放行真实账号操作，异常同时落日志与通知。
+
         拦截时：限频（每 10 分钟最多一条通知）写一条 warn 日志与通知，
         不写任务状态，避免污染审计线索。
         """
         try:
             if self.ha.can_act():
                 return False
-        except Exception:
-            return False
+        except Exception as e:
+            print(f"[WARN] scheduler - ha gate error ({action}): {e}")
+            self._ha_notify_later(action, f"HA 闸门异常（无法确认可调度状态）: {e}")
+            return True
         now = _time.monotonic()
         last = self._ha_notify_at.get(action, 0.0)
         if now - last >= 600:
             self._ha_notify_at[action] = now
-            try:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(self._notify_ha_blocked(action))
-                else:
-                    # 同步回退：直接落日志
-                    print(f"[INFO] scheduler - ha-blocked {action}")
-            except Exception:
-                pass
+            self._ha_notify_later(action, "当前实例不在可调度状态（HA 闸门）")
         return True
 
-    async def _notify_ha_blocked(self, action: str) -> None:
+    def _ha_notify_later(self, action: str, reason: str) -> None:
+        """把 HA 闸门拦截事件投递到日志/通知通道（同步上下文的异步降级路径）。
+
+        入参:
+            action: 被拦截的动作名。
+            reason: 拦截原因描述。
+
+        返回值:
+            None。投递失败只打印，不影响闸门判定。
+        """
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._notify_ha_blocked(action, reason))
+            else:
+                # 同步回退：直接落日志
+                print(f"[WARN] scheduler - ha-blocked {action}: {reason}")
+        except Exception as e:
+            print(f"[WARN] scheduler - ha-blocked {action}: {reason} (通知投递失败: {e})")
+
+    async def _notify_ha_blocked(self, action: str, reason: str) -> None:
         try:
             await self._notify(
                 f"调度动作被拦截（{action}）",
-                "当前实例不在可调度状态（HA 闸门）；待命备用或暂停主力不会执行真实操作。",
+                f"{reason}；待命备用或暂停主力不会执行真实操作。",
                 level="warn",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] scheduler - ha-blocked notify failed ({action}): {e}")
 
     def _client_for(self, acc: Account) -> ChaoxingClient:
         if acc.id not in self._clients:
@@ -577,6 +598,7 @@ class Scheduler:
                       if s.seat_num != exclude]
         candidates += adjacent + [f"{i:03d}" for i in range(1, 102, 10)]
         tried: set[str] = set()
+        query_failed = False
         for seat in candidates:
             if seat == exclude or seat in tried or len(tried) >= self.anchor_scan_limit:
                 continue
@@ -584,7 +606,11 @@ class Scheduler:
             try:
                 used = await client.get_used_times(
                     self.cfg.library.room_id, seat, today)
-            except Exception:
+            except Exception as e:
+                if not query_failed:
+                    query_failed = True
+                    await self._warn(
+                        f"锚点候选占用查询失败（后续候选不再重复记录）: {e}")
                 continue
             if used and not any(s <= now_hm < e for s, e in used):
                 return seat
@@ -779,8 +805,7 @@ class Scheduler:
         # ★ 事后核验 (仅跨天): 不信提交回执, 用服务端占用状态复核。
         # 核验不一致时保留 ACTIVE (预约号是服务端发的, 大概率真实存在,
         # 标 FAILED 反而会留下无人管理的真预约), 只打 ERROR 进人工视野。
-        # 提交后服务端占用查询存在落库延迟 (实测 14:00 高峰 3/12 撞上),
-        # 首查未覆盖时等待后重查一次再定论。
+        # 提交后服务端占用查询存在落库延迟, 首查未覆盖时等待后重查一次再定论。
         if t.day > today_cst():
             s, e = t.start_time.strftime("%H:%M"), t.end_time.strftime("%H:%M")
             for attempt in (1, 2):
@@ -1596,34 +1621,88 @@ class Scheduler:
         for stale in existing_ids - wanted_ids:
             try:
                 self.scheduler.remove_job(f"tick_{stale}")
-            except Exception:
-                pass
+            except Exception as e:
+                await self._report_tick_job_error(
+                    f"tick_{stale}", f"移除失效 tick 作业 tick_{stale} 失败: {e}")
         for i, acc in enumerate(accounts):
             job_id = f"tick_{acc.id}"
             if acc.id in existing_ids:
                 # 已注册的 job 需随 stagger / 宽限期热配置刷新 trigger，
                 # 否则设置页改动要等到下次进程启动才生效。
+                # 注意: misfire_grace_time 是作业属性而非触发器属性,
+                # 必须先换触发器再单独改作业属性, 一并塞给触发器会抛 TypeError。
                 try:
                     self.scheduler.reschedule_job(
                         job_id,
-                        trigger="cron",
-                        second=f"{int(random.uniform(*self.stagger_seconds))}",
+                        trigger=CronTrigger(
+                            second=f"{int(random.uniform(*self.stagger_seconds))}",
+                            timezone=self.scheduler.timezone,
+                        ),
+                    )
+                    self.scheduler.modify_job(
+                        job_id,
                         misfire_grace_time=self.tick_misfire_grace_seconds,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    await self._report_tick_job_error(
+                        job_id,
+                        f"刷新 tick 作业 {job_id} 触发器失败（沿用旧触发器）: {e}")
+                else:
+                    self._clear_tick_job_error(job_id)
                 continue
             delay = random.uniform(*self.stagger_seconds)
-            self.scheduler.add_job(
-                self._tick_account_with_bootstrap,
-                "cron", second=f"{int(delay)}",
-                args=[acc.id],
-                id=job_id,
-                replace_existing=True,
-                misfire_grace_time=self.tick_misfire_grace_seconds,
-                coalesce=True,
-                max_instances=1,
-            )
+            try:
+                self.scheduler.add_job(
+                    self._tick_account_with_bootstrap,
+                    "cron", second=f"{int(delay)}",
+                    args=[acc.id],
+                    id=job_id,
+                    replace_existing=True,
+                    misfire_grace_time=self.tick_misfire_grace_seconds,
+                    coalesce=True,
+                    max_instances=1,
+                )
+            except Exception as e:
+                # 注册失败 = 该账号永远不会被签到/签退: 必须告警, 不得静默跳过
+                await self._report_tick_job_error(
+                    job_id,
+                    f"注册 tick 作业 {job_id} 失败，该账号不会被自动签到/签退: {e}")
+                if job_id not in self._tick_job_notified:
+                    self._tick_job_notified.add(job_id)
+                    await self._notify(
+                        f"账号 {acc.id} 的调度作业注册失败",
+                        f"该账号不会被自动签到/签退，请人工介入: {e}",
+                        level="error",
+                    )
+                continue
+            self._clear_tick_job_error(job_id)
+            self._tick_job_notified.discard(job_id)
+
+    async def _report_tick_job_error(self, job_id: str, message: str) -> None:
+        """上报 tick 作业异常（同一作业同一错误只记一次，错误内容变化时再记）。
+
+        入参:
+            job_id: 作业 id。
+            message: 错误描述。
+
+        返回值:
+            None。
+        """
+        if self._tick_job_errors.get(job_id) == message:
+            return
+        self._tick_job_errors[job_id] = message
+        await self._warn(message)
+
+    def _clear_tick_job_error(self, job_id: str) -> None:
+        """清除 tick 作业的错误记录（恢复正常后不再重复告警）。
+
+        入参:
+            job_id: 作业 id。
+
+        返回值:
+            None。
+        """
+        self._tick_job_errors.pop(job_id, None)
 
     def start(self) -> None:
         self.scheduler.add_job(

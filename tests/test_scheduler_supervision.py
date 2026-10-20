@@ -4,7 +4,7 @@ from datetime import time
 
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.utils.timeutil import now_cst, today_cst
-from seatbot.scheduler import Scheduler
+from seatbot.scheduler import NullHaRuntime, Scheduler
 
 
 class _FakeStore:
@@ -65,6 +65,9 @@ class _FakeClient:
 class _StubSched(Scheduler):
     """client_ready 返回注入的 _FakeClient; relogin 通道直通。"""
 
+    #: HA 闸门恒放行（与生产 Scheduler 的 NullHaRuntime 语义一致）
+    ha = NullHaRuntime()
+
     def __init__(self, client, store):
         self.store = store
         self.cfg = type("C", (), {"runtime": type("R", (), {"notify_webhook": ""})()})()
@@ -74,6 +77,7 @@ class _StubSched(Scheduler):
         self.relay_lead_seconds = 300
         self.logins = 0
         self._client = client
+        self._ha_notify_at = {}
 
     async def client_ready(self, acc):
         return self._client

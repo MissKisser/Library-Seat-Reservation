@@ -1,4 +1,4 @@
-"""CLI entry point (v2: multi-seat)."""
+"""CLI entry point (multi-seat)."""
 from __future__ import annotations
 
 import argparse
@@ -30,7 +30,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", parents=[common], help="查看状态")
 
-    # ★ v2: 目标座位管理
+    # ★ 目标座位管理
     tgt = sub.add_parser("targets", parents=[common], help="目标座位增删查")
     tgt_sub = tgt.add_subparsers(dest="targets_cmd", required=True)
     tgt_sub.add_parser("list", parents=[common], help="列出所有 enabled 目标座位")
@@ -217,6 +217,21 @@ async def _seed_user_reserved_from_config(store, cfg) -> None:
         )
 
 
+def _mask_phone(phone: str) -> str:
+    """手机号脱敏：保留前 3 位与后 4 位，中间以 **** 代替。
+
+    入参:
+        phone: 原始手机号文本。
+
+    返回值:
+        脱敏后的手机号（形如 138****1234）；位数不足时整体打码。
+    """
+    p = (phone or "").strip()
+    if len(p) <= 7:
+        return "*" * len(p)
+    return f"{p[:3]}****{p[-4:]}"
+
+
 async def _cmd_status(args) -> int:
     cfg = load_config(args.config)
     store = _make_store(cfg)
@@ -238,7 +253,8 @@ async def _cmd_status(args) -> int:
                       f"{u['day']}  {u['start_time']}-{u['end_time']}  {u['note']!r}")
         for acc in await store.list_accounts():
             tasks = await store.list_tasks(account_id=acc.id)
-            print(f"\n[{acc.id}] phone={acc.phone} slots={acc.slots} bound_seats={acc.bound_seats}")
+            print(f"\n[{acc.id}] phone={_mask_phone(acc.phone)} "
+                  f"slots={acc.slots} bound_seats={acc.bound_seats}")
             for t in tasks:
                 print(f"  seat={t.seat_num} {t.day} {t.start_time}-{t.end_time} "
                       f"{t.status.value} reserve={t.reserve_id} err={t.last_error}")

@@ -18,7 +18,21 @@ from seatbot.config import Config, LibraryConfig, RuntimeConfig
 from seatbot.models import Task, TaskStatus
 from seatbot.scheduler import Scheduler
 from seatbot.store import StateStore
-from seatbot.utils.timeutil import today_cst
+from seatbot.utils.timeutil import at_cst, today_cst
+
+
+@pytest.fixture(autouse=True)
+def _frozen_anchor_clock(monkeypatch):
+    """把锚点选座用的墙钟固定在 15:00，使用例与真实时间解耦。
+
+    _pick_anchor_seat 以 now_cst 判定候选座位"此刻是否被占用"，而本文件
+    假占用恒为 09:00-11:00：墙钟落在该窗口内时 12 个候选会被全部判占用，
+    选不出锚点，期望的调用序列就不出现。
+    """
+    monkeypatch.setattr(
+        "seatbot.scheduler.now_cst",
+        lambda: at_cst(today_cst(), time(15, 0)),
+    )
 
 
 class RoutingClient:

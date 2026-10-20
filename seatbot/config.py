@@ -1,4 +1,4 @@
-"""YAML config loader with pydantic validation (v2: multi-seat)."""
+"""YAML config loader with pydantic validation."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,12 +10,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class LibraryConfig(BaseModel):
     room_id: int
     room_name: str
-    # v2: removed `target_seat_num` — moved to DB table `target_seats` managed via Web
     open_time: str = "08:00"
     close_time: str = "22:00"
-    max_reserve_hours: float = 2.0
+    #: 单次预约的时长上限（小时）；必须为正，否则时段切分无法推进。
+    max_reserve_hours: float = Field(default=2.0, gt=0, le=24)
     #: 每个账号每天累计预约时长上限（可在设置页按馆方规则调整）
-    daily_reserve_hours_limit: float = 14.0
+    daily_reserve_hours_limit: float = Field(default=14.0, gt=0, le=24)
 
     @field_validator("open_time", "close_time")
     @classmethod
@@ -122,7 +122,7 @@ class RuntimeConfig(BaseModel):
     web_host: str = "127.0.0.1"
     web_port: int = 8080
     #: 面板访问令牌。非空时所有请求必须携带 (Authorization: Bearer / X-Auth-Token / ?token= / cookie);
-    #: 为空时仅允许本机回环客户端访问, 非回环客户端一律 403。
+    #: 为空时仅允许本机回环访问（请求 Host 须为 127.0.0.1 / localhost / ::1）, 其余一律 403。
     web_token: str = ""
     #: 允许访问面板的额外 Host 标头（如内网穿透域名、反向代理域名）
     allowed_hosts: list[str] = Field(default_factory=list)

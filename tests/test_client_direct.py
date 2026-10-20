@@ -13,7 +13,8 @@ from types import SimpleNamespace
 
 from seatbot.client import ChaoxingClient
 
-SEED = "36caf3080081471094de5efb325c5b20_***REDACTED***"
+#: 中性假种子：32 位十六进制 + 9 位占位账号标识，纯本地构造的确定性测试数据。
+SEED = f"{'0123456789abcdef' * 2}_{1:09d}"
 PAGE_HTML = f'<input type="hidden" id="submit_enc" value="{SEED}">'
 
 

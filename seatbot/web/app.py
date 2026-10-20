@@ -26,6 +26,9 @@ STATIC_DIR = WEB_DIR / "static"
 
 TOKEN_COOKIE = "seatbot_token"
 
+#: 回环主机名 / IP: 未配置令牌与 allowed_hosts 时仅允许这些来源访问面板。
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
 
 def _host_without_port(host_header: str) -> str:
     """从 Host 头剥离端口 ('127.0.0.1:8080' → '127.0.0.1'; '[::1]:8080' → '::1')。"""
@@ -36,6 +39,35 @@ def _host_without_port(host_header: str) -> str:
     if host.count(":") == 1:
         host = host.split(":")[0]
     return host
+
+
+def _is_loopback_host(host: str) -> bool:
+    """判断主机名是否属于本机回环地址。
+
+    入参:
+        host: 已小写并剥离端口的主机名。
+
+    返回值:
+        属于回环地址时返回 True，否则返回 False。
+    """
+    return host in LOOPBACK_HOSTS
+
+
+def _is_loopback_client(client_host: str | None) -> bool:
+    """判断请求来源地址是否属于本机回环。
+
+    入参:
+        client_host: 客户端 IP（未知时为 None 或空串）。
+
+    返回值:
+        属于回环地址时返回 True，否则返回 False。
+    """
+    if not client_host:
+        return False
+    h = client_host.strip().lower()
+    if h.startswith("[") and "]" in h:
+        h = h[1:h.index("]")]
+    return h in LOOPBACK_HOSTS
 
 
 def _presented_token(request: Request) -> str | None:
@@ -52,33 +84,58 @@ def _presented_token(request: Request) -> str | None:
     return request.cookies.get(TOKEN_COOKIE)
 
 
+def _effective_host(host_header: str, forwarded_host: str = "") -> str:
+    """取本次请求用于访问判定的 Host。
+
+    入参:
+        host_header: HTTP Host 头。
+        forwarded_host: X-Forwarded-Host 头（反向代理场景；可能含逗号分隔的链）。
+
+    返回值:
+        判定用的主机名（已小写并剥离端口）。
+    """
+    fwd = (forwarded_host or "").split(",")[0].strip()
+    return _host_without_port(fwd or host_header)
+
+
 def auth_decision(
     *,
     web_token: str,
     client_host: str | None = None,
     host_header: str = "",
+    forwarded_host: str = "",
     presented: str | None = None,
     allowed_hosts: set[str] | None = None,
 ) -> tuple[bool, int, str, bool]:
     """面板访问判定 (纯函数, 便于单测)。
 
     返回 (允许, 拒绝状态码, 拒绝说明, 需要种 cookie)。
+    主机名取 X-Forwarded-Host（存在时优先，否则用 Host），已小写并剥离端口。
+
     规则:
       - 配置了 web_token: 必须携带正确令牌, 否则 401 (不区分来源 IP 与 Host)。
-      - 未配置 web_token:
-          - 若显式配置了 allowed_hosts, 则校验 Host 头 (不在白名单 → 400);
-          - 若未配置 allowed_hosts, 则直接放行, 不做 Host/IP 二次拦截。
+      - 未配置 web_token 且显式配置了 allowed_hosts: 校验主机名
+        (不在白名单且非本机回环 → 400)。
+      - 未配置 web_token 且未配置 allowed_hosts: 仅允许本机回环访问
+        (主机名与来源地址都必须是回环, 否则 403; 面板默认无鉴权, 不得暴露到外网)。
+
+    本机回环豁免同时校验来源地址: Host 头可被伪造, 只有来源 IP 也是回环
+    才能认定为真正的本机访问。
     """
     token = (web_token or "").strip()
     if token:
         if hmac.compare_digest((presented or "").encode(), token.encode()):
             return True, 0, "", True
         return False, 401, "unauthorized: missing or invalid token", False
+    host = _effective_host(host_header, forwarded_host)
+    loopback = _is_loopback_host(host) and _is_loopback_client(client_host)
     if allowed_hosts:
-        host = _host_without_port(host_header)
-        if host and host not in allowed_hosts:
+        if host and host not in allowed_hosts and not loopback:
             return False, 400, f"bad request: host '{host}' not allowed", False
-    return True, 0, "", False
+        return True, 0, "", False
+    if loopback:
+        return True, 0, "", False
+    return False, 403, "forbidden: panel is restricted to loopback clients", False
 
 def _origin_netloc(value: str) -> str:
     """从 Origin/Referer 头提取 host:port（小写，无 scheme/path）；解析失败返回空串。"""
@@ -134,6 +191,7 @@ class PanelAuthMiddleware(BaseHTTPMiddleware):
             web_token=self.web_token,
             client_host=client_host,
             host_header=request.headers.get("host") or "",
+            forwarded_host=request.headers.get("x-forwarded-host") or "",
             presented=_presented_token(request),
             allowed_hosts=self.allowed_hosts,
         )

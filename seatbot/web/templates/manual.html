@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros/badge.html" import status_tones_json %}
 {% block title %}手动预约{% endblock %}
 
 {% block content %}
@@ -50,20 +51,12 @@
          if (a && !this.accountHasQuota(a)) return "所选账号当日额度不足";
          return "";
        },
-       badgeTone(s) {
-         return ({
-           active: "chip-success", signed: "chip-success",
-           submitting: "chip-info", leaving: "chip-warn",
-           pending: "chip-muted", ready: "chip-muted",
-           failed: "chip-danger", complete: "chip-faded",
-         })[s] || "chip-muted";
+       statusTones: {{ status_tones_json() }},
+       statusTone(s) {
+         return this.statusTones[s] || "muted";
        },
        statusLabel(s) {
-         return ({
-           active: "已预约", signed: "已签到", submitting: "提交中",
-           leaving: "签退中", pending: "待执行", ready: "待执行",
-           failed: "失败", complete: "已完成",
-         })[s] || s;
+         return window.seatbotStatusLabel ? window.seatbotStatusLabel(s) : s;
        },
        canCancel(r) {
          return ["active", "signed", "submitting", "leaving", "pending", "ready"].includes(r.status);
@@ -216,9 +209,9 @@
               <span class="font-mono font-bold" x-text="r.account_id"></span>
               <span class="chip chip-muted" x-text="r.seat_num"></span>
               <span class="font-mono text-xs" x-text="r.day + ' ' + r.start_time + '–' + r.end_time"></span>
-              <span class="chip"
-                    :class="badgeTone(r.status)"
-                    x-text="statusLabel(r.status)"></span>
+              <span class="badge" :class="'badge-' + statusTone(r.status)">
+                <span class="dot"></span><span x-text="statusLabel(r.status)"></span>
+              </span>
               <template x-if="r.reserve_id">
                 <span class="chip chip-muted text-[11px]">预约号 <span class="font-mono" x-text="r.reserve_id"></span></span>
               </template>
@@ -226,10 +219,8 @@
             <div class="text-xs text-ink-muted break-all" x-show="r.last_error" x-text="r.last_error"></div>
           </div>
           <template x-if="canCancel(r)">
-            <form method="post" :action="'/tasks/' + r.id + '/cancel'" class="inline">
-              <input type="hidden" name="next" value="/manual">
-              <button class="btn btn-secondary btn-sm" type="submit">取消</button>
-            </form>
+            <button class="btn btn-secondary btn-sm" type="button"
+                    @click="confirmAction({title:'确认取消？', desc:'取消该预约时段，平台会记录一次违约', confirmText:'取消预约', danger:true}).then(ok => { if (!ok) return; const f = document.createElement('form'); f.method = 'post'; f.action = '/tasks/' + r.id + '/cancel'; const i = document.createElement('input'); i.name = 'next'; i.value = '/manual'; f.appendChild(i); document.body.appendChild(f); f.submit(); })">取消</button>
           </template>
         </div>
       </template>

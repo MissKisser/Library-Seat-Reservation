@@ -8,8 +8,9 @@
       <h1 class="page-title">系统设置</h1>
       <p class="page-sub">在此调整系统行为，保存后立即生效</p>
     </div>
-    <form method="post" action="/settings/reset" onsubmit="return confirm('重置为默认值（清空自定义设置）？')">
-      <button class="btn btn-secondary btn-sm" type="submit">重置为默认</button>
+    <form x-ref="resetForm" method="post" action="/settings/reset">
+      <button class="btn btn-secondary btn-sm" type="button"
+              @click="confirmAction({title:'重置为默认值？', desc:'将清空全部自定义系统设置（不可撤销）', confirmText:'重置', danger:true}).then(ok => { if (ok) $refs.resetForm.submit(); })">重置为默认</button>
     </form>
   </div>
 

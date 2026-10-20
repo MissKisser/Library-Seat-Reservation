@@ -29,7 +29,7 @@ def test_load_minimal_config(tmp_path: Path):
           db_path: ./seatbot.db
           web_host: 0.0.0.0
           web_port: 8080
-    """).strip())
+    """).strip(), encoding="utf-8")
 
     cfg = load_config(cfg_file)
     assert cfg.library.room_id == 11692
@@ -42,7 +42,7 @@ def test_load_minimal_config(tmp_path: Path):
 
 def test_load_missing_library_raises(tmp_path: Path):
     cfg_file = tmp_path / "config.yaml"
-    cfg_file.write_text("accounts: []\nruntime: {}\n")
+    cfg_file.write_text("accounts: []\nruntime: {}\n", encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config(cfg_file)
 
@@ -63,6 +63,6 @@ def test_account_id_must_be_unique(tmp_path: Path):
           - {id: a, phone: "2", password: "p", slots: full}
         runtime: {stagger_seconds: [0,0], relogin_on_401: true, random_ua: true,
                   log_dir: "./logs", db_path: "./x.db", web_host: "0.0.0.0", web_port: 1}
-    """).strip())
+    """).strip(), encoding="utf-8")
     with pytest.raises(ConfigError, match="unique"):
         load_config(cfg_file)

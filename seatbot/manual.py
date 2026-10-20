@@ -1,8 +1,7 @@
 """手动预约页（/manual）的纯函数校验与窗口工具。
 
-所有规则以规格 `docs/superpowers/specs/2026-09-12-manual-reserve-page-design.md`
-§4 为唯一来源；本模块只放纯逻辑（不发起网络、不读写数据库），路由层
-负责装配数据并把违规原因以 quote 重定向回页。
+所有规则以《手动预约页设计》规格 §4 为唯一来源；本模块只放纯逻辑（不发起
+网络、不读写数据库），路由层负责装配数据并把违规原因以 quote 重定向回页。
 """
 from __future__ import annotations
 

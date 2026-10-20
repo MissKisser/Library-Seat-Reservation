@@ -1,4 +1,4 @@
-"""Async SQLite state store (v2: target_seats + bindings + per-task seat_num)."""
+"""Async SQLite state store (target_seats + bindings + per-task seat_num)."""
 from __future__ import annotations
 
 import json
@@ -22,10 +22,10 @@ class DuplicateTaskError(Exception):
     活跃态唯一索引拒绝。调用方应将其视为幂等跳过或向用户报冲突。
     """
 
-# v2 schema:
-#  - accounts:        + bound_seats_json
-#  - target_seats:    NEW (multi-seat registry)
-#  - tasks:           + seat_num
+# 库表结构:
+#  - accounts:        含 bound_seats_json
+#  - target_seats:    目标座位登记表
+#  - tasks:           含 seat_num
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
   id          TEXT PRIMARY KEY,
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS target_seats (
 CREATE TABLE IF NOT EXISTS tasks (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id  TEXT NOT NULL,
-  seat_num    TEXT NOT NULL DEFAULT '',  -- v2: per-task seat
+  seat_num    TEXT NOT NULL DEFAULT '',  -- per-task seat
   day         TEXT NOT NULL,
   start_time  TEXT NOT NULL,
   end_time    TEXT NOT NULL,
@@ -309,8 +309,10 @@ class StateStore:
                 "CREATE INDEX IF NOT EXISTS idx_hosted_updated_at "
                 "ON hosted_reservations(updated_at)"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            await self.db.rollback()
+            await self.log_message("WARN", None, f"索引补建失败（查询性能下降）: {e}")
+            await self.db.commit()
         # 5. target_seats: 增加期望时段列
         cur = await self.db.execute("PRAGMA table_info(target_seats)")
         seat_cols = {row[1] for row in await cur.fetchall()}
@@ -1270,7 +1272,7 @@ class StateStore:
     ) -> bool:
         """E4 防护: 检查同 (account_id, day, seat_num, start_time) 是否已存在 task。
 
-        实测发现后端不拦截'同账号同段重复预约',因此 Scheduler 必须在写库前
+        后端不拦截'同账号同段重复预约',因此 Scheduler 必须在写库前
         去重,避免一个账号同一天同一座位同一时段被预约两次。
         返回: True (已存在,应跳过) / False (可写)
         """
@@ -1314,7 +1316,7 @@ class StateStore:
         if account_id:
             q += " WHERE account_id=?"
             args.append(account_id)
-        q += " ORDER BY ts DESC LIMIT ?"
+        q += " ORDER BY ts DESC, id DESC LIMIT ?"
         args.append(limit)
         cur = await self.db.execute(q, args)
         rows = await cur.fetchall()
@@ -1343,6 +1345,18 @@ class StateStore:
         limit: int = 200,
         day: str | date | None = None,
     ) -> list[LogRow]:
+        """读取日志（可选按账号 / 级别 / 日期过滤），按时间倒序。
+
+        入参:
+            account_id: 只取该账号的日志；None 表示不限。
+            level: 只取该级别的日志；None 表示不限。
+            limit: 返回条数上限。
+            day: 只取该日（CST）的日志；None 表示不限。
+
+        返回值:
+            日志行列表。day 非法时不返回任何行（并记 WARN），
+            绝不丢弃日期过滤条件退化成全量返回。
+        """
         q = "SELECT id, ts, level, account_id, message FROM logs WHERE 1=1"
         args: list[Any] = []
         if day:
@@ -1354,15 +1368,18 @@ class StateStore:
                 end_ms = int(end_dt.timestamp() * 1000)
                 q += " AND ts >= ? AND ts < ?"
                 args.extend([start_ms, end_ms])
-            except Exception:
-                pass
+            except Exception as e:
+                await self.log_message(
+                    "WARN", None,
+                    f"日志日期过滤解析失败（{day!r}），本次不返回日志: {e}")
+                return []
         if account_id:
             q += " AND account_id=?"
             args.append(account_id)
         if level:
             q += " AND level=?"
             args.append(level)
-        q += " ORDER BY ts DESC LIMIT ?"
+        q += " ORDER BY ts DESC, id DESC LIMIT ?"
         args.append(limit)
         cur = await self.db.execute(q, args)
         rows = await cur.fetchall()
@@ -1405,8 +1422,10 @@ class StateStore:
         return n
 
     async def list_notifications(self, limit: int = 5) -> list[dict]:
+        """读取通知（最新在前），排序键与写侧裁剪规则保持一致。"""
         cur = await self.db.execute(
-            "SELECT id, ts, level, title, body FROM notifications ORDER BY ts DESC LIMIT ?",
+            "SELECT id, ts, level, title, body FROM notifications "
+            "ORDER BY ts DESC, id DESC LIMIT ?",
             (limit,),
         )
         rows = await cur.fetchall()

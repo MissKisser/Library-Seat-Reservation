@@ -144,13 +144,14 @@ def compute_seat_coverage(
     close_time: time | str = time(22, 0),
     user_reserved: list[tuple[str, time, time]] | None = None,
     others_occupied: list[tuple[str, time, time]] | None = None,
+    errors: list[str] | None = None,
 ) -> list[SeatCoverage]:
-    """Per-seat coverage for v2 multi-seat mode.
+    """Per-seat coverage for multi-seat mode.
 
     账号分两种模式 (与 planner 同一优先级规则):
 
-    - seat_slots 模式 (推荐, AGENTS.md 2026-08-24): 账号只覆盖
-      seat_slots 里明确指定的 (seat, slot) 组合; bound_seats 被忽略。
+    - seat_slots 模式 (推荐): 账号只覆盖 seat_slots 里明确指定的
+      (seat, slot) 组合; bound_seats 被忽略。
     - 扁平 slots 模式 (兜底): 绑定该座位的账号 (bound_seats) 或
       无绑定 wildcard 账号, 用其 slots 覆盖。
 
@@ -160,6 +161,9 @@ def compute_seat_coverage(
     `others_occupied`: 可选的 [(seat_num, start_time, end_time), ...] 列表,
     标记到 cell.others_occupied (供 gantt 渲染灰色 — 来自 Chaoxing
     /getusedtimes 的他人预约)。和 user_reserved 互不覆盖,可以叠加。
+
+    `errors`: 可选的异常收集器; 账号时段无法展开时把原因追加进去
+    (调用方据此把数据异常显式反映到覆盖检查结果, 不静默当作无缺口)。
     """
     accounts = list(accounts)
     seats = list(target_seats)
@@ -195,7 +199,10 @@ def compute_seat_coverage(
                     day_val, max_hours=24.0,
                     open_time=open_time, close_time=close_time,
                 )
-            except Exception:
+            except Exception as e:
+                if errors is not None:
+                    errors.append(
+                        f"账号 {acc.id} 的座位 {seat_num} 矩阵时段无法展开: {e}")
                 continue
             _paint_ranges(cov, ranges, acc.id)
 
@@ -207,7 +214,10 @@ def compute_seat_coverage(
                     acc.slots, max_hours=24.0,
                     open_time=open_time, close_time=close_time,
                 )
-            except Exception:
+            except Exception as e:
+                if errors is not None:
+                    errors.append(
+                        f"账号 {acc.id} 的座位 {seat_num} 扁平时段无法展开: {e}")
                 continue
             _paint_ranges(cov, ranges, acc.id)
         # 叠加 user_reserved → 标记哪些 cell 是用户亲述已预约
