@@ -105,15 +105,10 @@ ONETIME_SCRIPT_PATTERNS: tuple[str, ...] = (
     "*.superseded",
 )
 
-# 历史清理前的遗留对象基线：这些对象仍含旧版真实用户 uid（当时的清洗只覆盖了手机号与口令层）。
-# 豁免按对象 SHA 精确匹配，只覆盖下列对象本身，任何新的凭证泄漏仍会被拦截；
-# 一旦这些对象从历史中消失，豁免自动失效且无需维护。
-HISTORY_LEAK_EXEMPTIONS: dict[str, str] = {
-    "2b57cdf02009da23e39c901587caa6a783c80ff3": "tests/test_client_direct.py",
-    "53a86c22857b35ac3174c1fd3d2feb8eddedeeab": "tests/test_client_direct.py",
-    "93c44f6f45e2cce63422b4b23600c1971a013964": "docs/superpowers/research/2026-07-08-chaoxing-seat-api.md",
-    "f27271cac5712c8dff59b0e98303fb8abfc39724": "docs/superpowers/research/2026-07-08-chaoxing-seat-api.md",
-}
+# 历史清理前的遗留对象豁免表：按对象 SHA 精确匹配。
+# 清洗已把那些对象中的旧版用户标识替换完毕，此处保留空表作为扩展位；
+# 一旦将来出现确知无害的历史对象，可按 SHA 登记而不放宽全局规则。
+HISTORY_LEAK_EXEMPTIONS: dict[str, str] = {}
 
 # 凭证取值的最小长度：短于此长度的 cookie 值属于馆舍/组织标识（deptId 之类），不是会话秘密。
 MIN_SECRET_LENGTH = 8
