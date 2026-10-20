@@ -10,6 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 防回归门禁需要扫描完整 git 历史；浅克隆会让历史检查失去意义。
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -20,9 +23,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -e .[dev]
 
-      - name: Lint (undefined names / syntax)
-        run: ruff check seatbot/ --select F,E9
+      - name: Lint (full rule set)
+        run: ruff check seatbot tests
 
       - name: Smoke config (empty accounts, isolated DB)
         run: |
@@ -43,7 +47,27 @@ jobs:
           user_reserved: []
           YAML
 
-      - name: Test
+      - name: Unit tests
         env:
           PYTEST_ADDOPTS: "-o faulthandler_timeout=120"
-        run: pytest tests/ -q
+        run: python -m pytest -m "not integration" -q
+
+      - name: Guard (regression gate)
+        env:
+          # CI 内没有生产库，用隔离空库驱动门禁：与真实凭证/真实实例的比对项自然为空，
+          # 手机号形态、cookie 形态、脱敏标记、历史痕迹等正则类检查照常生效。
+          SEATBOT_GUARD_DB_PATH: "${{ runner.temp }}/guard-isolated.db"
+        run: |
+          python - <<'PY'
+          import os
+          import sqlite3
+
+          path = os.environ["SEATBOT_GUARD_DB_PATH"]
+          connection = sqlite3.connect(path)
+          connection.execute("create table if not exists accounts (id text primary key, phone text, password text)")
+          connection.execute("create table if not exists target_seats (seat_num text primary key, label text)")
+          connection.execute("create table if not exists account_cookies (account_id text primary key, cookies_json text)")
+          connection.commit()
+          connection.close()
+          PY
+          python scripts/guard/guard.py

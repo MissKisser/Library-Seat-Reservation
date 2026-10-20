@@ -50,4 +50,6 @@ scripts/oneoff_*.py
 scripts/_diag_*.py
 uv.lock
 scripts/*.superseded
+# 一次性脚本归档区（保留可追溯性，不入库）
+scripts/archive/
 tests/test_cookie_persistence.py
