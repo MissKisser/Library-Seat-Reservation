@@ -1,7 +1,6 @@
 """User-Agent pool for spoofing."""
 import random
 
-
 CHROME_UAS = [
     # Windows Chrome
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -24,4 +23,5 @@ ALL_UAS = CHROME_UAS + MOBILE_UAS
 
 
 def random_ua() -> str:
+    """从 UA 池中随机取一个浏览器标识。"""
     return random.choice(ALL_UAS)

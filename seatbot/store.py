@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time as _time
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ import aiosqlite
 from seatbot.models import Account, SeatTarget, Task, TaskStatus
 from seatbot.utils.timeutil import CST, epoch_ms_to_cst_str
 from seatbot.utils.weekly import WEEKDAY_KEYS, normalize_weekly
+
+logger = logging.getLogger(__name__)
 
 
 class DuplicateTaskError(Exception):
@@ -154,15 +157,10 @@ CREATE TABLE IF NOT EXISTS reconcile_results (
 );
  """
 
-# 旧账号表结构 (用于 v1→v2 schema 迁移判断)
-_LEGACY_ACCOUNTS_COLS = {
-    "id", "phone", "password", "slots_json", "status",
-    "bootstrap_day", "created_at", "updated_at",
-}
-
-
 @dataclass
 class ActionRow:
+    """一条操作流水记录（真实账号动作的请求/响应摘要）。"""
+
     id: int
     ts: int
     account_id: str
@@ -175,6 +173,8 @@ class ActionRow:
 
 @dataclass
 class LogRow:
+    """一条运行日志记录。"""
+
     id: int
     ts: int
     level: str
@@ -183,10 +183,15 @@ class LogRow:
 
 
 class StateStore:
+    """基于 SQLite 的状态存储：目标座位、账号矩阵、任务、日志与系统设置。"""
+
     def __init__(self, db_path: str, *, legacy_target_seat_num: str | None = None):
-        """
-        legacy_target_seat_num: 来自 v1 配置的目标座位号,用于 v1→v2 数据迁移
-        (创建一条 target_seats 行,把 v1 的 tasks.seat_num 留空的回填)。
+        """创建状态存储。
+
+        入参:
+            db_path: SQLite 数据库文件路径。
+            legacy_target_seat_num: 兼容旧结构的目标座位号，用于迁移时
+                补建 target_seats 行并回填 seat_num 为空的历史任务。
         """
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
@@ -196,12 +201,14 @@ class StateStore:
 
     @property
     def data_version(self) -> int:
+        """覆盖图数据版本号；任何影响覆盖视图的写操作后递增。"""
         return self._data_version
 
     def _bump(self) -> None:
         self._data_version += 1
 
     async def init(self) -> None:
+        """建表、迁移并开启连接；重复调用是幂等的。"""
         self._db = await aiosqlite.connect(self.db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=5000")
@@ -330,7 +337,9 @@ class StateStore:
             for sid, raw in await cur2.fetchall():
                 try:
                     val = json.loads(raw)
-                except Exception:
+                except Exception as e:
+                    await self.log_message(
+                        "WARN", None, f"座位 {sid} 期望时段 JSON 解析失败，已保留原值：{e}")
                     continue
                 if isinstance(val, dict) and any(k in WEEKDAY_KEYS for k in val.keys()):
                     vals = [json.dumps(val.get(wd, []), sort_keys=True) for wd in WEEKDAY_KEYS]
@@ -345,7 +354,9 @@ class StateStore:
         for rid, raw in await cur.fetchall():
             try:
                 data = json.loads(raw or "{}") or {}
-            except Exception:
+            except Exception as e:
+                await self.log_message(
+                    "WARN", None, f"账号 {rid} 矩阵 JSON 解析失败，已保留原值：{e}")
                 continue
             if not isinstance(data, dict) or not data:
                 continue
@@ -377,7 +388,9 @@ class StateStore:
         for sid, raw in await cur.fetchall():
             try:
                 val = json.loads(raw)
-            except Exception:
+            except Exception as e:
+                await self.log_message(
+                    "WARN", None, f"座位 {sid} 期望时段 JSON 解析失败，已保留原值：{e}")
                 continue
             try:
                 norm = normalize_weekly(val, allow_full=False)
@@ -397,7 +410,9 @@ class StateStore:
         for sid, raw in await cur.fetchall():
             try:
                 val = json.loads(raw)
-            except Exception:
+            except Exception as e:
+                await self.log_message(
+                    "WARN", None, f"座位 {sid} 按周期望时段 JSON 解析失败，已保留原值：{e}")
                 continue
             try:
                 norm = normalize_weekly(val, allow_full=False)
@@ -413,26 +428,24 @@ class StateStore:
         await self.db.commit()
 
     async def close(self) -> None:
+        """关闭数据库连接；未初始化时为空操作。"""
         if self._db:
             await self._db.close()
             self._db = None
 
     @property
     def db(self) -> aiosqlite.Connection:
+        """返回底层数据库连接；未初始化时抛 RuntimeError。"""
         if not self._db:
             raise RuntimeError("StateStore not initialized; call init() first")
         return self._db
 
     # ---------- app_settings（系统设置，页面已保存的为准） ----------
     async def get_settings_map(self) -> dict[str, str]:
+        """返回全部系统设置键值对。"""
         cur = await self.db.execute("SELECT key, value FROM app_settings")
         rows = await cur.fetchall()
         return {r[0]: r[1] for r in rows}
-
-    async def get_setting(self, key: str) -> str | None:
-        cur = await self.db.execute("SELECT value FROM app_settings WHERE key=?", (key,))
-        row = await cur.fetchone()
-        return row[0] if row else None
 
     async def set_settings(self, patch: dict[str, str]) -> None:
         """批量 upsert 键值；空 patch 不做事。"""
@@ -448,18 +461,15 @@ class StateStore:
             )
         await self.db.commit()
 
-    async def delete_setting(self, key: str) -> bool:
-        cur = await self.db.execute("DELETE FROM app_settings WHERE key=?", (key,))
-        await self.db.commit()
-        return cur.rowcount > 0
-
     async def clear_settings(self) -> int:
+        """清空全部系统设置，返回删除行数。"""
         cur = await self.db.execute("DELETE FROM app_settings")
         await self.db.commit()
         return cur.rowcount
 
     # ---------- introspection ----------
     async def list_tables(self) -> list[str]:
+        """返回库内全部表名。"""
         cur = await self.db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
@@ -470,6 +480,7 @@ class StateStore:
     async def add_user_reserved(self, account_id: str, seat_num: str,
                                  day: date, start_time: time, end_time: time,
                                  note: str = "") -> int:
+        """登记一段用户本人已预约的时段，返回自增主键。"""
         self._bump()
         now = int(_time.time() * 1000)
         cur = await self.db.execute(
@@ -485,6 +496,7 @@ class StateStore:
         return cur.lastrowid or 0
 
     async def delete_user_reserved(self, rid: int) -> None:
+        """按主键删除一条用户已预约登记。"""
         self._bump()
         await self.db.execute("DELETE FROM user_reserved WHERE id=?", (rid,))
         await self.db.commit()
@@ -492,6 +504,7 @@ class StateStore:
     async def list_user_reserved(
         self, seat_num: str | None = None, day: date | None = None,
     ) -> list[dict]:
+        """按座位号与日期筛选用户已预约登记；条件为 None 时不过滤。"""
         q = "SELECT id, account_id, seat_num, day, start_time, end_time, note, created_at FROM user_reserved WHERE 1=1"
         args: list[Any] = []
         if seat_num:
@@ -720,6 +733,7 @@ class StateStore:
     # ---------- accounts ----------
 
     async def upsert_account(self, acc: Account) -> None:
+        """写入或更新守护账号；已存在时保留其守护矩阵与状态。"""
         self._bump()
         now = int(_time.time() * 1000)
         slots_json = acc.slots if isinstance(acc.slots, str) else json.dumps(acc.slots)
@@ -761,6 +775,7 @@ class StateStore:
         await self.db.commit()
 
     async def get_account(self, acc_id: str) -> Account | None:
+        """按 id 取守护账号；已删除（墓碑）或不存在时返回 None。"""
         cur = await self.db.execute(
             "SELECT id, phone, password, slots_json, seat_slots_json, bound_seats_json, status "
             "FROM accounts WHERE id=? AND status!='disabled'",
@@ -773,8 +788,8 @@ class StateStore:
         if slots not in ("full",):
             try:
                 slots = json.loads(slots)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("账号 %s 的扁平时段 JSON 解析失败，按原值处理: %s", row[0], e)
         bound = row[5] or "[]"
         try:
             bound_list = json.loads(bound)
@@ -899,7 +914,8 @@ class StateStore:
             return None
         try:
             data = json.loads(row[0])
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning("账号 %s 的持久化 cookie JSON 解析失败，按无会话处理: %s", account_id, e)
             return None
         return data if isinstance(data, dict) and data else None
 
@@ -909,6 +925,7 @@ class StateStore:
         await self.db.commit()
 
     async def set_bootstrap_day(self, acc_id: str, day: date) -> None:
+        """记录该账号已完成任务展开的日期。"""
         await self.db.execute(
             "UPDATE accounts SET bootstrap_day=? WHERE id=?",
             (day.isoformat(), acc_id),
@@ -916,6 +933,7 @@ class StateStore:
         await self.db.commit()
 
     async def get_bootstrap_day(self, acc_id: str) -> date | None:
+        """返回该账号已完成任务展开的日期；未记录时返回 None。"""
         cur = await self.db.execute(
             "SELECT bootstrap_day FROM accounts WHERE id=?", (acc_id,)
         )
@@ -1024,6 +1042,7 @@ class StateStore:
         )
         await self.db.commit()
     async def list_target_seats(self) -> list[SeatTarget]:
+        """返回全部启用的目标座位及其期望时段。"""
         try:
             cur = await self.db.execute(
                 "SELECT seat_num, label, enabled, created_at, updated_at, "
@@ -1155,7 +1174,7 @@ class StateStore:
             )
         await self.db.commit()
 
-    async def shorten_task_end(self, task_id: int, new_end: "time") -> None:
+    async def shorten_task_end(self, task_id: int, new_end: time) -> None:
         """缩短任务结束时间（换座释放：时段开始签到后短持即签退）。"""
         self._bump()
         await self.db.execute(
@@ -1175,10 +1194,10 @@ class StateStore:
         await self.db.commit()
 
     async def get_task(self, task_id: int) -> Task | None:
+        """按主键取单条任务；不存在时返回 None。"""
         cur = await self.db.execute(
-
             "SELECT id, account_id, seat_num, day, start_time, end_time, "
-            "status, reserve_id, last_error, source "
+            "status, reserve_id, last_error, source, created_at, updated_at "
             "FROM tasks WHERE id=?",
             (task_id,),
         )
@@ -1245,7 +1264,7 @@ class StateStore:
         return out
 
     async def find_next_task_after(
-        self, day: date, after_time: "time", *, statuses: tuple[str, ...] = ("pending", "ready", "failed")
+        self, day: date, after_time: time, *, statuses: tuple[str, ...] = ("pending", "ready", "failed")
     ) -> Task | None:
         """Find next task on `day` whose start_time > after_time (跨 account 跨 seat)。
 
@@ -1300,6 +1319,7 @@ class StateStore:
         success: bool,
         message: str | None = None,
     ) -> None:
+        """写入一条操作流水记录。"""
         now = int(_time.time() * 1000)
         await self.db.execute(
             "INSERT INTO actions (ts, account_id, action, request, response, success, message) "
@@ -1311,6 +1331,7 @@ class StateStore:
     async def list_actions(
         self, account_id: str | None = None, limit: int = 50
     ) -> list[ActionRow]:
+        """按时间倒序返回操作流水；account_id 为 None 时返回全部。"""
         q = "SELECT id, ts, account_id, action, request, response, success, message FROM actions"
         args: list[Any] = []
         if account_id:
@@ -1331,6 +1352,7 @@ class StateStore:
     async def log_message(
         self, level: str, account_id: str | None, message: str
     ) -> None:
+        """写入一条运行日志。"""
         now = int(_time.time() * 1000)
         await self.db.execute(
             "INSERT INTO logs (ts, level, account_id, message) VALUES (?, ?, ?, ?)",
@@ -1549,6 +1571,6 @@ def backup_database(db_path: str, backup_dir: str, keep: int = 7):
     for old in backups[:-keep] if len(backups) > keep else []:
         try:
             old.unlink()
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning("删除过期备份 %s 失败: %s", old, e)
     return dest

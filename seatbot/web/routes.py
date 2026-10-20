@@ -1,43 +1,69 @@
 """FastAPI routes for the SeatBot web panel (multi-seat + per-task seat_num).
 
-Dashboard 覆盖图以"目标座位"为行(取代 v1 的"账号"为行)。
+Dashboard 覆盖图以「目标座位」为行。
 """
 from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date, datetime as _dt, timedelta
+import logging
+from datetime import date, timedelta
+from datetime import datetime as _dt
 from datetime import time as _time
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from seatbot.bindings import (
-    account_margins, add_day_slot, auto_assign, candidate_accounts,
-    desired_slots_of, diff_matrices, matrix_windows, plan_matrix, rebind_candidates_for_days,
-    rebind_matrices, set_day_slots, validate_matrix,
-)
-from seatbot.manual import (
-    SIGN_DEADLINE_MINUTES, parse_manual_form,
-    used_hours_for_account_day, validate_manual_submission,
-)
-from seatbot.utils.weekly import (
-    WEEKDAY_KEYS, WEEKDAY_LABELS, normalize_weekly, slots_for_weekday, weekday_key,
-)
 from seatbot import settings as _settings
+from seatbot.bindings import (
+    account_margins,
+    add_day_slot,
+    auto_assign,
+    candidate_accounts,
+    desired_slots_of,
+    diff_matrices,
+    matrix_windows,
+    plan_matrix,
+    rebind_candidates_for_days,
+    rebind_matrices,
+    set_day_slots,
+    validate_matrix,
+)
 from seatbot.client import ChaoxingClient, ChaoxingError
 from seatbot.coverage import compute_seat_coverage
-from seatbot.models import Account, SeatTarget, Task, TaskStatus, TASK_SOURCE_IMPORT, TASK_SOURCE_MANUAL
-from seatbot.scheduler import NextRelay
+from seatbot.manual import (
+    SIGN_DEADLINE_MINUTES,
+    parse_manual_form,
+    used_hours_for_account_day,
+    validate_manual_submission,
+)
+from seatbot.models import TASK_SOURCE_IMPORT, TASK_SOURCE_MANUAL, Account, SeatTarget, Task, TaskStatus
 from seatbot.reconcile import AUTO_SYNC_NOTE, pick_read_account
+from seatbot.scheduler import NextRelay
 from seatbot.store import DuplicateTaskError
-
 from seatbot.utils.timeutil import (
-    RESERVE_WINDOW_HOUR, at_cst, now_cst, parse_hhmm, parse_range,
-    split_into_chunks, today_cst,
+    CST,
+    RESERVE_WINDOW_HOUR,
+    at_cst,
+    epoch_ms_to_cst_str,
+    now_cst,
+    overlaps,
+    parse_hhmm,
+    parse_range,
+    split_into_chunks,
+    today_cst,
+)
+from seatbot.utils.weekly import (
+    WEEKDAY_KEYS,
+    WEEKDAY_LABELS,
+    normalize_weekly,
+    slots_for_weekday,
+    weekday_key,
 )
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 #: 已落日志的数据异常签名（面板高频刷新时同一异常只落一次）。
 _LOGGED_ANOMALIES: set[str] = set()
@@ -80,8 +106,8 @@ def _parse_desired_range(raw: str) -> tuple[_time, _time] | None:
     """
     try:
         return parse_range(raw)
-    except ValueError:
-        pass
+    except ValueError as e:
+        logger.debug("期望时段 %r 严格解析失败，改用宽松解析: %s", raw, e)
     parts = raw.split("-")
     if len(parts) != 2:
         return None
@@ -290,7 +316,7 @@ async def _fetch_others_occupied(
 
     out: list[tuple[str, _time, _time]] = []
     last_err: str | None = None
-    for sn, r in zip(seat_nums, results):
+    for sn, r in zip(seat_nums, results, strict=True):
         if isinstance(r, Exception):
             last_err = f"{sn}: {type(r).__name__}: {r}"
             continue
@@ -312,13 +338,11 @@ def _filter_self_occupied(
     """
     if not others or not own_intervals:
         return others
-    def _overlap(a_s, a_e, b_s, b_e) -> bool:
-        return not (a_e <= b_s or a_s >= b_e)
     out: list[tuple[str, _time, _time]] = []
     for sn, s, e in others:
         blocked = False
         for osn, os_, oe in own_intervals:
-            if sn == osn and _overlap(s, e, os_, oe):
+            if sn == osn and overlaps(s, e, os_, oe):
                 blocked = True
                 break
         if not blocked:
@@ -357,7 +381,7 @@ async def _collect_own_intervals(store, day: date) -> list[tuple[str, _time, _ti
 # =========================================================================
 async def _collect_day_bundle(
     request: Request, store, cfg,
-    accounts: list[Account], target_seats: list["SeatTarget"],
+    accounts: list[Account], target_seats: list[SeatTarget],
     view_day: date, *, fresh: bool = False,
 ) -> dict:
     """构建单日覆盖图所需的全部数据。
@@ -519,6 +543,7 @@ async def _annotate_rows(rows, store, day: date) -> list[dict]:
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
+    """看板首页：当日覆盖图、任务概览与账号余量。"""
     store = request.app.state.store
     accounts = await store.list_accounts()
     target_seats = await store.list_target_seats()
@@ -719,7 +744,7 @@ async def _tasks_payload(store, cfg, d: date) -> dict:
         "tasks": [_serialize_task(t) for t in tasks],
     }
     accounts = await store.list_accounts()
-    for t, tj in zip(tasks, payload["tasks"]):
+    for t, tj in zip(tasks, payload["tasks"], strict=True):
         if t.status in (TaskStatus.FAILED, TaskStatus.PENDING):
             tj["candidates"] = candidate_accounts(
                 accounts, seat=t.seat_num, start=t.start_time, end=t.end_time,
@@ -736,8 +761,8 @@ async def api_tasks(request: Request, day: str | None = None):
     store = request.app.state.store
     try:
         d = date.fromisoformat(day) if day else today_cst()
-    except ValueError:
-        raise HTTPException(400, "day must be YYYY-MM-DD")
+    except ValueError as e:
+        raise HTTPException(400, "day must be YYYY-MM-DD") from e
     return JSONResponse(await _tasks_payload(store, request.app.state.cfg, d))
 
 
@@ -747,6 +772,7 @@ async def api_tasks(request: Request, day: str | None = None):
 
 @router.get("/targets", response_class=HTMLResponse)
 async def targets_list(request: Request):
+    """目标座位列表页：展示已注册座位与换座入口。"""
     store = request.app.state.store
     seats = await store.list_target_seats()
     accounts = await store.list_accounts()
@@ -774,6 +800,7 @@ async def targets_create(
     seat_num: str = Form(...),
     label: str = Form(""),
 ):
+    """注册目标座位；座位号自动补零到三位。"""
     store = request.app.state.store
     sn = seat_num.strip()
     if not sn.isdigit() or not (1 <= len(sn) <= 4):
@@ -839,11 +866,6 @@ async def targets_delete(request: Request, seat_num: str):
 # =========================================================================
 # Targets — 换座（整席迁移事务）
 # =========================================================================
-
-def _overlaps(a1: _dt, a2: _dt, b1: _dt, b2: _dt) -> bool:
-    """两个 [start, end) 窗口是否有交集。"""
-    return a1 < b2 and b1 < a2
-
 
 async def _signback_task_now(sched, store, acc: Account, t: Task) -> tuple[bool, str]:
     """立即对在约任务执行真签退（signback 通道），返回 (是否成功, 消息)。"""
@@ -1042,7 +1064,7 @@ async def targets_replace(
                             {"desc": seg_desc, "reason": "已存在同段任务"})
                         continue
                     seg_s, seg_e = at_cst(day, s), at_cst(day, e)
-                    holder = next((b for b in busy if _overlaps(seg_s, seg_e, *b)), None)
+                    holder = next((b for b in busy if overlaps(seg_s, seg_e, *b)), None)
                     if holder:
                         report["skipped"].append({
                             "desc": seg_desc,
@@ -1119,8 +1141,8 @@ async def _log_setting_fallback(request: Request, key: str, exc: Exception) -> N
                 "WARN", None,
                 f"读取设置 {key} 失败，已回落默认值：{type(exc).__name__}: {exc}",
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("记录设置读取回落 %s 失败: %s", key, e)
 
 
 @router.post("/bindings/mode")
@@ -1170,7 +1192,7 @@ async def bindings_list(request: Request):
     mode = await _schedule_mode(request)
     is_weekly = (mode == "weekly")
     # 星期列（用于 Jinja 循环 7 天）
-    weekday_cols = list(zip(WEEKDAY_KEYS, [WEEKDAY_LABELS[w] for w in WEEKDAY_KEYS]))
+    weekday_cols = list(zip(WEEKDAY_KEYS, [WEEKDAY_LABELS[w] for w in WEEKDAY_KEYS], strict=True))
 
     desired: dict[str, dict[str, list[str]]] = {
         s.seat_num: {wd: desired_slots_of(s, wd, is_weekly=is_weekly) for wd in WEEKDAY_KEYS}
@@ -1843,7 +1865,8 @@ async def bindings_desired(
         for b in block_list:
             try:
                 t = parse_hhmm(b.strip())
-            except Exception:
+            except Exception as e:
+                logger.debug("期望时段时间块 %r 格式错误: %s", b, e)
                 return [], f"时间块 {b!r} 格式错误"
             e = (_dt.combine(date.today(), t) + timedelta(minutes=30)).time()
             if t < open_t or e > close_t:
@@ -1947,6 +1970,7 @@ def _default_view_weekday(now: _dt | None = None) -> str:
 
 @router.get("/accounts", response_class=HTMLResponse)
 async def accounts_list(request: Request):
+    """守护账号列表页：展示账号状态、守护矩阵与余量。"""
     store = request.app.state.store
     accounts = await store.list_accounts(include_inactive=True)
     mode = await _schedule_mode(request)
@@ -1961,7 +1985,7 @@ async def accounts_list(request: Request):
             view_wd=_default_view_weekday(),
             today_wd=weekday_key(today),
             tomorrow_wd=weekday_key(today + timedelta(days=1)),
-            weekday_cols=list(zip(WEEKDAY_KEYS, [WEEKDAY_LABELS[w] for w in WEEKDAY_KEYS])),
+            weekday_cols=list(zip(WEEKDAY_KEYS, [WEEKDAY_LABELS[w] for w in WEEKDAY_KEYS], strict=True)),
             slots_views={a.id: _slots_view(a) for a in accounts},
         ),
     )
@@ -1989,6 +2013,7 @@ async def _matrix_ctx(request: Request, store, account: Account | None) -> dict:
 
 @router.get("/accounts/new", response_class=HTMLResponse)
 async def accounts_new(request: Request):
+    """新建守护账号表单页。"""
     store = request.app.state.store
     return _templates(request).TemplateResponse(
         request, "accounts_form.html",
@@ -2008,7 +2033,6 @@ async def accounts_create(
     实名信息不可得时退回 u{uid}；同一手机号不可重复导入。
     """
     import re
-
     from urllib.parse import unquote
 
     store = request.app.state.store
@@ -2039,8 +2063,8 @@ async def accounts_create(
                         await client.get_used_times(
                             request.app.state.cfg.library.room_id, probe_seats[0],
                             today_cst().isoformat())
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("补齐身份 cookie 的占用探针失败: %s", e)
                 name = unquote(client.cookies().get("oa_name") or "")
         except ChaoxingError as e:
             return _templates(request).TemplateResponse(
@@ -2100,6 +2124,7 @@ async def accounts_create(
 
 @router.get("/accounts/{acc_id}/edit", response_class=HTMLResponse)
 async def accounts_edit(request: Request, acc_id: str):
+    """编辑守护账号的守护矩阵与凭据。"""
     store = request.app.state.store
     acc = await store.get_account(acc_id)
     if not acc:
@@ -2354,6 +2379,7 @@ async def accounts_delete(request: Request, acc_id: str, confirm_force: int = Fo
 
 @router.post("/accounts/{acc_id}/test-login")
 async def accounts_test_login(request: Request, acc_id: str):
+    """用库内凭据登录学习通做一次连通性验证。"""
     store = request.app.state.store
     db_acc = await store.get_account(acc_id)
     if not db_acc:
@@ -2377,11 +2403,12 @@ async def tasks_list(
     request: Request,
     day: str | None = None,
 ):
+    """任务看板页：按日期查看任务并提供补约入口。"""
     store = request.app.state.store
     try:
         d = date.fromisoformat(day) if day else today_cst()
-    except ValueError:
-        raise HTTPException(400, "day must be YYYY-MM-DD")
+    except ValueError as e:
+        raise HTTPException(400, "day must be YYYY-MM-DD") from e
     payload = await _tasks_payload(store, request.app.state.cfg, d)
     ctx = await _ctx(request, active_page="tasks")
     # 传 dict 由模板 |tojson 一次性编码; 传已 dumps 的字符串会被二次编码致前端解析成字符串
@@ -2401,6 +2428,7 @@ async def quick_reserve(
     start: str = Form(...),
     end: str = Form(...),
 ):
+    """为指定账号与座位立即发起一次预约。"""
     sched = request.app.state.sched
     store = request.app.state.store
     acc = await store.get_account(account_id)
@@ -2412,7 +2440,7 @@ async def quick_reserve(
         if e <= s:
             raise ValueError("end must be after start")
     except (ValueError, AttributeError) as exc:
-        raise HTTPException(400, f"时间格式错误: {exc}")
+        raise HTTPException(400, f"时间格式错误: {exc}") from exc
     sn = seat_num.zfill(3)
     # 校验这个 seat 是注册的 target
     seats = [s.seat_num for s in await store.list_target_seats()]
@@ -2474,7 +2502,7 @@ async def tasks_import(
         if e <= s:
             raise ValueError("end must be after start")
     except (ValueError, TypeError) as exc:
-        raise HTTPException(400, f"日期/时间格式错误: {exc}")
+        raise HTTPException(400, f"日期/时间格式错误: {exc}") from exc
     rid_raw = reserve_id.strip()
     if not rid_raw.isdigit():
         raise HTTPException(400, "预约号必须是数字")
@@ -2613,6 +2641,7 @@ async def task_reassign(
 
 @router.post("/tasks/{task_id}/sign")
 async def task_sign(request: Request, task_id: int):
+    """对指定任务执行一次签到。"""
     sched = request.app.state.sched
     store = request.app.state.store
     t = await store.get_task(task_id)
@@ -2635,6 +2664,7 @@ async def task_cancel(
     task_id: int,
     next: str = Form(""),
 ):
+    """取消指定任务的预约。"""
     sched = request.app.state.sched
     store = request.app.state.store
     t = await store.get_task(task_id)
@@ -2938,6 +2968,7 @@ async def hosting_add_matrix(request: Request, hosted_id: int):
     - 写入：账号 seat_slots[seat][wd] + 座位 desired_slots[wd] 补时段（幂等）。
     """
     from urllib.parse import quote
+
     from seatbot.utils.weekly import weekday_key
 
     store = request.app.state.store
@@ -3072,11 +3103,11 @@ _RESERVE_STATUS = {
 
 
 def _fmt_ms(ms) -> str:
-    """毫秒时间戳 → HH:MM；空值显示占位符。"""
-    from datetime import datetime as _dtm
+    """毫秒时间戳 → HH:MM（北京时间）；空值或非法值显示占位符。"""
     if not ms:
         return "—"
-    return _dtm.fromtimestamp(ms / 1000).strftime("%H:%M")
+    s = epoch_ms_to_cst_str(ms)
+    return s[11:16] if len(s) >= 16 else "—"
 
 
 @router.get("/reservations", response_class=HTMLResponse)
@@ -3156,6 +3187,7 @@ async def reservations_page(
 # =========================================================================
 @router.get("/api/status")
 async def api_status(request: Request):
+    """运行状态摘要：调度器、任务与账号计数。"""
     sched = request.app.state.sched
     store = request.app.state.store
     now = now_cst()
@@ -3190,6 +3222,7 @@ async def logs_view(
     level: str | None = None,
     day: str | None = None,
 ):
+    """日志页：按账号、级别与日期筛选运行日志。"""
     store = request.app.state.store
     try:
         d = date.fromisoformat(day) if day else today_cst()
@@ -3244,6 +3277,7 @@ async def _effective_and_raw(request: Request) -> tuple[dict, dict[str, str]]:
 
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_view(request: Request):
+    """系统设置页：展示有效设置与各策略说明。"""
     eff, rows = await _effective_and_raw(request)
     # 是否已在页面自定义（用于“已自定义”角标）
     overridden = set(rows.keys())
@@ -3271,6 +3305,7 @@ async def settings_view(request: Request):
 
 @router.post("/settings")
 async def settings_save(request: Request):
+    """保存系统设置；校验不通过时回显错误。"""
     from urllib.parse import quote
 
     store = request.app.state.store
@@ -3345,6 +3380,7 @@ async def settings_save(request: Request):
 
 @router.post("/settings/reset")
 async def settings_reset(request: Request):
+    """清空页面已保存的系统设置，回到配置文件取值。"""
     from urllib.parse import quote
 
     store = request.app.state.store
@@ -3373,7 +3409,8 @@ async def audit_view(request: Request):
         except Exception:
             data = {}
         rows.append({
-            "ts_hm": _dt.fromtimestamp(r["ts"] / 1000).strftime("%m-%d %H:%M"),
+            "ts_hm": _dt.fromtimestamp(
+                r["ts"] / 1000, tz=CST).strftime("%m-%d %H:%M"),
             "day": r["day"], "seat_num": r["seat_num"], "ok": r["ok"],
             "server_text": "、".join(
                 f"{s}–{e}" for s, e in (data.get("server") or [])),
@@ -3401,7 +3438,8 @@ async def audit_check(request: Request):
         return RedirectResponse("/audit?error=nosched", status_code=303)
     try:
         await sched.reconcile_sweep(write=False)
-    except Exception:
+    except Exception as e:
+        logger.warning("实况核对执行失败: %s", e)
         return RedirectResponse("/audit?error=check", status_code=303)
     return RedirectResponse("/audit?checked=1", status_code=303)
 
@@ -3565,8 +3603,8 @@ async def manual_reserve(
     except Exception as ex:
         try:
             await sched._warn(f"手动预约占用预检异常: {ex}", acc.id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("记录手动预约占用预检异常失败: %s", e)
     if not precheck_ok:
         return RedirectResponse(
             "/manual?error=" + quote("该时段已被占用（预检）"), status_code=303)
@@ -3578,7 +3616,8 @@ async def manual_reserve(
     )
     try:
         tid = await store.add_task(task)
-    except DuplicateTaskError:
+    except DuplicateTaskError as e:
+        logger.info("手动预约任务与既有任务冲突（账号 %s 座位 %s）: %s", acc.id, sn, e)
         return RedirectResponse(
             "/manual?error=" + quote("该账号当日该座位已有进行中任务"), status_code=303)
     loaded = await store.get_task(tid)
@@ -3609,8 +3648,8 @@ async def manual_occupancy(
     """
     try:
         d = date.fromisoformat((day or "").strip())
-    except ValueError:
-        raise HTTPException(400, "day must be YYYY-MM-DD")
+    except ValueError as e:
+        raise HTTPException(400, "day must be YYYY-MM-DD") from e
 
     sched = request.app.state.sched
     store = request.app.state.store

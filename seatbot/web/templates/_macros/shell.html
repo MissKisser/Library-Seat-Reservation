@@ -1,5 +1,4 @@
 {# Macro: shell. App 外壳——全宽顶栏 + 下方侧栏 + toast 容器 + 确认弹层。 #}
-{% set APP_VERSION = "0.6.0" %}
 {% macro shell(active='dashboard', title='', subtitle='', target_seats=[], accounts_count=0) %}
 {% set _icons = {
   'dashboard': '<svg class="sidebar-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>',
@@ -45,7 +44,7 @@
           <span x-show="!isDark">{{ _icons['moon']|safe }}</span>
         </button>
       </div>
-      <span class="chip chip-muted hidden sm:inline-flex">v{{ APP_VERSION }}</span>
+      <span class="chip chip-muted hidden sm:inline-flex">v{{ app_version }}</span>
     </div>
   </header>
 

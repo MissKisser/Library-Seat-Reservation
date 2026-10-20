@@ -1,8 +1,10 @@
 """Time helpers: HH:MM parsing, slot expansion, CST."""
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time, timedelta, timezone
 
+logger = logging.getLogger(__name__)
 
 CST = timezone(timedelta(hours=8), name="CST")
 
@@ -12,10 +14,12 @@ RESERVE_WINDOW_HOUR = 14
 
 
 def now_cst() -> datetime:
+    """返回当前北京时间（带时区）。"""
     return datetime.now(CST)
 
 
 def today_cst() -> date:
+    """返回当前北京日期。"""
     return now_cst().date()
 
 
@@ -36,7 +40,8 @@ def epoch_ms_to_cst_str(value: int | float | None) -> str:
     try:
         dt = datetime.fromtimestamp(int(value) / 1000, tz=CST)
         return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
+    except Exception as e:
+        logger.debug("epoch 毫秒 %r 无法转换为 CST 时间: %s", value, e)
         return "—"
 
 def parse_hhmm(s: str) -> time:
@@ -59,6 +64,22 @@ def parse_range(r: str) -> tuple[time, time]:
     if end <= start:
         raise ValueError(f"end must be after start: {r!r}")
     return start, end
+
+
+def overlaps(a_start, a_end, b_start, b_end) -> bool:
+    """判断两个半开区间 [a_start, a_end) 与 [b_start, b_end) 是否相交。
+
+    入参:
+        a_start: 第一个区间的开始时刻（datetime.time 或 datetime.datetime）。
+        a_end: 第一个区间的结束时刻。
+        b_start: 第二个区间的开始时刻。
+        b_end: 第二个区间的结束时刻。
+
+    返回值:
+        两区间有交集时返回 True；端点相接（前一段结束时刻等于后一段开始
+        时刻）不算重叠，返回 False。
+    """
+    return a_start < b_end and b_start < a_end
 
 
 def split_into_chunks(

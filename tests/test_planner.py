@@ -3,7 +3,7 @@ from datetime import date, time
 import pytest
 
 from seatbot.models import Account, TaskStatus
-from seatbot.planner import ReservationPlanner, PlannerError
+from seatbot.planner import PlannerError, ReservationPlanner
 
 
 def make_account(slots, **kw) -> Account:
@@ -57,7 +57,7 @@ def test_expand_invalid_slots_raises():
 def test_no_overlap_between_chunks():
     planner = make_planner(make_account(["08:00-10:00", "10:00-12:00"]))
     tasks = planner.expand_for_day(date(2026, 7, 9))
-    for prev, cur in zip(tasks, tasks[1:]):
+    for prev, cur in zip(tasks, tasks[1:], strict=False):
         assert cur.start_time >= prev.end_time
 
 

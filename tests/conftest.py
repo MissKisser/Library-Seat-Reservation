@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-
+from tests.fixtures import nosleep, store  # noqa: F401 — 夹具重导出，供全部测试模块使用
 
 # Windows: pytest's default system temp dir may be sandbox-restricted.
 # Force the basetemp into the project root so tmp_path fixtures work everywhere.

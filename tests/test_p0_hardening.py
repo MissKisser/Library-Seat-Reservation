@@ -27,14 +27,10 @@ from seatbot.web.app import (
     csrf_decision,
     make_app,
 )
-
 from tests.test_scheduler_core import (
     DummyClient,
     make_cfg,
-    store,  # noqa: F401  (fixture 复用)
-    nosleep,  # noqa: F401  (fixture 复用)
 )
-
 
 # ---------- P0-1 面板认证 ----------
 

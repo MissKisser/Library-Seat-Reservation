@@ -125,6 +125,10 @@
     <span class="dot"></span>
     <span>尚未设置目标座位。<a class="text-accent underline" href="/targets">去添加 →</a></span>
   </div>
+  <div class="banner banner-warn" x-show="(today.desired_errors || []).length > 0">
+    <span class="dot"></span>
+    <span>期望时段数据异常，覆盖检查按最坏情况计入缺口：<span x-text="(today.desired_errors || []).join('；')"></span></span>
+  </div>
   <div class="banner banner-error" x-show="today.rows.length > 0 && today.gap_count > 0">
     <span class="dot"></span>
     <span>检测到 <b x-text="today.gap_count"></b> 个时段空缺，覆盖存在缺口。</span>
@@ -133,7 +137,7 @@
     <span class="dot"></span>
     <span>无法获取超星他人占用数据：<span x-text="today.occ_err"></span></span>
   </div>
-  <div class="banner banner-ok" x-show="today.rows.length > 0 && !today.gap_count && !today.occ_err">
+  <div class="banner banner-ok" x-show="today.rows.length > 0 && !today.gap_count && !today.occ_err && (today.desired_errors || []).length === 0">
     <span class="dot"></span>
     <span>覆盖稳固，全部目标座位均在守护中。</span>
   </div>
@@ -174,6 +178,8 @@
             <span class="card-sub">明天 <span x-text="tomorrow.view_day"></span></span>
           </span>
           <span class="chip chip-warn" x-show="tomorrow.occ_err" x-text="'他人占用获取失败：' + (tomorrow.occ_err || '')"></span>
+          <span class="chip chip-warn" x-show="(tomorrow.desired_errors || []).length > 0"
+                x-text="'期望时段数据异常 ' + (tomorrow.desired_errors || []).length + ' 项'"></span>
         </div>
         <div class="card-body">
           {{ coverage_strip('tomorrow') }}

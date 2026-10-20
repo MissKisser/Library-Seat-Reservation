@@ -8,9 +8,9 @@ Public entry point:
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
-from typing import Iterable
 
 from seatbot.models import Account, SeatTarget
 from seatbot.utils.timeutil import expand_account_slots, parse_hhmm
@@ -21,6 +21,15 @@ CELL_MINUTES = 30
 
 @dataclass
 class Cell:
+    """覆盖图上的一个 30 分钟格：记录该格由哪些守护账号占位。
+
+    入参:
+        start: 格子开始时刻。
+        end: 格子结束时刻。
+        accounts: 占位该格的守护账号 id 列表。
+        user_reserved: 是否被用户本人登记的预约占用。
+        others_occupied: 是否被超星占用查询返回的他人预约占用。
+    """
     start: time
     end: time
     accounts: list[str] = field(default_factory=list)  # guard account ids
@@ -29,11 +38,20 @@ class Cell:
 
     @property
     def covered(self) -> bool:
+        """该格是否已有守护账号占位。"""
         return bool(self.accounts)
 
 
 @dataclass
 class Coverage:
+    """单个座位的覆盖图：按营业窗口切分的 30 分钟格序列。
+
+    入参:
+        day: 覆盖图对应的日期。
+        open_time: 营业开始时刻。
+        close_time: 营业结束时刻。
+        cells: 按时间顺序排列的格子列表。
+    """
     day: date
     open_time: time
     close_time: time
@@ -41,6 +59,7 @@ class Coverage:
 
     @property
     def gaps(self) -> list[tuple[time, time]]:
+        """返回未被任何守护账号覆盖的连续空档区间列表。"""
         out: list[tuple[time, time]] = []
         cur: time | None = None
         for c in self.cells:
@@ -55,43 +74,23 @@ class Coverage:
             out.append((cur, self.cells[-1].end))
         return out
 
-    @property
-    def overlaps(self) -> list[tuple[time, time, list[str]]]:
-        out: list[tuple[time, time, list[str]]] = []
-        run_start: time | None = None
-        run_accs: set[str] = set()
-        for c in self.cells:
-            if len(c.accounts) >= 2:
-                if run_start is None:
-                    run_start = c.start
-                run_accs.update(c.accounts)
-            else:
-                if run_start is not None:
-                    out.append((run_start, c.start, sorted(run_accs)))
-                    run_start = None
-                    run_accs = set()
-        if run_start is not None:
-            out.append((run_start, self.cells[-1].end, sorted(run_accs)))
-        return out
 
-    @property
-    def total_cells(self) -> int:
-        return len(self.cells)
-
-    @property
-    def covered_cells(self) -> int:
-        return sum(1 for c in self.cells if c.covered)
-
-
-# ---------- v2 新增: per-seat coverage ----------
+# ---------- 单座位覆盖视图 ----------
 
 @dataclass
 class SeatCoverage:
+    """单个目标座位的覆盖结果与该座位的期望时段来源。
+
+    入参:
+        seat: 目标座位定义。
+        coverage: 该座位的覆盖图。
+    """
     seat: SeatTarget
     coverage: Coverage   # 复用上面的数据结构, Cell.accounts 里存该座位上 [primary, ...] 账号列表
 
     @property
     def gaps(self) -> list[tuple[time, time]]:
+        """返回该座位未被覆盖的连续空档区间列表。"""
         return self.coverage.gaps
 
 

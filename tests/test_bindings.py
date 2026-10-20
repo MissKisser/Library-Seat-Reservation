@@ -5,14 +5,14 @@ import pytest
 
 from seatbot.bindings import (
     account_margins,
-    add_day_slot,
     auto_assign,
     candidate_accounts,
     desired_slots_of,
+    diff_matrices,
     matrix_windows,
+    plan_matrix,
     rebind_candidates_for_days,
     rebind_matrices,
-    remove_day_slot,
     set_day_slots,
     used_hours,
     validate_matrix,
@@ -244,8 +244,6 @@ def test_auto_assign_appends_to_existing_binding_same_seat():
     assert matrices["a"]["001"]["mon"] == ["08:00-10:00", "14:00-16:00"]
 
 # ---------- plan_matrix / diff_matrices ----------
-
-from seatbot.bindings import diff_matrices, plan_matrix
 
 
 def _full_weekday(slot: str) -> dict[str, list[str]]:

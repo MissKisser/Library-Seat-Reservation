@@ -153,7 +153,7 @@ class RenderServer:
 
     def _seed(self) -> None:
         """中性种子（AGENTS.md 第九条）：2 座位 + 2 账号 + 当日若干任务，无真实实例字面量。"""
-        from datetime import date, time, timedelta
+        from datetime import date, time
 
         from seatbot.models import Account, Task, TaskStatus
 

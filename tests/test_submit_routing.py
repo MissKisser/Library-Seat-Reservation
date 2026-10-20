@@ -83,7 +83,7 @@ def make_cfg(**runtime_kw) -> Config:
 async def _seed(tmp_path, day) -> tuple[StateStore, Task]:
     store = StateStore(str(tmp_path / "t.db"))
     await store.init()
-    from tests.test_scheduler_core import seed_guard_accounts
+    from tests.fixtures import seed_guard_accounts
     await seed_guard_accounts(store)
     t = Task(
         id=None, account_id="zhangsan", day=day,
@@ -260,7 +260,7 @@ async def test_occupancy_check_empty_keeps_active_and_logs_error(tmp_path):
     # 核验未反映时等待重查一次 (服务端落库延迟), 两次均未覆盖才告警
     assert client.calls.count("getused") == 2
     logs = await store.list_logs(limit=20)
-    assert any("占用核验未反映" in l.message for l in logs)
+    assert any("占用核验未反映" in log.message for log in logs)
 
 
 async def test_submit_direct_relogin_in_cooldown_skips_login_and_falls_back(tmp_path):

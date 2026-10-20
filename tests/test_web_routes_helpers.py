@@ -2,12 +2,12 @@
 import pytest
 
 from seatbot.models import Account
-from seatbot.web.routes import (
-    _fmt_weekly,
-    _matrix_set_day,
-    _parse_seat_slots,
-)
 from seatbot.reconcile import pick_read_account
+from seatbot.web.routes import (
+   _fmt_weekly,
+   _matrix_set_day,
+   _parse_seat_slots,
+)
 
 
 def _acc(id_: str, phone="138", pw="x") -> Account:

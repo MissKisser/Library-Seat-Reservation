@@ -4,7 +4,7 @@ from datetime import date, time
 import pytest
 
 from seatbot.models import Account, Task, TaskStatus
-from seatbot.store import StateStore
+from seatbot.store import DuplicateTaskError, StateStore
 
 
 @pytest.fixture
@@ -102,8 +102,9 @@ async def test_log_message(store: StateStore):
 
 
 async def test_list_logs_by_day(store: StateStore):
-    from seatbot.utils.timeutil import CST, today_cst
     from datetime import datetime, timedelta
+
+    from seatbot.utils.timeutil import CST, today_cst
     today = today_cst()
     yesterday = today - timedelta(days=1)
 
@@ -294,7 +295,7 @@ async def test_active_task_identity_unique_index(tmp_path):
         t1.id = await s.add_task(t1)
         assert t1.id
         dup = Task(id=None, status=TaskStatus.PENDING, **base)
-        with pytest.raises(Exception):
+        with pytest.raises(DuplicateTaskError):
             await s.add_task(dup)
         # 终态行不受唯一索引约束（complete/failed 历史可重开同键任务）
         done = Task(id=None, status=TaskStatus.COMPLETE, **base)

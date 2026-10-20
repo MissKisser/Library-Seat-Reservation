@@ -6,7 +6,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from seatbot.config import load_config, ConfigError
+from seatbot.config import ConfigError, load_config
 from seatbot.scheduler import Scheduler
 from seatbot.store import DuplicateTaskError, StateStore
 
@@ -66,16 +66,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _make_store(cfg) -> StateStore:
     """创建状态存储，按配置文件初始化目标座位（已设置的保持不变）。"""
-    # v2 不再有全局 target_seat_num;legacy 总是 None
     return StateStore(cfg.runtime.db_path, legacy_target_seat_num=None)
 
 
 async def _cmd_run(args) -> int:
     cfg = load_config(args.config)
     # 启动即备份 (当日已有备份则跳过); 备份失败不阻断启动
+    # 备份是同步 sqlite3 操作, 放到线程里执行, 不阻塞事件循环
     try:
         from seatbot.store import backup_database
-        bak = backup_database(cfg.runtime.db_path, str(Path(cfg.runtime.log_dir) / "backup"))
+        bak = await asyncio.to_thread(
+            backup_database, cfg.runtime.db_path, str(Path(cfg.runtime.log_dir) / "backup")
+        )
         if bak:
             print(f"db backup -> {bak}")
     except Exception as e:
@@ -201,7 +203,8 @@ async def _cmd_login(args) -> int:
 
 async def _seed_user_reserved_from_config(store, cfg) -> None:
     """把 config.user_reserved 幂等播种进库（按 (账号,座位,日,开始) 去重）。"""
-    from datetime import date as _date, time as _time
+    from datetime import date as _date
+    from datetime import time as _time
     for u in cfg.user_reserved:
         d = _date.fromisoformat(u.day)
         s = _time(*map(int, u.start_time.split(":")))
@@ -288,7 +291,9 @@ async def _cmd_targets(args) -> int:
 
 async def _cmd_reserve(args) -> int:
     """手动触发单次预约（可控性/调试/补救场景）。"""
-    from datetime import date as _date, time as _time, timedelta
+    from datetime import date as _date
+    from datetime import time as _time
+    from datetime import timedelta
     cfg = load_config(args.config)
     store = _make_store(cfg)
     await store.init()
@@ -340,7 +345,8 @@ async def _cmd_user_reserved(args) -> int:
     await store.init()
     try:
         await _seed_user_reserved_from_config(store, cfg)
-        from datetime import date as _date, time as _time
+        from datetime import date as _date
+        from datetime import time as _time
         if args.user_reserved_cmd == "list":
             rows = await store.list_user_reserved()
             for r in rows:
@@ -369,6 +375,7 @@ async def _cmd_user_reserved(args) -> int:
 
 
 def cli() -> int:
+    """命令行入口：解析参数并分派到对应子命令。"""
     args = _build_parser().parse_args()
     handlers: dict = {
         "run": _cmd_run,

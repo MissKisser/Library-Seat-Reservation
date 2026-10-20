@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
+import time as _time
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-import time as _time
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -17,6 +19,9 @@ from seatbot.config import Config
 from seatbot.models import Account, Task, TaskStatus
 from seatbot.planner import ReservationPlanner
 from seatbot.store import DuplicateTaskError, StateStore
+from seatbot.utils.timeutil import at_cst, now_cst, overlaps, today_cst
+
+logger = logging.getLogger(__name__)
 
 
 class NullHaRuntime:
@@ -27,13 +32,8 @@ class NullHaRuntime:
     backup_state = "standalone"
 
     def can_act(self) -> bool:
+        """是否允许执行真实账号动作；空实现恒放行。"""
         return True
-from seatbot.utils.timeutil import at_cst, now_cst, today_cst
-
-
-def _overlap(s1, e1, s2, e2) -> bool:
-    """Half-open interval overlap: [s, e) ⋂ [s', e') ≠ ∅"""
-    return not (e1 <= s2 or s1 >= e2)
 
 
 _RECOVERABLE_MSG_KEYS = ("no selectable cell", "page load", "timeout", "seed not found")
@@ -54,6 +54,8 @@ def _is_recoverable_page_error(msg: str | None) -> bool:
 
 @dataclass
 class NextRelay:
+    """下一个接力签退的预判信息。"""
+
     at: datetime
     delta_minutes: int
     account_id: str
@@ -65,6 +67,8 @@ class NextRelay:
 
 
 class Scheduler:
+    """调度器：任务展开、预约提交、签到签退、接力与实况核对。"""
+
     RELAY_LEAD_SECONDS = 300  # 类级默认值；可在系统设置页调整
 
     def __init__(
@@ -72,6 +76,12 @@ class Scheduler:
         cfg: Config,
         store: StateStore,
     ):
+        """创建调度器。
+
+        入参:
+            cfg: 已加载的配置。
+            store: 状态存储实例。
+        """
         self.cfg = cfg
         self.store = store
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
@@ -120,6 +130,11 @@ class Scheduler:
         )
 
     async def load_runtime_settings(self) -> dict[str, object]:
+        """读取页面已保存的系统设置并应用到调度器。
+
+        返回值:
+            合并后的有效设置字典（页面设置 > 配置文件 > 默认值）。
+        """
         try:
             rows = await self.store.get_settings_map()
         except Exception:
@@ -128,12 +143,12 @@ class Scheduler:
         try:
             self.cfg.library.max_reserve_hours = float(eff.get("max_reserve_hours", self.cfg.library.max_reserve_hours))
             self.cfg.library.daily_reserve_hours_limit = float(eff.get("daily_reserve_hours_limit", self.cfg.library.daily_reserve_hours_limit))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("应用馆舍限额设置失败，沿用配置文件取值: %s", e)
         try:
             self.cfg.runtime.notify_webhook = str(eff.get("notify_webhook", self.cfg.runtime.notify_webhook))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("应用通知 webhook 设置失败，沿用配置文件取值: %s", e)
         self.relay_lead_seconds = int(eff.get("relay_lead_seconds", self.relay_lead_seconds))
         self.tick_interval_seconds = int(eff.get("tick_interval_seconds", self.tick_interval_seconds))
         self.stagger_seconds = list(eff.get("stagger_seconds", self.stagger_seconds))  # type: ignore[arg-type]
@@ -147,8 +162,8 @@ class Scheduler:
         )
         try:
             self._reschedule_tick_interval()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("按新间隔重排 sync_jobs 作业失败（下次启动后再生效）: %s", e)
         return eff
 
     def _reschedule_tick_interval(self) -> None:
@@ -159,13 +174,13 @@ class Scheduler:
             cur = None
             try:
                 cur = int(job.trigger.interval.total_seconds())  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("sync_jobs 现有触发器间隔不可读，按需重排: %s", e)
             if cur is not None and cur == int(self.tick_interval_seconds):
                 return
             self.scheduler.reschedule_job("sync_jobs", trigger="interval", seconds=int(self.tick_interval_seconds))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("重排 sync_jobs 作业失败（下次启动后再生效）: %s", e)
 
     def _ha_blocked(self, action: str) -> bool:
         """闸门：返回 True 表示本次真实动作必须被拦截。
@@ -295,6 +310,7 @@ class Scheduler:
 
     # ---------- bootstrap ----------
     async def bootstrap_today(self) -> None:
+        """按各账号的守护矩阵展开并落库今天的任务。"""
         today = today_cst()
         target_seats = await self.store.list_target_seats()
         for acc in await self.store.list_accounts():
@@ -339,7 +355,7 @@ class Scheduler:
                 if t.seat_num != seat_num:
                     continue
                 # ★ 跳过与 user_reserved 重叠的 task
-                if any(_overlap(t.start_time, t.end_time, rs, re_)
+                if any(overlaps(t.start_time, t.end_time, rs, re_)
                        for rs, re_ in reserved_slots):
                     await self._info(
                         f"跳过用户硬预约时段 座位={seat_num} {t.start_time.strftime('%H:%M')}-{t.end_time.strftime('%H:%M')}",
@@ -515,6 +531,7 @@ class Scheduler:
             del self._supervise_seen[key]
 
     async def peek_next_relay(self) -> NextRelay | None:
+        """预判下一个接力/签退动作；今天没有待办时返回 None。"""
         now = now_cst()
         today = today_cst()
         best: tuple[datetime, NextRelay] | None = None
@@ -620,6 +637,45 @@ class Scheduler:
         """公开提交入口：CLI 手动预约等外部调用方走同一通道分流。"""
         await self._run_submit(acc, t)
 
+    async def _submit_page_rewrite_with_anchor(
+        self, client, acc: Account, t: Task,
+    ) -> dict[str, Any]:
+        """走页面改写通道提交预约，失败且错误可恢复时改用锚点座位重试一次。
+
+        入参:
+            client: 已登录的超星客户端。
+            acc: 承担该任务的账号。
+            t: 待提交的任务。
+
+        返回值:
+            提交结果字典；重试后仍失败时返回最后一次结果。
+        """
+        r = await client.submit_via_page_rewrite(
+            phone=acc.phone,
+            password=acc.password,
+            room_id=self.cfg.library.room_id,
+            seat_num=t.seat_num,
+            day=t.day.isoformat(),
+            start_time=t.start_time.strftime("%H:%M"),
+            end_time=t.end_time.strftime("%H:%M"),
+        )
+        if self.anchor_retry_enabled and not r.get("success") and _is_recoverable_page_error(r.get("msg")):
+            anchor = await self._pick_anchor_seat(client, t.seat_num)
+            if anchor:
+                await self._warn(
+                    f"座位 {t.seat_num} 页面不可用（{r.get('msg')}）, 改用锚点座位 {anchor} 重试",
+                    acc.id,
+                )
+                r = await client.submit_via_page_rewrite(
+                    phone=acc.phone, password=acc.password,
+                    room_id=self.cfg.library.room_id, seat_num=t.seat_num,
+                    day=t.day.isoformat(),
+                    start_time=t.start_time.strftime("%H:%M"),
+                    end_time=t.end_time.strftime("%H:%M"),
+                    anchor_seat=anchor,
+                )
+        return r
+
     async def _run_submit(self, acc: Account, t: Task) -> None:
         """提交预约 (不签到)。
 
@@ -642,30 +698,7 @@ class Scheduler:
         try:
             strat = self.submit_strategy
             if strat == "page_rewrite_only":
-                r = await client.submit_via_page_rewrite(
-                    phone=acc.phone,
-                    password=acc.password,
-                    room_id=self.cfg.library.room_id,
-                    seat_num=t.seat_num,
-                    day=t.day.isoformat(),
-                    start_time=t.start_time.strftime("%H:%M"),
-                    end_time=t.end_time.strftime("%H:%M"),
-                )
-                if self.anchor_retry_enabled and not r.get("success") and _is_recoverable_page_error(r.get("msg")):
-                    anchor = await self._pick_anchor_seat(client, t.seat_num)
-                    if anchor:
-                        await self._warn(
-                            f"座位 {t.seat_num} 页面不可用（{r.get('msg')}）, 改用锚点座位 {anchor} 重试",
-                            acc.id,
-                        )
-                        r = await client.submit_via_page_rewrite(
-                            phone=acc.phone, password=acc.password,
-                            room_id=self.cfg.library.room_id, seat_num=t.seat_num,
-                            day=t.day.isoformat(),
-                            start_time=t.start_time.strftime("%H:%M"),
-                            end_time=t.end_time.strftime("%H:%M"),
-                            anchor_seat=anchor,
-                        )
+                r = await self._submit_page_rewrite_with_anchor(client, acc, t)
             elif strat == "direct_only":
                 r = await client.submit_direct(
                     phone=acc.phone, password=acc.password,
@@ -675,28 +708,7 @@ class Scheduler:
                     end_time=t.end_time.strftime("%H:%M"),
                 )
             elif strat == "page_rewrite_first":
-                r = await client.submit_via_page_rewrite(
-                    phone=acc.phone, password=acc.password,
-                    room_id=self.cfg.library.room_id, seat_num=t.seat_num,
-                    day=t.day.isoformat(),
-                    start_time=t.start_time.strftime("%H:%M"),
-                    end_time=t.end_time.strftime("%H:%M"),
-                )
-                if self.anchor_retry_enabled and not r.get("success") and _is_recoverable_page_error(r.get("msg")):
-                    anchor = await self._pick_anchor_seat(client, t.seat_num)
-                    if anchor:
-                        await self._warn(
-                            f"座位 {t.seat_num} 页面不可用（{r.get('msg')}）, 改用锚点座位 {anchor} 重试",
-                            acc.id,
-                        )
-                        r = await client.submit_via_page_rewrite(
-                            phone=acc.phone, password=acc.password,
-                            room_id=self.cfg.library.room_id, seat_num=t.seat_num,
-                            day=t.day.isoformat(),
-                            start_time=t.start_time.strftime("%H:%M"),
-                            end_time=t.end_time.strftime("%H:%M"),
-                            anchor_seat=anchor,
-                        )
+                r = await self._submit_page_rewrite_with_anchor(client, acc, t)
                 if not r.get("success"):
                     await self._warn(f"模拟点击未成（{r.get('msg')}），回退直连通道", acc.id)
                     r2 = await client.submit_direct(
@@ -1097,7 +1109,7 @@ class Scheduler:
             await asyncio.wait_for(
                 self._reconcile_cycle(), timeout=self.tick_watchdog_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self._warn(
                 f"实况核对看门狗: 一轮超过 {self.tick_watchdog_seconds}s 未结束，已放弃本轮",
                 "scheduler",
@@ -1310,15 +1322,19 @@ class Scheduler:
         影响。单账号查询失败仅跳过该账号（本轮不清退其行，防止误删），
         记 warn 告警。返回 {"added", "pruned", "adopted", "queued", "pending", "ended"} 计数。
         """
+        from seatbot.models import (
+            TASK_SOURCE_ADOPT,
+            TASK_SOURCE_ADOPT_MATRIX,
+            TaskStatus,
+        )
+        from seatbot.models import (
+            Task as _Task,
+        )
         from seatbot.reconcile import (
             AUTO_SYNC_NOTE,
             diff_user_reserved,
             parse_reservations,
             plan_adoption,
-        )
-        from seatbot.models import (
-            Task as _Task, TaskStatus,
-            TASK_SOURCE_ADOPT, TASK_SOURCE_ADOPT_MATRIX,
         )
 
         days = {today_cst(), today_cst() + timedelta(days=1)}
@@ -1465,7 +1481,8 @@ class Scheduler:
                         rid = int(h["reserve_id"])
                         if rid in parsed_reserve_ids:
                             continue
-                        from datetime import date as _d3, time as _t3
+                        from datetime import date as _d3
+                        from datetime import time as _t3
                         start_dt = at_cst(_d3.fromisoformat(h["day"]), _t3(*map(int, h["start_time"].split(":"))))
                         end_dt = at_cst(_d3.fromisoformat(h["day"]), _t3(*map(int, h["end_time"].split(":"))))
                         # 任务状态
@@ -1506,7 +1523,8 @@ class Scheduler:
                             continue
                         if h["state"] != "pending_decision":
                             continue
-                        from datetime import date as _d3, time as _t3
+                        from datetime import date as _d3
+                        from datetime import time as _t3
                         start_dt = at_cst(_d3.fromisoformat(h["day"]), _t3(*map(int, h["start_time"].split(":"))))
                         if now_dt < start_dt:
                             continue
@@ -1528,7 +1546,8 @@ class Scheduler:
                         if h["state"] != "queued":
                             continue
                         rid = int(h["reserve_id"])
-                        from datetime import date as _d3, time as _t3
+                        from datetime import date as _d3
+                        from datetime import time as _t3
                         end_dt = at_cst(_d3.fromisoformat(h["day"]), _t3(*map(int, h["end_time"].split(":"))))
                         if rid in parsed_reserve_ids and now_dt < end_dt:
                             # 复用采纳路径：状态由上游决定
@@ -1610,6 +1629,7 @@ class Scheduler:
                 f"实况核对: 恢复一致 任务={t.id} {t.seat_num} {t.day}", acc.id)
 
     async def sync_jobs(self) -> None:
+        """热刷新各账号的 tick 作业：新增、移除失效作业并刷新触发器。"""
         # 含禁用中账号: 其 tick job 不摘除, 排干守卫 (tick_account) 保证无在途任务时零动作
         accounts = await self.store.list_accounts(include_inactive=True)
         wanted_ids = {a.id for a in accounts}
@@ -1624,7 +1644,7 @@ class Scheduler:
             except Exception as e:
                 await self._report_tick_job_error(
                     f"tick_{stale}", f"移除失效 tick 作业 tick_{stale} 失败: {e}")
-        for i, acc in enumerate(accounts):
+        for acc in accounts:
             job_id = f"tick_{acc.id}"
             if acc.id in existing_ids:
                 # 已注册的 job 需随 stagger / 宽限期热配置刷新 trigger，
@@ -1705,6 +1725,7 @@ class Scheduler:
         self._tick_job_errors.pop(job_id, None)
 
     def start(self) -> None:
+        """注册全部定时作业并启动调度器。"""
         self.scheduler.add_job(
             self.sync_jobs,
             "interval", seconds=self.tick_interval_seconds,
@@ -1865,7 +1886,7 @@ class Scheduler:
                 self._tick_account_once(acc_id),
                 timeout=self.tick_watchdog_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._tick_watchdog_trips += 1
             await self._warn(
                 f"tick 看门狗: 单轮超过 {self.tick_watchdog_seconds}s 未结束，"
@@ -1924,6 +1945,7 @@ class Scheduler:
             return
 
         from datetime import timedelta
+
         from seatbot.models import TaskStatus
         tomorrow = today_cst() + timedelta(days=1)
 

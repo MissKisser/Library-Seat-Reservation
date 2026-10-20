@@ -6,6 +6,9 @@ config / store / scheduler / web 共用，避免散落硬编码枚举。
 from __future__ import annotations
 
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ---- 允许值 ----
 
@@ -13,7 +16,7 @@ SUBMIT_STRATEGIES = (
     "direct_first",        # 直连优先 → 失败落回页面改写（含锚点）
     "direct_only",         # 仅直连，失败即 FAILED
     "page_rewrite_first",  # 页面改写优先 → 直连兜底
-    "page_rewrite_only",   # 仅页面改写（等价旧 direct_submit_enabled=false）
+    "page_rewrite_only",   # 仅页面改写（等价 direct_submit_enabled=false）
 )
 
 SUBMIT_STRATEGY_LABELS: dict[str, str] = {
@@ -42,8 +45,8 @@ SUBMIT_STRATEGY_HELP: dict[str, dict[str, str]] = {
     },
     "page_rewrite_only": {
         "label": SUBMIT_STRATEGY_LABELS["page_rewrite_only"],
-        "badge": "兼容旧版",
-        "desc": "只走模拟点击（旧 direct_submit_enabled=false 语义），直连完全禁用。",
+        "badge": "等价布尔开关",
+        "desc": "只走模拟点击（等价 direct_submit_enabled=false），直连完全禁用。",
     },
 }
 
@@ -78,6 +81,8 @@ SUBMIT_CHANNEL_COMPARE: list[dict[str, str]] = [
 
 RELAY_LEAD_OPTIONS: list[int] = [60, 180, 300, 600]
 TICK_INTERVAL_OPTIONS: list[int] = [15, 30, 60]
+#: 时长类设置（单段上限 / 每日限额）的合法区间，单位小时。
+HOURS_RANGE: tuple[float, float] = (0.5, 24)
 # 守护时段模式：uniform=全局统一（每天相同时段，界面保持单套）；
 # weekly=按天自定义（界面显示周一至周日分别勾选）。仅是界面与录入约定，
 # 数据层恒为 7 键 dict，执行链路恒按天取值。
@@ -221,14 +226,19 @@ def parse_stored(key: str, raw: str | None, fallback: object) -> object:
                 raise ValueError
             return v
         if key in ("max_reserve_hours", "daily_reserve_hours_limit"):
-            return float(str(raw).strip())
+            fv = float(str(raw).strip())
+            lo, hi = HOURS_RANGE
+            if not (lo <= fv <= hi):
+                raise ValueError(f"{key} 须为 {lo}–{hi}")
+            return fv
         if key == "notify_webhook":
             return str(raw).strip()
         if key == "schedule_mode":
             return normalize_schedule_mode(raw)
         if key == "allocation_strategy":
             return normalize_allocation_strategy(raw)
-    except Exception:
+    except Exception as e:
+        logger.debug("设置项 %s 的库内值无法解析，回退到默认值: %s", key, e)
         return fallback
     return raw
 
@@ -273,8 +283,9 @@ def validate_all(
                     raise ValueError("须为 60–86400 内整数")
             elif k in ("max_reserve_hours", "daily_reserve_hours_limit"):
                 fv = float(str(v).strip()) if isinstance(v, str) else float(v)  # type: ignore[arg-type]
-                if not (0.5 <= fv <= 24):
-                    raise ValueError("须为 0.5–24")
+                lo, hi = HOURS_RANGE
+                if not (lo <= fv <= hi):
+                    raise ValueError(f"须为 {lo}–{hi}")
             elif k == "notify_webhook":
                 s = str(v).strip()
                 if s and not (s.startswith("http://") or s.startswith("https://")):
@@ -300,10 +311,11 @@ def validate_all(
                         raw = DEFAULTS[key]
                     return float(str(raw).strip())
 
-                if _resolve("max_reserve_hours") > _resolve("daily_reserve_hours_limit"):
+                if (_resolve("max_reserve_hours") > _resolve("daily_reserve_hours_limit")
+                        and "max_reserve_hours" not in errors):
                     errors["max_reserve_hours"] = "单段上限不应超过每日限额"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("单段上限与每日限额的交叉校验跳过: %s", e)
     return errors
 
 
@@ -319,12 +331,12 @@ def effective(settings_rows: dict[str, str], cfg) -> dict[str, object]:
     try:
         out["max_reserve_hours"] = float(cfg.library.max_reserve_hours)
         out["daily_reserve_hours_limit"] = float(cfg.library.daily_reserve_hours_limit)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("读取配置文件中的馆舍限额失败，沿用默认值: %s", e)
     try:
         out["stagger_seconds"] = list(cfg.runtime.stagger_seconds)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("读取配置文件中的错峰秒数失败，沿用默认值: %s", e)
     for k in ("submit_strategy", "relay_lead_seconds", "tick_interval_seconds",
               "anchor_retry_enabled", "anchor_scan_limit", "notify_webhook",
               "reconcile_interval_seconds"):
@@ -332,17 +344,17 @@ def effective(settings_rows: dict[str, str], cfg) -> dict[str, object]:
             v = getattr(cfg.runtime, k, None)
             if v is not None:
                 out[k] = v
-        except Exception:
-            pass
-    # 旧配置兼容：direct_submit_enabled=false → page_rewrite_only
+        except Exception as e:
+            logger.debug("读取配置文件中的运行参数 %s 失败，沿用默认值: %s", k, e)
+    # 布尔开关兼容：direct_submit_enabled=false → page_rewrite_only
     try:
         legacy = getattr(cfg.runtime, "direct_submit_enabled", None)
         if legacy is not None and "submit_strategy" not in settings_rows:
-            # 仅当页面未显式设置时，配置文件的旧开关才生效
+            # 仅当页面未显式设置时，配置文件的布尔开关才生效
             if legacy is False and out.get("submit_strategy") == "direct_first":
                 out["submit_strategy"] = "page_rewrite_only"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("读取布尔开关 direct_submit_enabled 失败，沿用 submit_strategy: %s", e)
     # 最后以页面已保存的设置为准
     for k, raw in settings_rows.items():
         if k not in DEFAULTS:
@@ -351,6 +363,7 @@ def effective(settings_rows: dict[str, str], cfg) -> dict[str, object]:
     # 兜底：submit_strategy 归一化
     try:
         out["submit_strategy"] = normalize_submit_strategy(out.get("submit_strategy"))
-    except Exception:
+    except Exception as e:
+        logger.debug("submit_strategy 归一化失败，回退到默认值: %s", e)
         out["submit_strategy"] = DEFAULTS["submit_strategy"]
     return out

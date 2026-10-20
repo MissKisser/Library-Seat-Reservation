@@ -275,7 +275,7 @@ async def test_list_actions_and_logs_ordering_is_deterministic(tmp_path, monkeyp
         actions = await store.list_actions(limit=10)
         assert [a.message for a in actions] == ["m2", "m1", "m0"]
         logs = await store.list_logs(limit=10)
-        assert [l.message for l in logs] == ["m2", "m1", "m0"]
+        assert [log.message for log in logs] == ["m2", "m1", "m0"]
     finally:
         await store.close()
 

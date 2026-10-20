@@ -18,7 +18,7 @@
     <div class="card"><div class="card-header"><span class="card-title">添加目标座位</span></div>
       <div class="card-body">
         <form method="post" action="/targets" class="flex flex-col gap-3">
-          {{ text_field('seat_num', '座位号', '', placeholder='084', required=True, pattern='\\d{1,4}', hint='1-4 位数字，自动补零到 3 位') }}
+          {{ text_field('seat_num', '座位号', '', placeholder='001', required=True, pattern='\\d{1,4}', hint='1-4 位数字，自动补零到 3 位') }}
           {{ text_field('label', '标签（可选）', '', placeholder='靠窗主座') }}
           <button class="btn btn-primary btn-sm w-fit" type="submit">添加</button>
         </form>
@@ -65,7 +65,7 @@
               {% for s in seats %}<option value="{{ s.seat_num }}">{{ s.seat_num }}{% if s.label %} · {{ s.label }}{% endif %}</option>{% endfor %}
             </select>
           </div>
-          {{ text_field('new_seat', '新座位号', '', placeholder='030', required=True, pattern='\\d{1,4}') }}
+          {{ text_field('new_seat', '新座位号', '', placeholder='001', required=True, pattern='\\d{1,4}') }}
         </div>
         <label class="checkbox-item"><input type="checkbox" name="rebook_tomorrow" value="1" checked><span>同时补约新座位<b>明天</b>时段（今天 14:00 批量已跑过后必勾，否则明天失守）</span></label>
         <label class="checkbox-item"><input type="checkbox" name="rebook_today" value="1"><span>同时补约新座位<b>今天</b>剩余时段</span></label>

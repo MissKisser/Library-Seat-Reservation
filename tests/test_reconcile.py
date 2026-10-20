@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, time, timedelta
 from types import SimpleNamespace
 
+from seatbot.config import Config, LibraryConfig, RuntimeConfig
+from seatbot.models import Account, Task, TaskStatus
 from seatbot.reconcile import classify_task, pick_read_account
+from seatbot.scheduler import Scheduler
 from seatbot.store import StateStore
+from seatbot.utils.timeutil import today_cst
 
 
 def test_fully_covered_is_consistent():
@@ -22,14 +26,6 @@ def test_partially_covered_is_mismatch():
 def test_zero_coverage_is_mismatch():
     _, bad = classify_task("14:00", "16:00", [])
     assert bad
-
-
-from datetime import time, timedelta
-
-from seatbot.config import Config, LibraryConfig, RuntimeConfig
-from seatbot.models import Account, Task, TaskStatus
-from seatbot.scheduler import Scheduler
-from seatbot.utils.timeutil import today_cst
 
 
 def _make_cfg() -> Config:

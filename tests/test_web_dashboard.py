@@ -11,7 +11,6 @@ from seatbot.models import Account, SeatTarget, Task, TaskStatus
 from seatbot.web.app import new_templates
 from seatbot.web.routes import _annotate_rows, router
 
-
 DAY = date(2026, 8, 28)
 NEXT_DAY = date(2026, 8, 29)
 
@@ -165,8 +164,9 @@ async def _test_annotate_unpainted_cells_stay_empty():
 
 def test_dashboard_data_returns_both_days(client):
     # 任务日动态取真实"明天"，避免跨天后 today/tomorrow 视图与硬编码日期错位
-    from seatbot.utils.timeutil import today_cst
     from datetime import timedelta
+
+    from seatbot.utils.timeutil import today_cst
     tomorrow = today_cst() + timedelta(days=1)
     store = FakeStore(tasks=[
         _task(4, "a1", "104", "09:00", "11:00", TaskStatus.ACTIVE, day=tomorrow),
@@ -209,6 +209,7 @@ def test_api_version_returns_local_counter(client):
 def test_others_occupied_cache_avoids_refetch(monkeypatch, client):
     """TTL 内的重复调用不得再次触达底层超星查询。"""
     import asyncio
+
     from seatbot.web import routes
     calls = {"n": 0}
 

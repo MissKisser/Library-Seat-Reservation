@@ -5,7 +5,7 @@ from urllib.parse import unquote
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from seatbot.models import Account, SeatTarget, Task, TaskStatus
+from seatbot.models import Account, SeatTarget, TaskStatus
 from seatbot.utils.timeutil import today_cst
 from seatbot.web.app import new_templates
 from seatbot.web.routes import router

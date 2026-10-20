@@ -1,6 +1,6 @@
 import re
 
-from seatbot.utils.ua import random_ua, CHROME_UAS, MOBILE_UAS
+from seatbot.utils.ua import CHROME_UAS, MOBILE_UAS, random_ua
 
 
 def test_pool_nonempty():

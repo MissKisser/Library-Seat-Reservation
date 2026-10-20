@@ -28,6 +28,28 @@ dev = [
   "ruff>=0.3",
 ]
 
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  "E4",  # pycodestyle: import 与缩进类
+  "E7",  # pycodestyle: 语句类
+  "E9",  # pycodestyle: 语法/IO 类
+  "F",   # pyflakes: 未定义名、未用导入与变量
+  "I",   # isort: 导入分组与排序
+  "B",   # flake8-bugbear: 常见缺陷模式
+  "UP",  # pyupgrade: 现代化写法
+]
+ignore = [
+  # 宽泛捕获 Exception：边界层捕获后均已记录日志或重新抛出（见验收报告 B3-05），
+  # 属于既定设计，不作为缺陷处理。
+  "BLE001",
+  # FastAPI 路由的 Form()/Body() 必须写在参数默认值位置，属框架惯用法。
+  "B008",
+]
+
 [project.scripts]
 seatbot = "seatbot.__main__:cli"
 

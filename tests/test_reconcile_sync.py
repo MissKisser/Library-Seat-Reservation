@@ -410,7 +410,6 @@ def test_plan_adoption_converts_pending_matrix_task():
 def test_sync_adopts_new_reservation_creates_task_and_hosted(tmp_path, monkeypatch):
     """实况同步：未跟踪预约 → 自动托管（建托管任务 + hosted 行 + 占位行）。"""
     async def main():
-        from datetime import datetime
         from seatbot.models import Account
         from seatbot.scheduler import Scheduler
         from seatbot.store import StateStore
@@ -485,7 +484,7 @@ def test_sync_adopts_in_progress_reservation_marks_signed(tmp_path, monkeypatch)
 def test_sync_pending_decision_when_reservation_disappears(tmp_path, monkeypatch):
     """托管行 hosting 但 reservelist 消失（未开始）→ 转 pending_decision + 任务 FAILED。"""
     async def main():
-        from seatbot.models import Account, Task, TaskStatus
+        from seatbot.models import Account
         from seatbot.scheduler import Scheduler
         from seatbot.store import StateStore
 
@@ -527,7 +526,7 @@ def test_sync_pending_decision_timeout_auto_abandon(tmp_path, monkeypatch):
     """pending_decision 行 now ≥ start → 自动 stopped + 通知。"""
     async def main():
         import seatbot.scheduler as S
-        from seatbot.models import Account, Task, TaskStatus
+        from seatbot.models import Account
         from seatbot.scheduler import Scheduler
         from seatbot.store import StateStore
 
@@ -552,7 +551,7 @@ def test_sync_pending_decision_timeout_auto_abandon(tmp_path, monkeypatch):
             # now 固定在 11:00（晚于 9:00 end）
             monkeypatch.setattr(S, "now_cst",
                                 lambda: at_cst(day, time(11, 0)))
-            out = await sched.sync_user_reserved()
+            await sched.sync_user_reserved()
             hosted = await store.list_hosted()
             assert hosted[0]["state"] == "stopped"
             assert hosted[0]["outcome"] == "未确认自动放弃"
@@ -592,7 +591,7 @@ def test_sync_archived_ended_after_task_completed(tmp_path, monkeypatch):
 
             monkeypatch.setattr(Scheduler, "client_ready", fake_client_ready)
             FakeReserveClient.script = [[]]
-            out = await sched.sync_user_reserved()
+            await sched.sync_user_reserved()
             hosted = await store.list_hosted()
             assert hosted[0]["state"] == "ended"
             assert hosted[0]["outcome"] == "已履约"
@@ -661,7 +660,7 @@ def test_sync_inactive_account_no_name_error(tmp_path, monkeypatch):
             out = await sched.sync_user_reserved()
             assert out == {"added": 0, "pruned": 0, "adopted": 0, "queued": 0, "pending": 0, "ended": 0}
             logs = await store.list_logs()
-            assert not any("NameError" in l.message for l in logs)
+            assert not any("NameError" in log.message for log in logs)
         finally:
             await store.close()
     asyncio.run(main())

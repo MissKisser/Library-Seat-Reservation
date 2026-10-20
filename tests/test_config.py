@@ -1,9 +1,9 @@
-from pathlib import Path
 import textwrap
+from pathlib import Path
 
 import pytest
 
-from seatbot.config import load_config, ConfigError
+from seatbot.config import ConfigError, load_config
 
 
 def test_load_minimal_config(tmp_path: Path):

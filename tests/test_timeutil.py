@@ -3,11 +3,11 @@ from datetime import time, timedelta
 import pytest
 
 from seatbot.utils.timeutil import (
+    CST,
+    expand_full_day,
     parse_hhmm,
     parse_range,
-    expand_full_day,
     split_into_chunks,
-    CST,
 )
 
 

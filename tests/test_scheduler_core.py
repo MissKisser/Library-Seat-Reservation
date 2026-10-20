@@ -12,12 +12,9 @@ from __future__ import annotations
 
 from datetime import time, timedelta
 
-import pytest
-
 from seatbot.config import Config, LibraryConfig, RuntimeConfig
-from seatbot.models import Account, Task, TaskStatus
+from seatbot.models import Task, TaskStatus
 from seatbot.scheduler import Scheduler
-from seatbot.store import StateStore
 from seatbot.utils.timeutil import at_cst, now_cst, today_cst
 
 
@@ -60,40 +57,6 @@ def make_cfg() -> Config:
         library=LibraryConfig(room_id=11692, room_name="t"),
         runtime=RuntimeConfig(stagger_seconds=[0, 0]),
     )
-
-
-GUARD_MATRIX = {
-    "zhangsan": {"104": ["09:00-11:00"], "105": ["15:00-17:00"]},
-    "lisi":   {"104": ["15:00-17:00"], "105": ["19:00-21:00"]},
-    "wangwu":  {"104": ["19:00-21:00"], "105": ["09:00-11:00"]},
-}
-
-
-async def seed_guard_accounts(store: StateStore) -> None:
-    for i, (acc_id, seat_slots) in enumerate(GUARD_MATRIX.items()):
-        await store.upsert_account(Account(
-            id=acc_id, phone=f"1380000000{i}", password="p",
-            slots=[], bound_seats=list(seat_slots.keys()),
-            seat_slots=seat_slots,
-        ))
-    await store.add_target_seat("104")
-    await store.add_target_seat("105")
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = StateStore(str(tmp_path / "t.db"))
-    await s.init()
-    await seed_guard_accounts(s)
-    yield s
-    await s.close()
-
-
-@pytest.fixture
-def nosleep(monkeypatch):
-    async def _sleep(_s):
-        return
-    monkeypatch.setattr("seatbot.scheduler.asyncio.sleep", _sleep)
 
 
 async def fake_submit_ok(self, acc, t):

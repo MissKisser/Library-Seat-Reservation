@@ -7,6 +7,7 @@ sync_user_reserved）承担。本模块不发起任何网络请求。
 """
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,8 @@ from seatbot.utils.timeutil import CST
 
 if TYPE_CHECKING:
     from seatbot.models import Account
+
+logger = logging.getLogger(__name__)
 
 #: 任务 last_error 中实况核对标记前缀；恢复时仅清自己写的标记
 RECONCILE_ERROR_PREFIX = "实况核对: "
@@ -78,10 +81,10 @@ def classify_task(
 
 
 def pick_read_account(
-    accounts: list["Account"],
+    accounts: list[Account],
     cookie_recency: dict[str, int] | None = None,
     exclude_ids: set[str] | None = None,
-) -> "Account | None":
+) -> Account | None:
     """选只读查询账号：优先排除失效或冷却中的账号，选会话最新的可用账号。
 
     cookie_recency: account_id → account_cookies.updated_at，由调用方动态查库传入；
@@ -130,8 +133,9 @@ def parse_reservations(
             end = datetime.fromtimestamp(e["endTime"] / 1000, tz=CST).time()
             seat = str(e["seatNum"])
             reserve_id = int(e["id"])
-        except (KeyError, TypeError, ValueError, OSError, OverflowError):
+        except (KeyError, TypeError, ValueError, OSError, OverflowError) as e:
             # 上游条目字段缺失或畸形：跳过该条，不中断本账号整轮同步
+            logger.debug("预约记录条目字段畸形，已跳过该条: %s", e)
             continue
         out.append({
             "reserve_id": reserve_id,
@@ -203,7 +207,7 @@ def plan_adoption(
     stopped_reserve_ids: set[int],
     queued_reserve_ids: set[int],
     account_tasks: list[dict],
-    now: "datetime | None" = None,
+    now: datetime | None = None,
 ) -> list[dict]:
     """为实况同步产出的 parsed 候选逐条计算采纳动作。
 
@@ -253,6 +257,7 @@ def plan_adoption(
         # 时段已结束（end_t 为 time；与 now 比较）
         if hasattr(end_t, "hour") and not hasattr(end_t, "date"):
             from datetime import datetime as _dt
+
             from seatbot.utils.timeutil import CST as _CST
             end_dt = _dt.combine(p["day"], end_t).replace(tzinfo=_CST) if isinstance(p["day"], date) else None
             if end_dt is not None and now >= end_dt:

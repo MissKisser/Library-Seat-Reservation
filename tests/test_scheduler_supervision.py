@@ -3,8 +3,8 @@ import asyncio
 from datetime import time
 
 from seatbot.models import Account, Task, TaskStatus
-from seatbot.utils.timeutil import now_cst, today_cst
 from seatbot.scheduler import NullHaRuntime, Scheduler
+from seatbot.utils.timeutil import now_cst, today_cst
 
 
 class _FakeStore:

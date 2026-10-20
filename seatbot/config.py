@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LibraryConfig(BaseModel):
+    """馆舍信息与预约时长上限。"""
+
     room_id: int
     room_name: str
     open_time: str = "08:00"
@@ -66,14 +68,16 @@ class UserReservedSeed(BaseModel):
 
 
 class AccountConfig(BaseModel):
+    """单个守护账号的初始配置。"""
+
     id: str
     phone: str
     password: str
     slots: SlotSpec | None = None
     bound_seats: list[str] = Field(default_factory=list)
     # per-seat slots — 同一账号对不同座位可以预约不同时段
-    # 例如 {"104": ["09:00-11:00"], "105": ["15:00-17:00"]} 表示
-    # 该账号对 104 守 09-11,对 105 守 15-17。
+    # 例如 {"001": ["09:00-11:00"], "002": ["15:00-17:00"]} 表示
+    # 该账号对 001 守 09-11,对 002 守 15-17。
     # 与 slots 互斥:同时设置时 planner 用 seat_slots 忽略 slots。
     seat_slots: dict[str, SlotSpec] | None = None
 
@@ -102,8 +106,10 @@ class AccountConfig(BaseModel):
 
 
 class RuntimeConfig(BaseModel):
+    """调度与面板的运行参数。"""
+
     stagger_seconds: list[int] = Field(default_factory=lambda: [0, 3])
-    # 兼容保留；新代码以 submit_strategy 为准（见 seatbot/settings.py）。
+    # 布尔开关形式；与 submit_strategy 并存时以 submit_strategy 为准（见 seatbot/settings.py）。
     direct_submit_enabled: bool = True
     # 提交策略（四档，可在系统设置页调整，未调整时沿用此处配置）：
     #   direct_first / direct_only / page_rewrite_first / page_rewrite_only
@@ -165,6 +171,8 @@ class RuntimeConfig(BaseModel):
 
 
 class Config(BaseModel):
+    """配置文件的顶层结构：馆舍、目标座位、账号与运行参数。"""
+
     library: LibraryConfig
     # 目标座位的初始配置
     target_seats: list[SeatSeed] = Field(default_factory=list)
@@ -174,7 +182,7 @@ class Config(BaseModel):
     runtime: RuntimeConfig
 
     @model_validator(mode="after")
-    def _unique_ids(self) -> "Config":
+    def _unique_ids(self) -> Config:
         ids = [a.id for a in self.accounts]
         if len(ids) != len(set(ids)):
             raise ValueError("account ids must be unique")
@@ -187,10 +195,21 @@ class Config(BaseModel):
 
 
 class ConfigError(Exception):
-    pass
+    """配置文件缺失、格式错误或校验失败。"""
 
 
 def load_config(path: Path | str) -> Config:
+    """读取并校验配置文件。
+
+    入参:
+        path: 配置文件路径。
+
+    返回值:
+        校验通过的 Config 实例。
+
+    异常:
+        ConfigError: 文件不存在、YAML 非法或字段校验失败。
+    """
     p = Path(path)
     if not p.exists():
         raise ConfigError(f"config file not found: {p}")

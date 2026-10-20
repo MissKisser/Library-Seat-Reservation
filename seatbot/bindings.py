@@ -11,13 +11,12 @@ from __future__ import annotations
 from datetime import date, datetime, time
 
 from seatbot.models import Account, SeatTarget
-from seatbot.utils.timeutil import parse_range
+from seatbot.utils.timeutil import overlaps, parse_range
 from seatbot.utils.weekly import (
     WEEKDAY_KEYS,
     WEEKDAY_LABELS,
     slots_for_weekday,
 )
-
 
 _BASE = date(2000, 1, 1)
 
@@ -150,8 +149,8 @@ def validate_matrix(
         ordered = sorted(
             ((s, e, seat) for seat, s, e, _ in windows), key=lambda x: (x[0], x[1])
         )
-        for (s1, e1, seat1), (s2, e2, seat2) in zip(ordered, ordered[1:]):
-            if s2 < e1:
+        for (s1, e1, seat1), (s2, e2, seat2) in zip(ordered, ordered[1:], strict=False):
+            if overlaps(s1, e1, s2, e2):
                 raise ValueError(
                     f"{label}：座位 {seat1} {s1.strftime('%H:%M')}-{e1.strftime('%H:%M')} 与 "
                     f"座位 {seat2} {s2.strftime('%H:%M')}-{e2.strftime('%H:%M')} 时段重叠")
@@ -385,12 +384,12 @@ def auto_assign(
     }
     used = {
         aid: {wd: used_hours(a.seat_slots, wd) for wd in WEEKDAY_KEYS}
-        for aid, a in zip(matrices.keys(), accounts)
+        for aid, a in zip(matrices.keys(), accounts, strict=False)
     }
     windows = {
         aid: {wd: [(s, e) for _, s, e, _ in matrix_windows(a.seat_slots, wd)]
               for wd in WEEKDAY_KEYS}
-        for aid, a in zip(matrices.keys(), accounts)
+        for aid, a in zip(matrices.keys(), accounts, strict=False)
     }
 
     jobs: list[tuple[str, str, str, time, time, float]] = []
@@ -413,6 +412,7 @@ def auto_assign(
     best: dict = {"plan": []}
 
     def dfs(i: int, plan: list[tuple[str, str, str, str]]) -> None:
+        """回溯搜索：在容量与跨座不重叠约束下求最优分配。"""
         if len(plan) + (len(jobs) - i) <= len(best["plan"]):
             return
         if i == len(jobs):
@@ -567,14 +567,6 @@ def plan_matrix(
                 )
             except ValueError as exc:
                 raise AssertionError(f"账号 {a.id} 矩阵非法: {exc}") from exc
-
-    def _used_overlap(aid: str, used: dict[str, float],
-                      ranges: dict[str, list[tuple[time, time]]],
-                      wd: str, dur: float,
-                      ws: time, we: time) -> bool:
-        return (used[aid][wd] + dur > daily_limit_hours + eps) or any(
-            ws < e and s < we for s, e in ranges[aid][wd]
-        )
 
     def _solve_minimal(K: int) -> dict | None:
         """迭代加深 DFS：容量 + 跨座重叠约束下求最少账号解，

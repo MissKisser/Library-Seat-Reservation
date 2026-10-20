@@ -1,7 +1,7 @@
 """/bindings/rebind 换绑端点与绑定页换绑入口的集成测试（纯本地，零外呼）。"""
 import asyncio
-from datetime import date, time as _t
-
+from datetime import date
+from datetime import time as _t
 from urllib.parse import unquote
 
 from fastapi.testclient import TestClient

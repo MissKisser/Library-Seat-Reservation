@@ -1,9 +1,9 @@
-"""Expand user-facing slot config into ≤ max_hours task chunks (v2: per-seat).
+"""Expand user-facing slot config into ≤ max_hours task chunks.
 
 模式:
   - `seat_slots` 矩阵模式（推荐, Web 绑定页/账号表单维护）: 每个 (座位, 时段)
     精确展开成一条 Task, 不做笛卡尔积。
-  - `slots` + `bound_seats` 扁平模式（遗留）: 每个绑定座位各展开一遍 slots。
+  - `slots` + `bound_seats` 扁平模式: 每个绑定座位各展开一遍 slots。
   - 账号既无 seat_slots 也无 bound_seats = 未参与守护, 展开结果为空
     （不回退到全部目标座位, 避免笛卡尔积意外放大）。
 """
@@ -15,8 +15,9 @@ from seatbot.models import Account, Task, TaskStatus
 from seatbot.utils.timeutil import expand_account_slots, parse_range
 from seatbot.utils.weekly import slots_for_weekday, weekday_key
 
+
 class PlannerError(Exception):
-    pass
+    """时段展开失败：配置非法或无法生成任务时抛出。"""
 
 
 def _reject_overlong_ranges(slots: list[str], max_hours: float, account_id: str) -> None:
@@ -38,6 +39,17 @@ def _reject_overlong_ranges(slots: list[str], max_hours: float, account_id: str)
 
 
 class ReservationPlanner:
+    """把账号的时段配置展开为当天的任务列表。
+
+    入参:
+        account: 待展开的守护账号。
+        bound_seats: 该账号绑定的目标座位号。
+        fallback_seats: bound_seats 为空时使用的候选座位号。
+        max_reserve_hours: 单段时长上限（小时）。
+        open_time: 馆舍营业开始时刻 'HH:MM'。
+        close_time: 馆舍营业结束时刻 'HH:MM'。
+    """
+
     def __init__(
         self,
         account: Account,
@@ -47,6 +59,7 @@ class ReservationPlanner:
         open_time: str = "08:00",         # 馆舍营业窗口，"full" 展开的边界
         close_time: str = "22:00",
     ):
+        """按构造参数初始化展开器。"""
         self.account = account
         self.bound_seats = list(bound_seats)
         self.fallback_seats = list(fallback_seats)
@@ -57,11 +70,18 @@ class ReservationPlanner:
     def expand_for_day(self, day: date) -> list[Task]:
         """展开成 (account, seat, slot) → Task list.
 
+        入参:
+            day: 展开目标日期；按该日期的星期键取时段。
+
+        返回值:
+            任务列表；矩阵模式每对 (座位, 时段) 精确一条，扁平模式每个绑定
+            座位各展开一遍 slots，未绑定账号返回空列表。
+
         矩阵模式（推荐）:
           seat_slots={'AAA': ['09:00-11:00'], 'BBB': ['15:00-17:00']}
           → 2 Task：每对 (座位, 时段) 精确一条，不做笛卡尔积。
 
-        扁平模式（遗留）:
+        扁平模式:
           bound_seats=['AAA','BBB'], slots=['08:00-10:00']
           → 2 Task：每个绑定座位各展开一遍 slots。
 

@@ -15,7 +15,6 @@ from __future__ import annotations
 from datetime import time
 from urllib.parse import parse_qs, urlparse
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -26,11 +25,11 @@ from seatbot.manual import (
     validate_manual_submission,
 )
 from seatbot.models import (
+    TASK_SOURCE_MANUAL,
     Account,
     SeatTarget,
     Task,
     TaskStatus,
-    TASK_SOURCE_MANUAL,
 )
 from seatbot.reconcile import diff_user_reserved, parse_reservations, plan_adoption
 from seatbot.store import DuplicateTaskError
@@ -38,7 +37,6 @@ from seatbot.utils.timeutil import at_cst, today_cst
 from seatbot.utils.weekly import weekday_key
 from seatbot.web.app import new_templates
 from seatbot.web.routes import _safe_next, router
-
 
 DAY = today_cst()
 TOMORROW = DAY.fromordinal(DAY.toordinal() + 1)

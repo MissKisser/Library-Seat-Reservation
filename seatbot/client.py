@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
 import httpx
 
 from seatbot.utils.ua import random_ua
+
+logger = logging.getLogger(__name__)
 
 
 class ChaoxingError(Exception):
@@ -27,6 +31,11 @@ def ms_pair_to_str(pair: list[int]) -> tuple[str, str]:
 
 
 class ChaoxingClient:
+    """超星图书馆座位系统的异步客户端。
+
+    负责登录、座位占用查询、预约提交（直连与页面改写两条通道）、签到与签退。
+    """
+
     PASSPORT_BASE = "https://passport2.chaoxing.com"
     OFFICE_BASE = "https://office.chaoxing.com"
 
@@ -37,6 +46,11 @@ class ChaoxingClient:
     FID_ENC_MOBILE = "24680a1d287b60c7"
 
     def __init__(self, *, ua: str | None = None):
+        """创建客户端。
+
+        入参:
+            ua: 自定义 User-Agent；为 None 时从 UA 池随机取一个。
+        """
         self._ua = ua or random_ua()
         self._client = self._build_client()
         self._cookie_jar = self._client.cookies
@@ -57,9 +71,11 @@ class ChaoxingClient:
         )
 
     async def close(self) -> None:
+        """关闭底层 HTTP 客户端。"""
         await self._client.aclose()
 
     def cookies(self) -> dict[str, str]:
+        """返回当前会话的 cookie 字典（name → value）。"""
         return {c.name: c.value for c in self._cookie_jar.jar}
 
     def _fresh_jar(self) -> httpx.Cookies:
@@ -111,8 +127,8 @@ class ChaoxingClient:
         self._cookie_jar = self._fresh_jar()
         try:
             await old.aclose()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("关闭旧 HTTP 客户端失败（不影响会话重建）: %s", e)
 
     def _rebuild_flattened_jar(self, authoritative: dict[str, str]) -> None:
         """以给定 cookie 为权威值摊平重建 jar：同名唯一、统一 .chaoxing.com 域。
@@ -177,8 +193,8 @@ class ChaoxingClient:
                 headers={"Referer": f"{self.PASSPORT_BASE}/"},
                 timeout=5.0,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("登录后座位页预热失败（不影响登录结果）: %s", e)
         self._rebuild_flattened_jar(cookies)
 
     @staticmethod
@@ -199,7 +215,8 @@ class ChaoxingClient:
                     await loc.first.click(timeout=1500)
                     await page.wait_for_timeout(300)
                     return
-            except Exception:
+            except Exception as e:
+                logger.debug("点击隐私协议确认框失败（尝试下一个选择器）: %s", e)
                 continue
 
     async def _login_via_browser(self, phone: str, password: str) -> dict[str, str]:
@@ -248,27 +265,12 @@ class ChaoxingClient:
                         wait_until="domcontentloaded",
                         timeout=8000,
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("登录后跳转座位页失败（仅影响 cookie 采集范围）: %s", e)
             for c in await ctx.cookies():
                 captured[c["name"]] = c["value"]
             await browser.close()
         return captured
-
-    @staticmethod
-    def _cell_labels(start_time: str, end_time: str) -> list[str]:
-        """Return the 30-min cell labels we need to click.
-        e.g. 21:00-22:00 → ["21:00-21:30", "21:30-22:00"]
-        """
-        from datetime import datetime, timedelta
-        s = datetime.strptime(start_time, "%H:%M")
-        e = datetime.strptime(end_time, "%H:%M")
-        out = []
-        while s < e:
-            n = min(s + timedelta(minutes=30), e)
-            out.append(f"{s.strftime('%H:%M')}-{n.strftime('%H:%M')}")
-            s = n
-        return out
 
     @staticmethod
     async def _login_in_page(page, phone: str, password: str) -> bool:
@@ -279,7 +281,8 @@ class ChaoxingClient:
             await page.wait_for_timeout(300)
             await page.get_by_role("button", name="登录").click()
             await ChaoxingClient._dismiss_consent_dialog(page)
-        except Exception:
+        except Exception as e:
+            logger.warning("页面内登录表单提交失败: %s", e)
             return False
         waited = 0
         while waited < 25000:
@@ -288,35 +291,6 @@ class ChaoxingClient:
                 return True
             await page.wait_for_timeout(250)
             waited += 250
-        return False
-
-    @staticmethod
-    async def _click_cell_verified(page, label: str) -> bool:
-        """点 30 分钟格子并验证选中态。
-
-        noSelect 格子点击静默无效 (页面吞掉事件且无报错), 只点不验会把
-        "点了"当"选中", 导致只约到尾部时段。
-        加固: 点击后该格 class 必须发生变化且不带 noSelect, 否则重试 (最多 3 次)。
-        """
-        selectors = [f"li:has-text('{label}')"]
-        prefix = label.split("-")[0]
-        if prefix != label:
-            # the page sometimes shows "21:00" instead of "21:00-21:30"
-            selectors.append(f"li:has-text('{prefix}')")
-        for sel in selectors:
-            loc = page.locator(sel).first
-            for _ in range(3):
-                if await loc.count() == 0:
-                    break
-                try:
-                    before = await loc.get_attribute("class") or ""
-                    await loc.click(timeout=2000)
-                    await page.wait_for_timeout(300)
-                    after = await loc.get_attribute("class") or ""
-                    if after != before and "noSelect" not in after:
-                        return True
-                except Exception:
-                    continue
         return False
 
     @staticmethod
@@ -343,7 +317,8 @@ class ChaoxingClient:
                     cls2 = await el.get_attribute("class") or ""
                     if cls2 != cls:
                         return True
-                except Exception:
+                except Exception as e:
+                    logger.debug("点击座位格失败（尝试下一个格子）: %s", e)
                     continue
         return False
 
@@ -458,8 +433,9 @@ class ChaoxingClient:
         md5("[k=v]"按 key 排序拼接 + "[submit_enc种子]") 重算 enc 后放行。
         服务端会校验 enc, 只改字段不重算 enc 会被判为篡改直接拒绝。
         """
-        from playwright.async_api import async_playwright
         from urllib.parse import parse_qs, urlencode
+
+        from playwright.async_api import async_playwright
 
         result: dict[str, Any] = {
             "success": False, "reserve_id": None, "msg": None, "raw": None,
@@ -488,6 +464,7 @@ class ChaoxingClient:
                 page = await ctx.new_page()
 
                 async def on_response(resp):
+                    """捕获 /submit 响应体，供结果解析使用。"""
                     if "/data/apps/seat/submit" in resp.url and resp.request.method == "POST":
                         try:
                             if "body" not in submit_response:
@@ -550,8 +527,8 @@ class ChaoxingClient:
                     await page.goto(url, timeout=12000, wait_until="domcontentloaded")
                     try:
                         await page.wait_for_load_state("networkidle", timeout=6000)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("等待页面 networkidle 超时（继续用已渲染内容）: %s", e)
                     await page.wait_for_timeout(500)
                 except Exception as e:
                     result["msg"] = f"page load failed: {e}"
@@ -570,8 +547,8 @@ class ChaoxingClient:
                         await page.goto(url, timeout=12000, wait_until="domcontentloaded")
                         try:
                             await page.wait_for_load_state("networkidle", timeout=6000)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("重登后等待页面 networkidle 超时（继续用已渲染内容）: %s", e)
                         await page.wait_for_timeout(500)
                     except Exception as e:
                         result["msg"] = f"page reload failed: {e}"
@@ -639,12 +616,14 @@ class ChaoxingClient:
 
     # ---------- action endpoints ----------
     async def sign(self, reserve_id: int) -> dict[str, Any]:
+        """签到（时段开始后调用）。"""
         url = f"{self.OFFICE_BASE}/data/apps/seat/sign"
         return await self._post_form(
             url, {"id": reserve_id}, referer=self.OFFICE_BASE + "/"
         )
 
     async def leave(self, reserve_id: int) -> dict[str, Any]:
+        """暂离（临时释放座位，要求剩余时长不少于 20 分钟）。"""
         url = f"{self.OFFICE_BASE}/data/apps/seat/leave"
         return await self._post_form(
             url, {"id": reserve_id}, referer=self.OFFICE_BASE + "/"
@@ -662,12 +641,14 @@ class ChaoxingClient:
         )
 
     async def cancel(self, reserve_id: int) -> dict[str, Any]:
+        """取消预约。"""
         url = f"{self.OFFICE_BASE}/data/apps/seat/cancel"
         return await self._post_form(
             url, {"id": reserve_id}, referer=self.OFFICE_BASE + "/"
         )
 
     async def get_active_reservation(self, room_id: int, seat_num: str) -> dict[str, Any] | None:
+        """查询该座位当前生效的预约信息；没有时返回 None。"""
         url = (
             f"{self.OFFICE_BASE}/data/apps/seat/reserve/info"
             f"?id={room_id}&seatNum={seat_num}"

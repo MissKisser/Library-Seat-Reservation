@@ -5,12 +5,14 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time
 
 from seatbot.bindings import matrix_windows
-from seatbot.utils.timeutil import RESERVE_WINDOW_HOUR, parse_hhmm
+from seatbot.utils.timeutil import RESERVE_WINDOW_HOUR, overlaps, parse_hhmm
 from seatbot.utils.weekly import weekday_key
 
+logger = logging.getLogger(__name__)
 
 #: 时段开始到签到截止的容忍窗口（分钟）；超过该窗口仍可签到但平台会判违约。
 SIGN_DEADLINE_MINUTES = 20
@@ -31,14 +33,6 @@ def day_window_blocked(now: datetime, day: date) -> str | None:
             return f"次日预约需 {RESERVE_WINDOW_HOUR:02d}:00 起开放，当前尚不可选"
         return None
     return "手动预约仅支持今天或明天"
-
-
-def _to_min(t: time) -> int:
-    return t.hour * 60 + t.minute
-
-
-def _overlaps(a_start: time, a_end: time, b_start: time, b_end: time) -> bool:
-    return _to_min(a_start) < _to_min(b_end) and _to_min(b_start) < _to_min(a_end)
 
 
 def validate_manual_submission(
@@ -98,7 +92,7 @@ def validate_manual_submission(
     cross_seat_clash = False
     for t in existing_tasks:
         t_s, t_e, t_sn = t.start_time, t.end_time, getattr(t, "seat_num", "")
-        if _overlaps(start, end, t_s, t_e):
+        if overlaps(start, end, t_s, t_e):
             if t_sn != sn:
                 cross_seat_clash = True
         dur = (t_e.hour * 60 + t_e.minute - t_s.hour * 60 - t_s.minute) / 60.0
@@ -120,7 +114,7 @@ def validate_manual_submission(
             issues.append(f"守护矩阵解析失败: {exc}")
             windows = []
         for _ms, ms, me, _h in windows:
-            if _overlaps(start, end, ms, me):
+            if overlaps(start, end, ms, me):
                 matrix_overlap = True
                 break
         if matrix_overlap:
@@ -149,7 +143,8 @@ def parse_manual_form(
     """解析表单四字段：日期 / 起止 / 座位号。全部成功返回四元组，失败返回 (None, None, None, reason)。"""
     try:
         d = date.fromisoformat((day_raw or "").strip())
-    except ValueError:
+    except ValueError as e:
+        logger.debug("手动预约表单日期字段非法: %s", e)
         return None, None, None, "日期格式错误（应为 YYYY-MM-DD）"
     try:
         s = parse_hhmm((start_raw or "").strip())

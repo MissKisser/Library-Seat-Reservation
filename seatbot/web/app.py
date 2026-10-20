@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from seatbot.config import Config
 from seatbot.scheduler import Scheduler
 from seatbot.store import StateStore
 
+logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent
 TEMPLATES_DIR = WEB_DIR / "templates"
@@ -141,7 +143,8 @@ def _origin_netloc(value: str) -> str:
     """从 Origin/Referer 头提取 host:port（小写，无 scheme/path）；解析失败返回空串。"""
     try:
         return urlsplit(value.strip()).netloc.lower()
-    except ValueError:
+    except ValueError as e:
+        logger.debug("来源头 %r 无法解析为 host:port: %s", value, e)
         return ""
 
 
@@ -180,11 +183,19 @@ class PanelAuthMiddleware(BaseHTTPMiddleware):
     """面板认证/来源加固中间件 (令牌模式或回环白名单模式)。"""
 
     def __init__(self, app, web_token: str, allowed_hosts: set[str]):
+        """创建中间件。
+
+        入参:
+            app: 被包装的 ASGI 应用。
+            web_token: 面板访问令牌；为空表示走回环白名单模式。
+            allowed_hosts: 允许访问面板的主机名白名单。
+        """
         super().__init__(app)
         self.web_token = web_token
         self.allowed_hosts = allowed_hosts
 
     async def dispatch(self, request: Request, call_next):
+        """校验访问来源与令牌，通过后放行请求。"""
         client_host = request.client.host if request.client else None
         via_query = "token" in request.query_params
         ok, status, reason, set_cookie = auth_decision(
@@ -227,15 +238,17 @@ def _static_v(name: str) -> str:
     """
     try:
         return str(int((_STATIC_DIR / name).stat().st_mtime))
-    except OSError:
+    except OSError as e:
+        logger.debug("静态资源 %s 的 mtime 不可用，回落到进程启动时刻: %s", name, e)
         return str(int(time.time()))
 
 
 def new_templates() -> Jinja2Templates:
-    """统一模板实例: 挂好全局函数, 测试桩与 make_app 共用同一配置。"""
+    """统一模板实例: 挂好全局函数与版本号, 测试桩与 make_app 共用同一配置。"""
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["epoch_ms"] = _epoch_ms
     templates.env.globals["static_v"] = _static_v
+    templates.env.globals["app_version"] = __version__
     return templates
 
 
@@ -244,11 +257,22 @@ def _epoch_ms(value) -> str:
     try:
         dt = datetime.fromtimestamp(int(value) / 1000, tz=timezone(timedelta(hours=8)))
         return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except (TypeError, ValueError, OSError):
+    except (TypeError, ValueError, OSError) as e:
+        logger.debug("epoch 毫秒 %r 无法转换为北京时间: %s", value, e)
         return str(value)
 
 
 def make_app(cfg: Config, store: StateStore, sched: Scheduler) -> FastAPI:
+    """组装 FastAPI 应用：挂中间件、静态资源与路由。
+
+    入参:
+        cfg: 已加载的配置。
+        store: 状态存储实例。
+        sched: 调度器实例。
+
+    返回值:
+        配置好的 FastAPI 应用。
+    """
     app = FastAPI(title="SeatBot Web Panel", version=__version__)
     app.state.cfg = cfg
     app.state.store = store

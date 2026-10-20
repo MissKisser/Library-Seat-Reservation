@@ -4,7 +4,6 @@ from datetime import date, time
 from seatbot.coverage import compute_seat_coverage
 from seatbot.models import Account, SeatTarget
 
-
 DAY = date(2026, 8, 26)
 
 
