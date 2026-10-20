@@ -266,9 +266,9 @@ class FakeManualStore:
     def __init__(self):
         self.tasks: list[Task] = []
         self.accounts: list[Account] = [
-            Account(id="张三", phone="13800000000", password="x", slots=[],
+            Account(id="张三", phone="13800000001", password="x", slots=[],
                     seat_slots={"021": {"mon": ["09:00-11:00"]}}),
-            Account(id="李四", phone="13800000000", password="x", slots=[],
+            Account(id="李四", phone="13800000002", password="x", slots=[],
                     seat_slots={"021": {"tue": ["11:00-13:00"]}}),
         ]
         self.seats = [SeatTarget(seat_num="021"), SeatTarget(seat_num="022")]

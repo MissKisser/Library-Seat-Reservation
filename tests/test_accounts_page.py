@@ -29,7 +29,7 @@ def test_default_view_weekday_after_1400_is_tomorrow():
 
 def test_slots_view_kinds():
     """四种展示形态：按座位矩阵 / 通用扁平 / 全天 / 无绑定。"""
-    matrix = Account(id="张三", phone="13800000000", password="x",
+    matrix = Account(id="张三", phone="13800000001", password="x",
                      slots=[], seat_slots={"s1": dict(WEEK_DIVERGED), "s2": dict(WEEK_UNIFORM)})
     view = _slots_view(matrix)
     assert view["kind"] == "seats"
@@ -37,10 +37,10 @@ def test_slots_view_kinds():
     assert view["seats"][0]["days"]["tue"] == []
     assert view["seats"][1]["days"]["wed"] == ["09:00-11:00"]
 
-    flat = Account(id="李四", phone="13800000000", password="x", slots=["09:00-11:00"])
+    flat = Account(id="李四", phone="13800000002", password="x", slots=["09:00-11:00"])
     assert _slots_view(flat) == {"kind": "flat", "ranges": ["09:00-11:00"]}
 
-    full = Account(id="王五", phone="13800000000", password="x", slots="full")
+    full = Account(id="王五", phone="13800000003", password="x", slots="full")
     assert _slots_view(full) == {"kind": "full"}
 
     none = Account(id="赵六", phone="13800000004", password="x", slots=[])
@@ -49,9 +49,9 @@ def test_slots_view_kinds():
 
 def test_slots_diverged():
     """全周统一不算分叉；任一天不一致即为分叉（触发查看日下拉）。"""
-    uniform = Account(id="张三", phone="13800000000", password="x",
+    uniform = Account(id="张三", phone="13800000001", password="x",
                       slots=[], seat_slots={"s1": dict(WEEK_UNIFORM)})
-    diverged = Account(id="李四", phone="13800000000", password="x",
+    diverged = Account(id="李四", phone="13800000002", password="x",
                        slots=[], seat_slots={"s1": dict(WEEK_DIVERGED)})
     assert not _slots_diverged(uniform)
     assert _slots_diverged(diverged)
@@ -82,7 +82,7 @@ def _client(tmp_path, accounts, settings=None):
 def test_accounts_page_shows_week_picker_when_diverged(tmp_path):
     """数据各天不一致时，即使全局统一模式也自动显示查看日下拉。"""
     c = _client(tmp_path, [
-        Account(id="张三", phone="13800000000", password="x",
+        Account(id="张三", phone="13800000001", password="x",
                 slots=[], seat_slots={"s1": dict(WEEK_DIVERGED)}),
     ])
     r = c.get("/accounts", headers=_AUTH)
@@ -98,7 +98,7 @@ def test_accounts_page_shows_week_picker_when_diverged(tmp_path):
 def test_accounts_page_hides_week_picker_when_uniform(tmp_path):
     """全局统一 + 数据各天一致：不显示下拉，时段照常渲染。"""
     c = _client(tmp_path, [
-        Account(id="张三", phone="13800000000", password="x",
+        Account(id="张三", phone="13800000001", password="x",
                 slots=[], seat_slots={"s1": dict(WEEK_UNIFORM)}),
     ])
     r = c.get("/accounts", headers=_AUTH)
@@ -113,7 +113,7 @@ def test_accounts_page_shows_week_picker_in_weekly_mode(tmp_path):
     """schedule_mode=weekly 时强制显示查看日下拉。"""
     c = _client(
         tmp_path,
-        [Account(id="张三", phone="13800000000", password="x",
+        [Account(id="张三", phone="13800000001", password="x",
                  slots=[], seat_slots={"s1": dict(WEEK_UNIFORM)})],
         settings={"schedule_mode": "weekly"},
     )

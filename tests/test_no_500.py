@@ -65,9 +65,9 @@ def _client(tmp_path: Path, monkeypatch) -> tuple[TestClient, StateStore]:
         await store.add_target_seat("001", label="座位 001")
         await store.add_target_seat("002", label="座位 002")
         from seatbot.models import Account
-        await store.upsert_account(Account(id="a1", phone="13800000000", password="x", slots=[], seat_slots={"001": {"mon": ["09:00-11:00"]}}))
-        await store.upsert_account(Account(id="a2", phone="13800000000", password="x", slots=[]))
-        await store.upsert_account(Account(id="a3", phone="13800000000", password="x", slots=[]))
+        await store.upsert_account(Account(id="a1", phone="13800000001", password="x", slots=[], seat_slots={"001": {"mon": ["09:00-11:00"]}}))
+        await store.upsert_account(Account(id="a2", phone="13800000002", password="x", slots=[]))
+        await store.upsert_account(Account(id="a3", phone="13800000003", password="x", slots=[]))
     asyncio.run(seed())
     sched = Scheduler(cfg, store)
     app = make_app(cfg, store, sched)

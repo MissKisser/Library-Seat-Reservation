@@ -161,10 +161,10 @@ class RenderServer:
             await self.store.add_target_seat("021", label="靠窗主座")
             await self.store.add_target_seat("022", label="安静角")
             await self.store.upsert_account(Account(
-                id="张三", phone="13800000000", password="x", slots=[],
+                id="张三", phone="13800000001", password="x", slots=[],
                 seat_slots={"021": {"mon": ["09:00-11:00", "11:00-13:00"]}}))
             await self.store.upsert_account(Account(
-                id="李四", phone="13800000000", password="x", slots=[],
+                id="李四", phone="13800000002", password="x", slots=[],
                 seat_slots={"022": {"mon": ["10:00-12:00"]}}))
             today = date.today()
             for i in range(6):

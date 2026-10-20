@@ -18,7 +18,7 @@ def test_load_minimal_config(tmp_path: Path):
           max_reserve_hours: 2.0
         accounts:
           - id: zhangsan
-            phone: "13800000000"
+            phone: "13800000001"
             password: "secret"
             slots: full
         runtime:
